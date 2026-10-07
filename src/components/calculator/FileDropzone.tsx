@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { UploadCloud, FileText, AlertTriangle, Sparkles, CheckCircle } from 'lucide-react';
+import { UploadCloud, Sparkles, CheckCircle, AlertTriangle, Layers, Cpu } from 'lucide-react';
 import { Button } from '../common/Button.tsx';
 import type { ParsedJob } from '../../domain/types.ts';
 import { fileAnalysisService } from '../../services/fileAnalysisService.ts';
@@ -56,7 +56,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
       }
       onJobLoaded(parsed);
     } catch {
-      setErrorMessage('Не вдалося прочитати файл. Спробуйте інший .gcode.3mf.');
+      setErrorMessage('Не вдалося прочитати файл. Спробуйте інший .gcode.3mf або .gcode.');
     } finally {
       setIsLoading(false);
     }
@@ -81,18 +81,18 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
         onDragLeave={() => setIsDragOver(false)}
         onDrop={handleDrop}
         onClick={() => fileInputRef.current?.click()}
-        className={`border-2 border-dashed rounded-xl p-6 sm:p-8 text-center cursor-pointer transition-all ${
+        className={`border-2 border-dashed rounded-2xl p-6 sm:p-7 text-center cursor-pointer transition-all ${
           isDragOver
-            ? 'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20'
+            ? 'border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/30 shadow-md'
             : currentJob && currentJob.parseStatus === 'success'
-            ? 'border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900/60 hover:border-emerald-500/50'
-            : 'border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 hover:border-neutral-400 dark:hover:border-neutral-600'
+            ? 'border-emerald-500/40 dark:border-emerald-700/50 bg-white dark:bg-neutral-900/80 hover:border-emerald-500 shadow-2xs'
+            : 'border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 hover:border-neutral-400 dark:hover:border-neutral-600 shadow-2xs'
         }`}
       >
         <input
           ref={fileInputRef}
           type="file"
-          accept=".3mf"
+          accept=".3mf,.gcode"
           className="hidden"
           onChange={(e) => {
             if (e.target.files && e.target.files[0]) {
@@ -102,46 +102,52 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
         />
 
         <div className="flex flex-col items-center justify-center space-y-3">
-          <div className="w-12 h-12 rounded-full bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+          <div
+            className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${
+              currentJob && currentJob.parseStatus === 'success'
+                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 ring-4 ring-emerald-500/10'
+                : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
+            }`}
+          >
             {isLoading ? (
-              <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+              <div className="w-6 h-6 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
             ) : currentJob && currentJob.parseStatus === 'success' ? (
-              <CheckCircle className="w-6 h-6 text-emerald-600" />
+              <CheckCircle className="w-7 h-7 text-emerald-600 dark:text-emerald-400" />
             ) : (
-              <UploadCloud className="w-6 h-6" />
+              <UploadCloud className="w-7 h-7" />
             )}
           </div>
 
           <div>
-            <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+            <p className="text-base font-bold text-neutral-900 dark:text-neutral-100">
               {currentJob && currentJob.parseStatus === 'success'
                 ? `Завантажено: ${currentJob.fileName}`
-                : 'Перетягніть .gcode.3mf або виберіть файл'}
+                : 'Перетягніть .gcode.3mf або виберіть файл нарізки'}
             </p>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-md mx-auto">
-              Файл аналізується у вашому браузері. До акаунта зберігаються параметри та розрахунок, а не сама модель.
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-lg mx-auto leading-relaxed">
+              Підтримка будь-яких нарізок <strong className="text-neutral-800 dark:text-neutral-200">.gcode.3mf</strong> та <strong className="text-neutral-800 dark:text-neutral-200">.gcode</strong> (Bambu Studio, OrcaSlicer, PrusaSlicer, Creality Print, Elegoo). Обробка миттєва, конфіденційна та виконується повністю у вашому браузері.
             </p>
           </div>
 
-          <div className="flex items-center gap-2 pt-1" onClick={(e) => e.stopPropagation()}>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isLoading}
-            >
-              Вибрати з диска
-            </Button>
+          <div className="flex items-center gap-2.5 pt-1" onClick={(e) => e.stopPropagation()}>
             <Button
               type="button"
               variant="primary"
               size="sm"
-              leftIcon={<Sparkles className="w-3.5 h-3.5" />}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading}
+            >
+              Вибрати файл .3mf
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              leftIcon={<Sparkles className="w-3.5 h-3.5 text-emerald-600" />}
               onClick={handleSelectDemo}
               disabled={isLoading}
             >
-              Відкрити демонстраційний приклад
+              Завантажити демо-приклад
             </Button>
           </div>
         </div>
@@ -149,23 +155,26 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
 
       {/* Error / Warning Alert Banner */}
       {errorMessage && (
-        <div className="p-3.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 rounded-lg text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5">
+        <div className="p-3.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 rounded-xl text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5">
           <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <p className="font-medium">Зверніть увагу щодо аналізу файлу:</p>
+            <p className="font-semibold">Повідомлення парсера файлів:</p>
             <p className="text-amber-800 dark:text-amber-300 leading-relaxed">{errorMessage}</p>
           </div>
         </div>
       )}
 
-      {/* Preset switcher for comprehensive testing */}
-      <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 px-1 pt-1">
-        <span>Тестові сценарії Bambu Studio:</span>
-        <div className="flex items-center gap-2">
+      {/* Preset switcher for testing */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 px-1 gap-2">
+        <span className="flex items-center gap-1.5">
+          <Cpu className="w-3.5 h-3.5 text-neutral-400" />
+          <span>Тестові сценарії слайсерів:</span>
+        </span>
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => handleSelectPreset('multi_plate')}
-            className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer"
+            className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer text-xs"
           >
             2 пластини
           </button>
@@ -173,7 +182,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           <button
             type="button"
             onClick={() => handleSelectPreset('unknown_material')}
-            className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer"
+            className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer text-xs"
           >
             Невідомий філамент
           </button>
@@ -181,7 +190,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           <button
             type="button"
             onClick={() => handleSelectPreset('no_slicing')}
-            className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer"
+            className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer text-xs"
           >
             Без нарізки
           </button>
@@ -189,7 +198,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           <button
             type="button"
             onClick={() => handleSelectPreset('corrupted')}
-            className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer"
+            className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer text-xs"
           >
             Пошкоджений
           </button>

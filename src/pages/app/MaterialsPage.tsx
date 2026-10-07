@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Search,
   Plus,
@@ -9,6 +10,8 @@ import {
   Trash2,
   AlertCircle,
   CheckCircle,
+  BookOpen,
+  Disc,
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import type { MaterialProfile } from '../../domain/types.ts';
@@ -17,8 +20,10 @@ import { Input } from '../../components/common/Input.tsx';
 import { MaterialModal } from '../../components/materials/MaterialModal.tsx';
 import { Modal } from '../../components/common/Modal.tsx';
 import { formatUah } from '../../domain/formatters.ts';
+import { SpoolCalculatorWidget } from '../../components/calculator/SpoolCalculatorWidget.tsx';
 
 export const MaterialsPage: React.FC = () => {
+  const navigate = useNavigate();
   const {
     materials,
     addMaterial,
@@ -34,6 +39,7 @@ export const MaterialsPage: React.FC = () => {
 
   // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSpoolCalcModalOpen, setIsSpoolCalcModalOpen] = useState(false);
   const [editingMaterial, setEditingMaterial] = useState<MaterialProfile | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -95,14 +101,36 @@ export const MaterialsPage: React.FC = () => {
           </p>
         </div>
 
-        <Button
-          variant="primary"
-          size="sm"
-          leftIcon={<Plus className="w-4 h-4" />}
-          onClick={handleOpenAdd}
-        >
-          Додати матеріал
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            leftIcon={<Disc className="w-4 h-4 text-emerald-600" />}
+            onClick={() => setIsSpoolCalcModalOpen(true)}
+            title="Розрахувати собівартість за 1 кг з котушки"
+          >
+            Розрахувати котушку
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            leftIcon={<BookOpen className="w-4 h-4" />}
+            onClick={() => navigate('/filaments')}
+            title="Переглянути відкритий довідник філаментів та імпортувати готові профілі"
+          >
+            Довідник філаментів
+          </Button>
+
+          <Button
+            variant="primary"
+            size="sm"
+            leftIcon={<Plus className="w-4 h-4" />}
+            onClick={handleOpenAdd}
+          >
+            Додати матеріал
+          </Button>
+        </div>
       </div>
 
       {/* Search and Filters */}
@@ -155,6 +183,7 @@ export const MaterialsPage: React.FC = () => {
                 <th className="py-2.5 px-4">Тип</th>
                 <th className="py-2.5 px-4">Сімейство</th>
                 <th className="py-2.5 px-4">Бренд</th>
+                <th className="py-2.5 px-4 text-right">Котушка</th>
                 <th className="py-2.5 px-4 text-right">Ціна за 1 кг</th>
                 <th className="py-2.5 px-4 text-right min-w-[140px]">Дії</th>
               </tr>
@@ -162,7 +191,7 @@ export const MaterialsPage: React.FC = () => {
             <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
               {filteredMaterials.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-neutral-500">
+                  <td colSpan={8} className="py-12 text-center text-neutral-500">
                     Не знайдено матеріалів у вибраній категорії
                   </td>
                 </tr>
@@ -216,12 +245,31 @@ export const MaterialsPage: React.FC = () => {
                         {m.brand}
                       </td>
 
+                      {/* Spool / Price */}
+                      <td className="py-3 px-4 text-right font-mono tabular-nums whitespace-nowrap">
+                        <div className="font-medium text-neutral-800 dark:text-neutral-200">
+                          {m.spoolWeightGrams ? `${m.spoolWeightGrams} г` : '1 000 г'}
+                        </div>
+                        {m.spoolPriceUah && (
+                          <div className="text-[10px] text-neutral-400">
+                            {m.spoolPriceUah} грн
+                          </div>
+                        )}
+                      </td>
+
                       {/* Price per Kg (Shows "Не задано" if missing) */}
                       <td className="py-3 px-4 text-right font-mono tabular-nums whitespace-nowrap">
                         {hasPrice ? (
-                          <span className="font-semibold text-neutral-900 dark:text-white">
-                            {formatUah(m.pricePerKgUah)}/кг
-                          </span>
+                          <>
+                            <span className="font-semibold text-emerald-700 dark:text-emerald-400">
+                              {formatUah(m.pricePerKgUah)}/кг
+                            </span>
+                            {m.pricePerKgUah && (
+                              <div className="text-[10px] text-neutral-400">
+                                {(parseFloat(m.pricePerKgUah) / 1000).toFixed(2)} грн/г
+                              </div>
+                            )}
+                          </>
                         ) : (
                           <span className="text-amber-600 dark:text-amber-400 text-[11px] font-medium flex items-center justify-end gap-1">
                             <AlertCircle className="w-3.5 h-3.5" />
@@ -305,6 +353,25 @@ export const MaterialsPage: React.FC = () => {
           Ви дійсно бажаєте безповоротно видалити цей матеріал?
         </p>
       </Modal>
+
+      {/* Spool & Per-Kg Calculator Modal */}
+      {isSpoolCalcModalOpen && (
+        <Modal
+          isOpen={isSpoolCalcModalOpen}
+          onClose={() => setIsSpoolCalcModalOpen(false)}
+          title="Розрахунок вартості котушок та ціни за 1 кг"
+          description="Введіть вагу котушки та ціну в магазині — отримайте точний розрахунок собівартості за 1 кг та за 1 грам."
+          maxWidth="2xl"
+        >
+          <SpoolCalculatorWidget
+            onApplyToRate={() => {
+              setIsSpoolCalcModalOpen(false);
+              handleOpenAdd();
+            }}
+            onClose={() => setIsSpoolCalcModalOpen(false)}
+          />
+        </Modal>
+      )}
     </div>
   );
 };

@@ -1,4 +1,4 @@
-# UI Handoff Specification — PrintCost
+# UI Handoff Specification — KILO·G
 
 Документація для продовження розробки та підключення production-бекенду (Codex / Supabase).
 
@@ -6,7 +6,7 @@
 
 ## 1. Загальний огляд проєкту
 
-**PrintCost** — це вебзастосунок для розрахунку собівартості та продажної ціни FDM/FFF 3D-друку на основі файлів проєктів Bambu Studio (`.gcode.3mf`).
+**KILO·G** (колишня робоча назва PrintCost) — це вебзастосунок для розрахунку собівартості та продажної ціни FDM/FFF 3D-друку на основі файлів проєктів Bambu Studio (`.gcode.3mf`). Гасло бренду: *«Кожен грам на своєму місці»*.
 
 - **Frontend-стек**: React 19, TypeScript strict, Vite, React Router 7, Tailwind CSS v4, Decimal.js, Lucide Icons.
 - **Цільове середовище**: Vercel.

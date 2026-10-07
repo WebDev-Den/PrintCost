@@ -6,9 +6,9 @@ export const Footer: React.FC = () => {
     <footer className="border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 py-8 px-4 sm:px-6 lg:px-8 mt-auto">
       <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-neutral-500 dark:text-neutral-400">
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-neutral-800 dark:text-neutral-200">PrintCost</span>
+          <span className="font-bold text-neutral-900 dark:text-neutral-100">KILO·G</span>
           <span>·</span>
-          <span>Особистий кабінет FDM/FFF розрахунку для майстерень</span>
+          <span>Кожен грам на своєму місці — кабінет FDM/FFF розрахунку</span>
         </div>
         <div className="flex items-center gap-6">
           <NavLink to="/auth/login" className="hover:text-neutral-800 dark:hover:text-neutral-200">

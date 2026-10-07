@@ -16,6 +16,7 @@ import type { CalculationSnapshot } from '../../domain/types.ts';
 import { Button } from '../../components/common/Button.tsx';
 import { StatusBadge } from '../../components/common/StatusBadge.tsx';
 import { ClientQuoteModal } from '../../components/calculator/ClientQuoteModal.tsx';
+import { CostBreakdownChart } from '../../components/calculator/CostBreakdownChart.tsx';
 import { formatUah, formatDurationUk, formatWeightUk, formatNumberUk } from '../../domain/formatters.ts';
 
 export const CalculationDetailsPage: React.FC = () => {
@@ -170,6 +171,9 @@ export const CalculationDetailsPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left 2 Cols: Sliced Filaments & Locked Tariffs */}
         <div className="lg:col-span-2 space-y-6">
+          {/* Visual Cost Distribution Chart using Recharts */}
+          <CostBreakdownChart result={result} />
+
           {/* Filaments snapshot table */}
           <div className="bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden shadow-2xs">
             <div className="p-4 border-b border-neutral-200 dark:border-neutral-800">

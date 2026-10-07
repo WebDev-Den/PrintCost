@@ -1,7 +1,9 @@
-import React from 'react';
-import { Layers, Bookmark, AlertTriangle, CheckCircle, HelpCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { Layers, Bookmark, AlertTriangle, CheckCircle, HelpCircle, Disc, Calculator } from 'lucide-react';
 import type { FilamentUsage, MaterialProfile } from '../../domain/types.ts';
 import { formatUah, formatWeightUk, formatNumberUk } from '../../domain/formatters.ts';
+import { Modal } from '../common/Modal.tsx';
+import { SpoolCalculatorWidget } from './SpoolCalculatorWidget.tsx';
 
 interface FilamentMappingTableProps {
   filaments: FilamentUsage[];
@@ -20,6 +22,7 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
   onSavePreference,
   onAddNewMaterialClick,
 }) => {
+  const [activeSpoolCalcRow, setActiveSpoolCalcRow] = useState<FilamentUsage | null>(null);
   return (
     <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden shadow-2xs">
       <div className="p-4 sm:p-5 border-b border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -33,15 +36,29 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
           </p>
         </div>
 
-        {onAddNewMaterialClick && (
+        <div className="flex items-center gap-2 self-start sm:self-center flex-wrap">
           <button
             type="button"
-            onClick={onAddNewMaterialClick}
-            className="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300 self-start sm:self-center"
+            onClick={() => {
+              if (filaments.length > 0) setActiveSpoolCalcRow(filaments[0]);
+            }}
+            className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-200 flex items-center gap-1.5 transition-colors"
+            title="Розрахувати ціну за кг з маси та ціни котушки"
           >
-            + Додати новий матеріал
+            <Disc className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Розрахунок з котушок за кг</span>
           </button>
-        )}
+
+          {onAddNewMaterialClick && (
+            <button
+              type="button"
+              onClick={onAddNewMaterialClick}
+              className="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
+            >
+              + Додати новий матеріал
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -147,6 +164,9 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
                       <div className="font-semibold text-neutral-900 dark:text-neutral-100">
                         {formatWeightUk(f.weightGrams)}
                       </div>
+                      <div className="text-[10px] text-neutral-400">
+                        ~{(parseFloat(f.weightGrams) / 1000).toFixed(2)} котушки
+                      </div>
                       {f.lengthMeters && (
                         <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
                           {formatNumberUk(f.lengthMeters, 1)} м
@@ -154,9 +174,17 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
                       )}
                     </td>
 
-                    {/* Price per Kg (Editable quick override) */}
+                    {/* Price per Kg (Editable quick override + Spool Calc Button) */}
                     <td className="py-3 px-3 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setActiveSpoolCalcRow(f)}
+                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400 cursor-pointer"
+                          title="Розрахувати ціну за кг з маси та вартості котушки"
+                        >
+                          <Disc className="w-3.5 h-3.5" />
+                        </button>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -206,6 +234,28 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
           </tbody>
         </table>
       </div>
+
+      {/* Spool Calculator Modal for Active Filament Row */}
+      {activeSpoolCalcRow && (
+        <Modal
+          isOpen={Boolean(activeSpoolCalcRow)}
+          onClose={() => setActiveSpoolCalcRow(null)}
+          title={`Розрахунок з котушки: ${activeSpoolCalcRow.typeFromFile}`}
+          description="Введіть вагу котушки та ціну в магазині — миттєво підставимо ціну за 1 кг у розрахунок."
+          maxWidth="2xl"
+        >
+          <SpoolCalculatorWidget
+            initialType={activeSpoolCalcRow.typeFromFile}
+            initialPriceUah={activeSpoolCalcRow.pricePerKgUah ? parseFloat(activeSpoolCalcRow.pricePerKgUah) : 650}
+            targetPrintWeightGrams={parseFloat(activeSpoolCalcRow.weightGrams) || 0}
+            onApplyToRate={(rate) => {
+              onPriceOverride(activeSpoolCalcRow.key, rate.toFixed(2));
+              setActiveSpoolCalcRow(null);
+            }}
+            onClose={() => setActiveSpoolCalcRow(null)}
+          />
+        </Modal>
+      )}
     </div>
   );
 };

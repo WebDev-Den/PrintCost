@@ -14,6 +14,7 @@ import { ForgotPasswordPage } from './pages/public/ForgotPasswordPage.tsx';
 import { ResetPasswordPage } from './pages/public/ResetPasswordPage.tsx';
 import { AuthCallbackPage } from './pages/public/AuthCallbackPage.tsx';
 import { CheckEmailPage } from './pages/public/CheckEmailPage.tsx';
+import { FilamentsDirectoryPage } from './pages/public/FilamentsDirectoryPage.tsx';
 
 // App pages
 import { DashboardPage } from './pages/app/DashboardPage.tsx';
@@ -25,6 +26,7 @@ import { PrintersPage } from './pages/app/PrintersPage.tsx';
 import { SettingsPage } from './pages/app/SettingsPage.tsx';
 import { AccountPage } from './pages/app/AccountPage.tsx';
 import { OnboardingPage } from './pages/app/OnboardingPage.tsx';
+import { CatalogAdminPage } from './pages/app/CatalogAdminPage.tsx';
 
 // Fallback pages
 import { NotFoundPage } from './pages/NotFoundPage.tsx';
@@ -37,6 +39,7 @@ export default function App() {
           <Routes>
             {/* Public Routes */}
             <Route path="/" element={<LandingPage />} />
+            <Route path="/filaments" element={<FilamentsDirectoryPage />} />
             <Route path="/auth/login" element={<LoginPage />} />
             <Route path="/auth/register" element={<RegisterPage />} />
             <Route path="/auth/forgot-password" element={<ForgotPasswordPage />} />
@@ -53,6 +56,7 @@ export default function App() {
               <Route path="calculations/:id" element={<CalculationDetailsPage />} />
               <Route path="materials" element={<MaterialsPage />} />
               <Route path="printers" element={<PrintersPage />} />
+              <Route path="admin/catalog" element={<CatalogAdminPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="account" element={<AccountPage />} />
               <Route path="onboarding" element={<OnboardingPage />} />

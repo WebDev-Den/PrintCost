@@ -15,6 +15,7 @@ import {
 import { useAppData } from '../../context/AppDataContext.tsx';
 import { NumberInput } from '../../components/common/NumberInput.tsx';
 import { Button } from '../../components/common/Button.tsx';
+import { Modal } from '../../components/common/Modal.tsx';
 import type { PricingMode, RoundingMode } from '../../domain/types.ts';
 
 export const SettingsPage: React.FC = () => {
@@ -48,6 +49,8 @@ export const SettingsPage: React.FC = () => {
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
   const [showImportBox, setShowImportBox] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +85,7 @@ export const SettingsPage: React.FC = () => {
   };
 
   const handleImport = async () => {
+    setImportError(null);
     try {
       await importSettings(importJsonText);
       setShowImportBox(false);
@@ -89,16 +93,15 @@ export const SettingsPage: React.FC = () => {
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 2500);
     } catch {
-      alert('Помилка: невалідний JSON-файл конфігурації');
+      setImportError('Помилка: невалідний JSON-файл конфігурації');
     }
   };
 
-  const handleReset = async () => {
-    if (confirm('Скинути всі налаштування ціноутворення до заводських демонстраційних?')) {
-      await resetSettings();
-      setSavedSuccess(true);
-      setTimeout(() => setSavedSuccess(false), 2500);
-    }
+  const handleConfirmReset = async () => {
+    await resetSettings();
+    setIsResetConfirmOpen(false);
+    setSavedSuccess(true);
+    setTimeout(() => setSavedSuccess(false), 2500);
   };
 
   return (
@@ -322,7 +325,7 @@ export const SettingsPage: React.FC = () => {
             variant="ghost"
             size="sm"
             leftIcon={<RotateCcw className="w-3.5 h-3.5 text-neutral-400" />}
-            onClick={handleReset}
+            onClick={() => setIsResetConfirmOpen(true)}
           >
             Скинути до типових
           </Button>
@@ -362,16 +365,45 @@ export const SettingsPage: React.FC = () => {
             <textarea
               rows={4}
               value={importJsonText}
-              onChange={(e) => setImportJsonText(e.target.value)}
+              onChange={(e) => {
+                setImportJsonText(e.target.value);
+                setImportError(null);
+              }}
               placeholder="Вставте сюди вміст JSON-файлу конфігурації..."
               className="w-full p-2.5 text-xs font-mono rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900"
             />
+            {importError && (
+              <p className="text-xs text-rose-600 font-medium">{importError}</p>
+            )}
             <Button variant="primary" size="sm" onClick={handleImport}>
               Застосувати імпортований JSON
             </Button>
           </div>
         )}
       </div>
+
+      {/* Confirmation Modal for Reset Settings */}
+      <Modal
+        isOpen={isResetConfirmOpen}
+        onClose={() => setIsResetConfirmOpen(false)}
+        title="Скинути налаштування?"
+        description="Всі тарифи та правила округлення повертаються до демонстраційних значень."
+        maxWidth="sm"
+        footer={
+          <>
+            <Button variant="outline" size="sm" onClick={() => setIsResetConfirmOpen(false)}>
+              Скасувати
+            </Button>
+            <Button variant="danger" size="sm" onClick={handleConfirmReset}>
+              Підтвердити скидання
+            </Button>
+          </>
+        }
+      >
+        <p className="text-xs text-neutral-600 dark:text-neutral-400">
+          Ви впевнені, що хочете скинути всі налаштування ціноутворення до заводських демонстраційних параметрів?
+        </p>
+      </Modal>
     </div>
   );
 };

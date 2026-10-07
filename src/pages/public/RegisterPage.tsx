@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff, Lock, Mail, Sparkles } from 'lucide-react';
 import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
+import { BrandLogo } from '../../components/common/BrandLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 
 export const RegisterPage: React.FC = () => {
@@ -53,11 +54,8 @@ export const RegisterPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center space-y-2">
-        <NavLink to="/" className="inline-flex items-center gap-2 font-bold text-xl text-neutral-900 dark:text-white">
-          <span className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-sm font-mono font-bold">
-            PC
-          </span>
-          <span>PrintCost</span>
+        <NavLink to="/" className="inline-flex items-center justify-center">
+          <BrandLogo size="lg" />
         </NavLink>
         <h2 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-white">
           Реєстрація нової майстерні

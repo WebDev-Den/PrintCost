@@ -14,10 +14,13 @@ import {
   Moon,
   Sun,
   Compass,
+  BookOpen,
+  ShieldCheck,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import { DemoBanner } from '../common/DemoBanner.tsx';
+import { BrandLogo } from '../common/BrandLogo.tsx';
 
 export const AppLayout: React.FC = () => {
   const { user, logout } = useAuth();
@@ -31,6 +34,8 @@ export const AppLayout: React.FC = () => {
     { to: '/app/calculator', label: 'Калькулятор', icon: Calculator },
     { to: '/app/calculations', label: 'Історія розрахунків', icon: History },
     { to: '/app/materials', label: 'Матеріали', icon: Layers },
+    { to: '/filaments', label: 'Каталог пластиків', icon: BookOpen },
+    { to: '/app/admin/catalog', label: 'Адмінка каталогу', icon: ShieldCheck },
     { to: '/app/printers', label: 'Принтери', icon: Printer },
     { to: '/app/settings', label: 'Налаштування', icon: Settings },
     { to: '/app/account', label: 'Акаунт', icon: User },
@@ -56,16 +61,10 @@ export const AppLayout: React.FC = () => {
         {/* Desktop Sidebar (250px) */}
         <aside className="hidden lg:flex w-64 flex-col border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shrink-0">
           {/* Logo & Brand Zone */}
-          <div className="h-14 px-5 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
-            <NavLink to="/app/dashboard" className="flex items-center gap-2 font-bold text-neutral-900 dark:text-white tracking-tight">
-              <span className="w-7 h-7 rounded-md bg-emerald-600 text-white flex items-center justify-center text-xs font-mono font-bold">
-                PC
-              </span>
-              <span className="text-base font-semibold">PrintCost</span>
+          <div className="h-14 px-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
+            <NavLink to="/app/dashboard">
+              <BrandLogo size="sm" />
             </NavLink>
-            <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 text-neutral-500">
-              FDM/FFF
-            </span>
           </div>
 
           {/* Navigation Links */}
@@ -186,12 +185,7 @@ export const AppLayout: React.FC = () => {
           />
           <div className="relative w-72 bg-white dark:bg-neutral-900 flex-1 flex flex-col max-w-xs shadow-xl z-10 border-r border-neutral-200 dark:border-neutral-800">
             <div className="h-14 px-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
-              <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-white">
-                <span className="w-7 h-7 rounded-md bg-emerald-600 text-white flex items-center justify-center text-xs font-mono font-bold">
-                  PC
-                </span>
-                <span>PrintCost</span>
-              </div>
+              <BrandLogo size="sm" />
               <button
                 type="button"
                 onClick={() => setMobileMenuOpen(false)}
