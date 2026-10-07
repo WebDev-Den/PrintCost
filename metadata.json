@@ -1,0 +1,6 @@
+{
+  "name": "PrintCost - Кабінет розрахунку собівартості 3D-друку",
+  "description": "Професійний кабінет майстерні FDM/FFF 3D-друку для розрахунку собівартості та ціни за файлами Bambu Studio .gcode.3mf.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
