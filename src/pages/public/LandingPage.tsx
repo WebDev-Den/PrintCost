@@ -140,16 +140,15 @@ export const LandingPage: React.FC = () => {
           </div>
         </section>
 
-        {/* Section about Universal .gcode.3mf file format */}
         <section id="universal-3mf" className="py-12 bg-neutral-100/60 dark:bg-neutral-900/40 border-y border-neutral-200 dark:border-neutral-800 px-4 sm:px-6 lg:px-8">
           <div className="max-w-4xl mx-auto flex flex-col md:flex-row items-center gap-8">
             <div className="p-4 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 font-mono text-xs text-neutral-700 dark:text-neutral-300 space-y-2 shrink-0 w-full md:w-80 shadow-2xs">
               <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-2">
                 <span className="font-semibold text-neutral-900 dark:text-white">bracket_mount_v2.gcode.3mf</span>
-                <span className="text-[10px] text-emerald-600 font-bold">UNIVERSAL 3MF</span>
+                <span className="text-[10px] text-emerald-600 font-bold">ПРИКЛАД 3MF</span>
               </div>
               <div className="space-y-1 text-[11px] tabular-nums">
-                <p>Джерело: Bambu Studio / OrcaSlicer / Prusa</p>
+                <p>Джерело: Bambu Studio / OrcaSlicer</p>
                 <p>Пластина 1: 7200 сек (2 год 00 хв)</p>
                 <p>Шар #1: PETG Black — 100 г</p>
                 <p>Шар #2: PLA White — 50 г</p>
@@ -162,10 +161,10 @@ export const LandingPage: React.FC = () => {
 
             <div className="space-y-3">
               <h3 className="text-xl font-bold text-neutral-900 dark:text-white">
-                Універсальний аналіз файлів .gcode.3mf
+                Аналіз підтримуваних файлів нарізки
               </h3>
               <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                Підтримуються нарізані архіви <strong>.3mf / .gcode.3mf</strong> із Bambu Studio та OrcaSlicer, а також текстові G-code з часом друку й витратами філаментів. Проєкти лише з геометрією, binary .bgcode та файли без потрібних метаданих не дають готового розрахунку. Файл аналізується у вашому браузері.
+                Підтримуються нарізані архіви <strong>.3mf / .gcode.3mf</strong> із Bambu Studio та OrcaSlicer, а також текстові <strong>.gcode</strong> PrusaSlicer, OrcaSlicer та Bambu Studio з підтримуваними даними часу друку й витрат кожного філаменту. Проєкти лише з геометрією, binary .bgcode та файли без потрібних метаданих не дають готового розрахунку. Файл аналізується у вашому браузері.
               </p>
               <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
                 Ваша 3D-модель не передається на сторонні сервери — до вашого простору KILO·G зберігається лише числовий паспорт замовлення.

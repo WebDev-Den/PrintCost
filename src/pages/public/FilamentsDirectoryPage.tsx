@@ -509,12 +509,11 @@ export const FilamentsDirectoryPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Universal Slicer Support Notice */}
             <div className="p-3 bg-neutral-100/80 dark:bg-neutral-800/60 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-neutral-600 dark:text-neutral-300">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>
-                  <strong>Сумісність:</strong> KILO·G підтримує <strong>будь-який файл нарізки .gcode.3mf</strong> з Bambu Studio, OrcaSlicer, PrusaSlicer, Creality Print, Elegoo Slicer.
+                  <strong>Сумісність:</strong> нарізані <strong>.3mf / .gcode.3mf</strong> Bambu Studio та OrcaSlicer і текстові <strong>.gcode</strong> PrusaSlicer, OrcaSlicer та Bambu Studio з підтримуваними даними часу друку й витрат кожного філаменту.
                 </span>
               </div>
               <NavLink

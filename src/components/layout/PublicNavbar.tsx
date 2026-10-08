@@ -71,7 +71,7 @@ export const PublicNavbar: React.FC = () => {
           </NavLink>
 
           <a href="/#universal-3mf" className="hover:text-neutral-900 dark:hover:text-white transition-colors">
-            Файли .gcode.3mf
+            Підтримувані файли
           </a>
         </nav>
       </div>
@@ -167,7 +167,7 @@ export const PublicNavbar: React.FC = () => {
               onClick={() => setMobileMenuOpen(false)}
               className="px-3 py-2 rounded-lg text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
             >
-              Універсальні файли .gcode.3mf
+              Підтримувані файли
             </a>
           </nav>
 

@@ -131,7 +131,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
                 : 'Перетягніть .gcode.3mf або виберіть файл нарізки'}
             </p>
             <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-lg mx-auto leading-relaxed">
-              Нарізані <strong className="text-neutral-800 dark:text-neutral-200">.3mf / .gcode.3mf</strong> Bambu Studio та OrcaSlicer, текстовий <strong className="text-neutral-800 dark:text-neutral-200">.gcode</strong> з часом і витратами філаменту (PrusaSlicer, OrcaSlicer, Bambu Studio). До 50 МБ. Файл обробляється у браузері. Проєкти без нарізки та binary .bgcode не підтримуються.
+              Нарізані <strong className="text-neutral-800 dark:text-neutral-200">.3mf / .gcode.3mf</strong> Bambu Studio та OrcaSlicer, текстовий <strong className="text-neutral-800 dark:text-neutral-200">.gcode</strong> PrusaSlicer, OrcaSlicer та Bambu Studio з підтримуваними даними часу друку й витрат кожного філаменту. До 50 MiB. Файл обробляється у браузері. Проєкти без нарізки та binary .bgcode не підтримуються.
             </p>
           </div>
 
