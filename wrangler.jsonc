@@ -16,7 +16,7 @@
   "d1_databases": [{
     "binding": "ANALYTICS_DB",
     "database_name": "kilog-analytics",
-    "database_id": "00000000-0000-0000-0000-000000000000",
+    "database_id": "d837dab8-8871-43d1-8cfc-df6c4d03b8d2",
     "migrations_dir": "migrations"
   }],
   "ratelimits": [{
