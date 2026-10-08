@@ -32,6 +32,7 @@ export const AppLayout: React.FC = () => {
   const { theme, setTheme, isLoading, loadError, actionError, clearActionError, retryLoad } = useAppData();
   const navigate = useNavigate();
   const location = useLocation();
+  const canManageCatalog = !isDemoSession && user?.isAdmin === true;
 
   // Mobile menu drawer state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -79,7 +80,7 @@ export const AppLayout: React.FC = () => {
     { to: '/app/printers', label: 'Принтери', icon: Printer },
     { to: '/app/settings', label: 'Налаштування', icon: Settings },
     { to: '/app/account', label: 'Акаунт', icon: User },
-  ].filter((item) => item.to !== '/app/admin/catalog' || user?.isAdmin || isDemoSession);
+  ].filter((item) => item.to !== '/app/admin/catalog' || canManageCatalog);
 
   const handleLogout = async () => {
     try { await logout(); navigate('/'); }
@@ -98,7 +99,7 @@ export const AppLayout: React.FC = () => {
   if (!user) return <Navigate to="/auth/login" state={{ from: location }} replace />;
   if (isLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження даних" /></div>;
   if (loadError) return <ErrorPage error={new Error(loadError)} resetErrorBoundary={retryLoad} />;
-  if (location.pathname.startsWith('/app/admin') && !user.isAdmin && !isDemoSession) return <Navigate to="/app/dashboard" replace />;
+  if (location.pathname.startsWith('/app/admin') && !canManageCatalog) return <Navigate to="/app/dashboard" replace />;
 
   return (
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col antialiased">

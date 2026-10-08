@@ -44,7 +44,7 @@ import { authErrorMessage } from '../../services/authService.ts';
 
 export const CatalogAdminPage: React.FC = () => {
   const { user, isDemoSession } = useAuth();
-  const canEdit = isDemoSession || user?.isAdmin === true;
+  const canEdit = !isDemoSession && user?.isAdmin === true;
   const [saveError, setSaveError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'filaments' | 'manufacturers' | 'plastic_types' | 'temperatures'>('filaments');
 

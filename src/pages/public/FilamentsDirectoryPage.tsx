@@ -332,7 +332,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
               </div>
 
               {/* Quick Admin & Add Filament Link */}
-              {(isDemoSession || user?.isAdmin) && <div className="flex items-center gap-2">
+              {(!isDemoSession && user?.isAdmin === true) && <div className="flex items-center gap-2">
                 <NavLink
                   to="/app/admin/catalog"
                   className="inline-flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:text-emerald-600 dark:hover:text-emerald-400 bg-white dark:bg-neutral-800 px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors shadow-2xs font-bold"
