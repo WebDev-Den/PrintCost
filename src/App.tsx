@@ -29,6 +29,7 @@ import { OnboardingPage } from './pages/app/OnboardingPage.tsx';
 const CatalogAdminPage = lazy(() => import('./pages/app/CatalogAdminPage.tsx').then((m) => ({ default: m.CatalogAdminPage })));
 const AdministrationPage = lazy(() => import('./pages/app/AdministrationPage.tsx').then((m) => ({ default: m.AdministrationPage })));
 const CompanyOffersPage = lazy(() => import('./pages/app/CompanyOffersPage.tsx').then((m) => ({ default: m.CompanyOffersPage })));
+const TemplatesPage = lazy(() => import('./pages/app/TemplatesPage.tsx').then((m) => ({ default: m.TemplatesPage })));
 
 // Fallback pages
 import { NotFoundPage } from './pages/NotFoundPage.tsx';
@@ -54,6 +55,7 @@ export default function App() {
               <Route index element={<Navigate to="/app/dashboard" replace />} />
               <Route path="dashboard" element={<DashboardPage />} />
               <Route path="calculator" element={<CalculatorPage />} />
+              <Route path="templates" element={<TemplatesPage />} />
               <Route path="calculations" element={<CalculationsHistoryPage />} />
               <Route path="calculations/:id" element={<CalculationDetailsPage />} />
               <Route path="materials" element={<MaterialsPage />} />

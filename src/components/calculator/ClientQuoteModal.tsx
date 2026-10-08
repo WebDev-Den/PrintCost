@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getEffectiveMaterialType } from '../../domain/materialMatching.ts';
 import { Copy, Check, FileDown, Printer } from 'lucide-react';
 import { Modal } from '../common/Modal.tsx';
 import { Button } from '../common/Button.tsx';
@@ -14,7 +15,7 @@ interface ClientQuoteModalProps {
     sellingPriceUah: string;
     totalWeightGrams: string;
     totalDurationSeconds: number;
-    filaments: Array<{ typeFromFile: string; colorHex?: string }>;
+    filaments: Array<{ typeFromFile: string; effectiveMaterialType?: string; colorHex?: string }>;
     tax?: Pick<TaxResult, 'netRevenueUah' | 'vatUah' | 'grossPriceUah'> & { vatPayer: boolean };
   };
 }
@@ -28,7 +29,7 @@ export const ClientQuoteModal: React.FC<ClientQuoteModalProps> = ({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const materialsList = Array.from(new Set(calcSnapshot.filaments.map((f) => f.typeFromFile))).join(', ');
+  const materialsList = Array.from(new Set(calcSnapshot.filaments.map((f) => getEffectiveMaterialType(f) || f.typeFromFile))).join(', ');
   const priceText = calcSnapshot.tax?.vatPayer ? `— Вартість без ПДВ: ${formatUah(calcSnapshot.tax.netRevenueUah)}\n— ПДВ продажу: ${formatUah(calcSnapshot.tax.vatUah)}\n— Усього до сплати: ${formatUah(calcSnapshot.tax.grossPriceUah)}`
     : `— Вартість замовлення: ${formatUah(calcSnapshot.tax?.grossPriceUah || calcSnapshot.sellingPriceUah)}${calcSnapshot.tax ? '\n— ПДВ не застосовується' : ''}`;
 

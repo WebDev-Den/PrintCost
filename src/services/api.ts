@@ -4,7 +4,9 @@ import {
 } from 'firebase/firestore';
 import { Decimal } from 'decimal.js';
 import { normalizeDecimalInput } from '../domain/formatters.ts';
-import type { UserProfile, MaterialProfile, PrinterProfile, CalculationSnapshot, PricingSettings } from '../domain/types.ts';
+import type { UserProfile, MaterialProfile, PrinterProfile, CalculationSnapshot, PricingSettings, CalculationTemplate } from '../domain/types.ts';
+import { CALCULATION_ALGORITHM_VERSION, validateCalculationTemplate } from '../domain/calculationTemplates.ts';
+import { getEffectiveMaterialType, isCompatibleMaterial } from '../domain/materialMatching.ts';
 import { INITIAL_MATERIALS, INITIAL_PRINTERS, INITIAL_PRICING_SETTINGS, getInitialCalculationSnapshots } from '../domain/defaultData.ts';
 import { PUBLIC_FILAMENTS_CATALOG, MANUFACTURERS_LIST, STANDARD_TEMPERATURE_PROFILES, type PublicFilamentItem, type ManufacturerBrand, type TemperatureProfile } from '../domain/filamentsDirectory.ts';
 import { firebaseAuth, firestoreDb } from './firebaseClient.ts';
@@ -16,7 +18,7 @@ export interface ApiResponse<T = unknown> { success: boolean; data?: T; error?: 
 
 export const STORAGE_KEYS = {
   MATERIALS: 'kilog_demo_materials', PRINTERS: 'kilog_demo_printers', CALCULATIONS: 'kilog_demo_calculations',
-  SETTINGS: 'kilog_demo_settings', PROFILE: 'kilog_demo_profile', CATALOG_FILAMENTS: 'kilog_demo_filaments',
+  SETTINGS: 'kilog_demo_settings', TEMPLATES: 'kilog_demo_templates', PROFILE: 'kilog_demo_profile', CATALOG_FILAMENTS: 'kilog_demo_filaments',
   CATALOG_MANUFACTURERS: 'kilog_demo_manufacturers', CATALOG_TEMPERATURES: 'kilog_demo_temperatures', CATALOG_LIKES: 'kilog_demo_likes',
   SIDEBAR_COLLAPSED: 'kilog_sidebar_collapsed_v1', FILTERS_HIDDEN: 'kilog_filters_hidden_v1',
 } as const;
@@ -39,7 +41,7 @@ function requireSameSession(identity: string) {
   if (sessionIdentity() !== identity) throw new Error('Акаунт змінився під час операції. Повторіть дію.');
 }
 function validId(id: string) {
-  if (!id || id.length > 180 || id.includes('/') || id === '.' || id === '..') throw new Error('Некоректний ідентифікатор запису.');
+  if (typeof id !== 'string' || !id.trim() || id.length > 180 || id.includes('/') || id === '.' || id === '..') throw new Error('Некоректний ідентифікатор запису.');
   return id;
 }
 function clean<T>(value: T): T {
@@ -73,6 +75,8 @@ function validateSnapshot(snapshot: CalculationSnapshot) {
   if (job.plates.length > 100 || snapshot.input.filaments.length > 500) fail();
   if (snapshot.input.tax !== undefined) snapshot.input.tax = validateTaxSettings(snapshot.input.tax);
   if (snapshot.result.tax !== undefined) validateTaxResult(snapshot.result.tax);
+  if (snapshot.algorithmVersion !== undefined && (typeof snapshot.algorithmVersion !== 'string' || !snapshot.algorithmVersion || snapshot.algorithmVersion.length > 64)) fail();
+  if (snapshot.sourceCalculationId !== undefined && snapshot.sourceCalculationId !== null) validId(snapshot.sourceCalculationId);
   for (const plate of job.plates) {
     if (!plate || !Number.isSafeInteger(plate.plateIndex) || typeof plate.plateName !== 'string' || typeof plate.selected !== 'boolean' || !Number.isSafeInteger(plate.repeatsCount) || plate.repeatsCount < 1 || !Number.isFinite(plate.predictionSeconds) || plate.predictionSeconds < 0 || !Number.isFinite(plate.totalWeightGrams) || plate.totalWeightGrams < 0 || !Array.isArray(plate.filaments)) fail();
     for (const filament of plate.filaments) {
@@ -81,6 +85,7 @@ function validateSnapshot(snapshot: CalculationSnapshot) {
   }
   for (const filament of snapshot.input.filaments) {
     validateMaterialVat(filament);
+    if (filament.effectiveMaterialType !== undefined && (typeof filament.effectiveMaterialType !== 'string' || !filament.effectiveMaterialType.trim() || filament.effectiveMaterialType.length > 80)) fail();
     if (!filament || !Number.isSafeInteger(filament.plateIndex) || !Number.isSafeInteger(filament.trayId) || typeof filament.key !== 'string' || typeof filament.plateName !== 'string' || typeof filament.typeFromFile !== 'string' || typeof filament.colorHex !== 'string' || typeof filament.weightGrams !== 'string' || !money.test(filament.weightGrams) || !['exact_preset', 'type_match', 'manual', 'unmatched'].includes(filament.matchMethod)) fail();
     for (const key of ['pricePerKgUah', 'costUah', 'lengthMeters'] as const) {
       if (filament[key] !== null && (typeof filament[key] !== 'string' || !money.test(filament[key]!))) fail();
@@ -90,9 +95,10 @@ function validateSnapshot(snapshot: CalculationSnapshot) {
   }
 }
 function validateSettings(settings: PricingSettings) {
-  const allowed = [...Object.keys(INITIAL_PRICING_SETTINGS), 'folderAutoImportPath', 'tax'];
+  const allowed = [...Object.keys(INITIAL_PRICING_SETTINGS), 'folderAutoImportPath', 'tax', 'defaultTemplateId'];
   if (Object.keys(settings).some((key) => !allowed.includes(key))) throw new Error('Невідомі поля налаштувань.');
   if (settings.tax !== undefined) settings.tax = validateTaxSettings(settings.tax);
+  if (settings.defaultTemplateId !== undefined && settings.defaultTemplateId !== null) validId(settings.defaultTemplateId);
   const numeric = ['defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah'] as const;
   if (numeric.some((key) => typeof settings[key] !== 'string' || !money.test(settings[key])) || (settings.electricityTariffUahPerKwh !== null && !money.test(settings.electricityTariffUahPerKwh))) throw new Error('Тарифи мають бути невід’ємними числами.');
   if (!['markup', 'target_margin'].includes(settings.pricingMode) || !['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100'].includes(settings.roundingMode) || !['light', 'dark', 'system'].includes(settings.theme)) throw new Error('Некоректний режим налаштувань.');
@@ -109,18 +115,18 @@ function privateRepository<T extends { id: string; createdAt: string }>(name: st
         if (name === 'materials') items.forEach(validateMaterialVat);
         return items;
       }
-      // shortcut: only the latest 200 calculations are loaded, add history pagination before this is insufficient.
       const scope = itemsRef();
       const items: T[] = [];
       let cursor: QueryDocumentSnapshot | null = null;
+      const pageSize = name === 'templates' ? 100 : 200;
       for (;;) {
-        const constraints: QueryConstraint[] = [orderBy('createdAt', 'desc'), limit(200), ...(cursor ? [startAfter(cursor)] : [])];
+        const constraints: QueryConstraint[] = [orderBy('createdAt', 'desc'), limit(pageSize), ...(cursor ? [startAfter(cursor)] : [])];
         const result: QuerySnapshot<DocumentData> = await getDocsFromServer(query(scope, ...constraints));
         const page = result.docs.map((snapshot) => ({ ...snapshot.data(), id: snapshot.id }) as T);
         if (name === 'calculations') page.forEach((item) => validateSnapshot(item as unknown as CalculationSnapshot));
         if (name === 'materials') page.forEach(validateMaterialVat);
         items.push(...page);
-        if (name === 'calculations' || result.size < 200) return items;
+        if (result.size < pageSize) return items;
         cursor = result.docs.at(-1)!;
       }
     },
@@ -143,12 +149,14 @@ function privateRepository<T extends { id: string; createdAt: string }>(name: st
     },
     async update(id: string, updates: Partial<T>): Promise<T> {
       validId(id);
+      if (name === 'calculations' && Object.keys(updates).some(key => !['title', 'clientName', 'notes'].includes(key))) throw new Error('Збережені параметри й суми незмінні. Створіть новий розрахунок.');
       if (authService.isDemoSession()) {
         const items = await this.getAll();
         const original = items.find((item) => item.id === id);
         if (!original) throw new Error('Запис не знайдено.');
-        const updated = clean({ ...original, ...updates, id, createdAt: original.createdAt }) as T;
-        if (name === 'calculations') validateSnapshot(updated as unknown as CalculationSnapshot);
+        const merged = { ...original, ...updates, id, createdAt: original.createdAt } as T;
+        const updated = name === 'calculations' ? merged : clean(merged);
+        if (name === 'calculations') validateCalculationMetadata(updated as unknown as CalculationSnapshot);
         if (name === 'materials') validateMaterialVat(updated);
         writeDemo(key, items.map((item) => item.id === id ? updated : item));
         return updated;
@@ -157,8 +165,9 @@ function privateRepository<T extends { id: string; createdAt: string }>(name: st
       return runTransaction(db(), async (transaction) => {
         const original = await transaction.get(ref);
         if (!original.exists()) throw new Error('Запис не знайдено.');
-        const updated = clean({ ...original.data(), ...updates, id, createdAt: original.data().createdAt }) as T;
-        if (name === 'calculations') validateSnapshot(updated as unknown as CalculationSnapshot);
+        const merged = { ...original.data(), ...updates, id, createdAt: original.data().createdAt } as T;
+        const updated = name === 'calculations' ? merged : clean(merged);
+        if (name === 'calculations') validateCalculationMetadata(updated as unknown as CalculationSnapshot);
         if (name === 'materials') validateMaterialVat(updated);
         transaction.set(ref, updated);
         return updated;
@@ -433,16 +442,128 @@ export const printersApi = {
 };
 
 const calculationData = privateRepository<CalculationSnapshot>('calculations', STORAGE_KEYS.CALCULATIONS, getInitialCalculationSnapshots);
+export interface CalculationCursor { createdAt: string; id: string }
+export interface CalculationPage { items: CalculationSnapshot[]; cursor: CalculationCursor | null; hasMore: boolean }
+function validateCalculationMetadata(value: Pick<CalculationSnapshot, 'title' | 'clientName' | 'notes'>) {
+  if (typeof value.title !== 'string' || !value.title.trim() || value.title.length > 300 || (value.clientName !== undefined && (typeof value.clientName !== 'string' || value.clientName.length > 200)) || (value.notes !== undefined && (typeof value.notes !== 'string' || value.notes.length > 10000))) throw new Error('Перевірте назву, клієнта та нотатки розрахунку.');
+}
 export const calculationsApi = {
   ...calculationData,
-  async save(snapshot: Omit<CalculationSnapshot, 'id' | 'createdAt'>): Promise<CalculationSnapshot> { return this.create(snapshot); },
+  async getPage(cursor: CalculationCursor | null = null): Promise<CalculationPage> {
+    const identity = sessionIdentity();
+    if (cursor) { validId(cursor.id); if (typeof cursor.createdAt !== 'string' || cursor.createdAt.length > 40) throw new Error('Некоректний курсор історії.'); }
+    let items: CalculationSnapshot[];
+    if (authService.isDemoSession()) {
+      const all = (await calculationData.getAll()).sort((a, b) => a.createdAt === b.createdAt ? (a.id === b.id ? 0 : a.id < b.id ? 1 : -1) : a.createdAt < b.createdAt ? 1 : -1);
+      const after = cursor ? all.filter(item => item.createdAt < cursor.createdAt || item.createdAt === cursor.createdAt && item.id < cursor.id) : all;
+      items = after.slice(0, 51);
+    } else {
+      const page = await getDocsFromServer(query(collection(db(), `${userPath()}/calculations`), orderBy('createdAt', 'desc'), orderBy(documentId(), 'desc'), limit(51), ...(cursor ? [startAfter(cursor.createdAt, cursor.id)] : [])));
+      requireSameSession(identity);
+      items = page.docs.map(value => ({ ...value.data(), id: value.id }) as CalculationSnapshot);
+      items.forEach(validateSnapshot);
+    }
+    const hasMore = items.length > 50;
+    items = items.slice(0, 50);
+    const last = items.at(-1);
+    return { items, cursor: last ? { createdAt: last.createdAt, id: last.id } : null, hasMore };
+  },
+  async save(snapshot: Omit<CalculationSnapshot, 'id' | 'createdAt'>): Promise<CalculationSnapshot> {
+    const identity = sessionIdentity();
+    snapshot = clean(snapshot);
+    validateSnapshot({ ...snapshot, id: 'pending', createdAt: new Date().toISOString() });
+    validateCalculationMetadata(snapshot);
+    if (snapshot.sourceCalculationId !== undefined && snapshot.sourceCalculationId !== null) validId(snapshot.sourceCalculationId);
+    const algorithmVersion = snapshot.algorithmVersion ?? CALCULATION_ALGORITHM_VERSION;
+    if (typeof algorithmVersion !== 'string' || !algorithmVersion || algorithmVersion.length > 64) throw new Error('Некоректна версія алгоритму.');
+    const materialIds = [...new Set(snapshot.input.filaments.map(filament => filament.mappedMaterialId).filter((id): id is string => Boolean(id)))];
+    if (materialIds.length > 500) throw new Error('Забагато матеріалів у розрахунку.');
+    const latestMaterials = await Promise.all(materialIds.map(id => materialData.getById(validId(id))));
+    requireSameSession(identity);
+    if (snapshot.input.filaments.some(filament => filament.mappedMaterialId && !isCompatibleMaterial(latestMaterials.find(material => material?.id === filament.mappedMaterialId), getEffectiveMaterialType(filament)))) throw new Error('Матеріал видалено, архівовано або він змінив тип. Оновіть сторінку та виберіть матеріали повторно.');
+    if (snapshot.input.selectedPrinterId && !await printerData.getById(validId(snapshot.input.selectedPrinterId))) throw new Error('Принтер видалено. Оновіть сторінку та виберіть принтер повторно.');
+    requireSameSession(identity);
+    return calculationData.create({ ...snapshot, algorithmVersion });
+  },
+  async updateMetadata(id: string, updates: Pick<Partial<CalculationSnapshot>, 'title' | 'clientName' | 'notes'>): Promise<CalculationSnapshot> {
+    const identity = sessionIdentity();
+    const original = await this.getById(id);
+    requireSameSession(identity);
+    if (!original) throw new Error('Розрахунок не знайдено.');
+    validateCalculationMetadata({ ...original, ...updates });
+    return calculationData.update(id, updates);
+  },
   async duplicate(id: string): Promise<CalculationSnapshot> {
     const identity = sessionIdentity();
     const original = await this.getById(id);
     requireSameSession(identity);
     if (!original) throw new Error('Розрахунок не знайдено.');
     const { id: _id, createdAt: _createdAt, ...input } = original;
-    return this.create({ ...input, title: `${original.title} (копія)` });
+    return calculationData.create({ ...input, title: `${original.title.slice(0, 291)} (копія)`, algorithmVersion: original.algorithmVersion || 'legacy', sourceCalculationId: original.id });
+  },
+};
+
+export type TemplateInput = Omit<CalculationTemplate, 'id' | 'createdAt' | 'updatedAt' | 'version'>;
+export type TemplateUpdates = Partial<Pick<CalculationTemplate, 'name' | 'parameters' | 'materialMappings'>>;
+const templateData = privateRepository<CalculationTemplate>('templates', STORAGE_KEYS.TEMPLATES, () => []);
+export const templatesApi = {
+  async getAll(): Promise<CalculationTemplate[]> { return (await templateData.getAll()).map(validateCalculationTemplate); },
+  async create(input: TemplateInput): Promise<CalculationTemplate> {
+    const value = clean({ ...input, updatedAt: new Date().toISOString(), version: 1 });
+    const { id: _id, createdAt: _createdAt, ...validated } = validateCalculationTemplate({ ...value, id: 'pending', createdAt: value.updatedAt });
+    return templateData.create(validated);
+  },
+  async update(id: string, expectedVersion: number, updates: TemplateUpdates): Promise<CalculationTemplate> {
+    validId(id);
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || Object.keys(updates).some(key => !['name', 'parameters', 'materialMappings'].includes(key))) throw new Error('Некоректна зміна шаблону.');
+    const update = (original: CalculationTemplate) => {
+      if (original.version !== expectedVersion) throw new Error('Шаблон змінився в іншому вікні. Оновіть сторінку.');
+      const value = clean({ ...original, ...updates, id, createdAt: original.createdAt, updatedAt: new Date().toISOString(), version: original.version + 1 });
+      return validateCalculationTemplate(value);
+    };
+    if (authService.isDemoSession()) {
+      const items = await this.getAll();
+      const original = items.find(item => item.id === id);
+      if (!original) throw new Error('Шаблон не знайдено.');
+      const value = update(original);
+      writeDemo(STORAGE_KEYS.TEMPLATES, items.map(item => item.id === id ? value : item));
+      return value;
+    }
+    const identity = sessionIdentity();
+    const ref = doc(db(), `${userPath()}/templates`, id);
+    return runTransaction(db(), async transaction => {
+      const saved = await transaction.get(ref);
+      requireSameSession(identity);
+      if (!saved.exists()) throw new Error('Шаблон не знайдено.');
+      const value = update({ ...saved.data(), id } as CalculationTemplate);
+      transaction.set(ref, value);
+      return value;
+    });
+  },
+  async delete(id: string, expectedVersion: number): Promise<void> {
+    validId(id);
+    if (authService.isDemoSession()) {
+      const items = await this.getAll();
+      const original = items.find(item => item.id === id);
+      if (!original) return;
+      if (original.version !== expectedVersion) throw new Error('Шаблон змінився в іншому вікні. Оновіть сторінку.');
+      writeDemo(STORAGE_KEYS.TEMPLATES, items.filter(item => item.id !== id));
+      const settings = readDemo(STORAGE_KEYS.SETTINGS, INITIAL_PRICING_SETTINGS);
+      if (settings.defaultTemplateId === id) writeDemo(STORAGE_KEYS.SETTINGS, { ...settings, defaultTemplateId: null });
+      return;
+    }
+    const identity = sessionIdentity();
+    const scope = userPath();
+    const ref = doc(db(), `${scope}/templates`, id);
+    const settingsRef = doc(db(), `${scope}/settings/pricing`);
+    await runTransaction(db(), async transaction => {
+      const [saved, settings] = await Promise.all([transaction.get(ref), transaction.get(settingsRef)]);
+      requireSameSession(identity);
+      if (!saved.exists()) return;
+      if (saved.data().version !== expectedVersion) throw new Error('Шаблон змінився в іншому вікні. Оновіть сторінку.');
+      transaction.delete(ref);
+      if (settings.data()?.defaultTemplateId === id) transaction.update(settingsRef, { defaultTemplateId: null });
+    });
   },
 };
 
@@ -467,6 +588,7 @@ export const settingsApi = {
     if (authService.isDemoSession()) {
       const printers = await printerData.getAll();
       if (next.defaultPrinterId && !printers.some((printer) => printer.id === next.defaultPrinterId)) throw new Error('Обраний принтер не існує.');
+      if (next.defaultTemplateId && !(await templatesApi.getAll()).some(template => template.id === next.defaultTemplateId)) throw new Error('Обраний шаблон не існує.');
       writeDemo(STORAGE_KEYS.SETTINGS, next);
       if (Object.hasOwn(updates, 'defaultPrinterId')) writeDemo(STORAGE_KEYS.PRINTERS, printers.map((printer) => ({ ...printer, isDefault: printer.id === next.defaultPrinterId })));
       return next;
@@ -482,6 +604,8 @@ export const settingsApi = {
       const nextRef = value.defaultPrinterId ? doc(db(), `${scope}/printers`, validId(value.defaultPrinterId)) : null;
       const previous = previousRef ? await transaction.get(previousRef) : null;
       const selected = nextRef ? await transaction.get(nextRef) : null;
+      const template = value.defaultTemplateId ? await transaction.get(doc(db(), `${scope}/templates`, validId(value.defaultTemplateId))) : null;
+      if (value.defaultTemplateId && !template?.exists()) throw new Error('Обраний шаблон не існує.');
       if (nextRef && !selected?.exists()) throw new Error('Обраний принтер не існує.');
       if (previousRef && previous?.exists()) transaction.update(previousRef, { isDefault: false });
       if (nextRef) transaction.update(nextRef, { isDefault: true });
@@ -493,9 +617,9 @@ export const settingsApi = {
   async importConfigJson(jsonString: string): Promise<PricingSettings> {
     const parsed = JSON.parse(jsonString);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Очікується JSON-об’єкт налаштувань.');
-    return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, tax: { ...DEFAULT_TAX_SETTINGS }, ...parsed });
+    return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, tax: { ...DEFAULT_TAX_SETTINGS }, defaultTemplateId: null, ...parsed });
   },
-  async resetToDefaults(): Promise<PricingSettings> { return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, tax: { ...DEFAULT_TAX_SETTINGS }, defaultPrinterId: null, filamentMappingPresets: {} }); },
+  async resetToDefaults(): Promise<PricingSettings> { return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, tax: { ...DEFAULT_TAX_SETTINGS }, defaultTemplateId: null, defaultPrinterId: null, filamentMappingPresets: {} }); },
 };
 export const profileApi = {
   async getProfile(): Promise<UserProfile> {
@@ -511,5 +635,5 @@ export const profileApi = {
 
 export const authApi = authService;
 export const fileAnalysisApi = fileAnalysisService;
-export const api = { auth: authApi, analysis: fileAnalysisApi, filaments: filamentsApi, manufacturers: manufacturersApi, temperatures: temperatureProfilesApi, catalog: catalogApi, materials: materialsApi, printers: printersApi, calculations: calculationsApi, settings: settingsApi, profile: profileApi, config: { storageKeys: STORAGE_KEYS } };
+export const api = { auth: authApi, analysis: fileAnalysisApi, filaments: filamentsApi, manufacturers: manufacturersApi, temperatures: temperatureProfilesApi, catalog: catalogApi, materials: materialsApi, printers: printersApi, calculations: calculationsApi, templates: templatesApi, settings: settingsApi, profile: profileApi, config: { storageKeys: STORAGE_KEYS } };
 export default api;

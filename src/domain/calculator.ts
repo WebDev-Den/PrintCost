@@ -2,6 +2,8 @@ import { Decimal } from 'decimal.js';
 import type { CalculationInput, CalculationResult, RoundingMode } from './types.ts';
 import { isValidDecimalString, normalizeDecimalInput } from './formatters.ts';
 import { calculateTaxPrice, materialPriceForCost, normalizeTaxSettings, type TaxResult, type TaxSettings } from './taxes.ts';
+import { getEffectiveMaterialType, isKnownMaterialType, normalizeMaterialType } from './materialMatching.ts';
+export { CALCULATION_ALGORITHM_VERSION } from './calculationTemplates.ts';
 
 /**
  * Pure domain calculation engine for PrintCost.
@@ -57,6 +59,11 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
   for (const f of input.filaments) {
     const repeats = plateRepeats.get(f.plateIndex);
     if (!repeats) continue; // Plate is not selected
+
+    if (!getEffectiveMaterialType(f)) incompleteReasons.push(`Уточніть невідомий тип матеріалу (Пластина: ${f.plateName}).`);
+    if (isKnownMaterialType(f.typeFromFile) && f.effectiveMaterialType !== undefined) incompleteReasons.push(`Тип ${f.typeFromFile} визначено у файлі й не можна перевизначити.`);
+    const source = selectedPlates.find(plate => plate.plateIndex === f.plateIndex)?.filaments.find(layer => layer.trayId === f.trayId);
+    if (source && normalizeMaterialType(source.type) !== normalizeMaterialType(f.typeFromFile)) incompleteReasons.push(`Тип матеріалу не збігається з даними файлу (Пластина: ${f.plateName}).`);
 
     const weightDec = readDecimal(f.weightGrams, `Маса ${f.typeFromFile}`).mul(repeats);
     totalWeightGramsDec = totalWeightGramsDec.plus(weightDec);

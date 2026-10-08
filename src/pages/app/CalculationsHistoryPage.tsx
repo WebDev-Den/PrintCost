@@ -17,10 +17,11 @@ import { Input } from '../../components/common/Input.tsx';
 import { StatusBadge } from '../../components/common/StatusBadge.tsx';
 import { Modal } from '../../components/common/Modal.tsx';
 import { formatUah, formatDurationUk, formatWeightUk } from '../../domain/formatters.ts';
+import { getEffectiveMaterialType } from '../../domain/materialMatching.ts';
 
 export const CalculationsHistoryPage: React.FC = () => {
   const navigate = useNavigate();
-  const { calculations, duplicateCalculation, deleteCalculation, actionError } = useAppData();
+  const { calculations, duplicateCalculation, deleteCalculation, actionError, calculationsHasMore, calculationsLoadingMore, loadMoreCalculations } = useAppData();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'complete' | 'incomplete'>('all');
@@ -82,11 +83,12 @@ export const CalculationsHistoryPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-white">
-            Останні 200 розрахунків
+            Історія розрахунків
           </h2>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
             Архів розрахунків собівартості із зафіксованими знімками параметрів
           </p>
+          <p className="text-xs text-neutral-500 mt-1">Завантажено {calculations.length} розрахунків{calculationsHasMore ? '; у вашій історії є ще записи.' : '.'} Пошук і фільтри працюють серед завантажених записів.</p>
         </div>
 
         <Button
@@ -103,6 +105,7 @@ export const CalculationsHistoryPage: React.FC = () => {
       <div className="bg-white dark:bg-neutral-900 p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-2xs">
         <div className="w-full sm:w-80">
           <Input
+            aria-label="Пошук серед завантажених розрахунків"
             placeholder="Пошук за назвою або файлом..."
             value={searchQuery}
             onChange={(e) => {
@@ -160,6 +163,8 @@ export const CalculationsHistoryPage: React.FC = () => {
         </div>
       </div>
 
+      {calculationsHasMore && <div className="flex flex-wrap items-center gap-3"><Button size="sm" variant="outline" isLoading={calculationsLoadingMore} disabled={isPending || calculationsLoadingMore} onClick={() => { void loadMoreCalculations().catch(() => {}); }}>Завантажити ще 50 розрахунків</Button><p className="text-xs text-neutral-500">Нові записи також увійдуть у пошук і фільтри.</p></div>}
+
       {/* Calculations Table */}
       <div className="bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden shadow-2xs">
         <div className="overflow-x-auto">
@@ -186,7 +191,7 @@ export const CalculationsHistoryPage: React.FC = () => {
               ) : (
                 paginatedCalculations.map((c) => {
                   const uniqueMaterials = Array.from(
-                    new Set(c.input.filaments.map((f) => f.typeFromFile))
+                    new Set(c.input.filaments.map((f) => `${f.typeFromFile}${f.effectiveMaterialType ? ` (уточнено ${getEffectiveMaterialType(f)})` : ''}`))
                   ).join(', ');
 
                   return (

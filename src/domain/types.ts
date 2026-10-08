@@ -58,6 +58,7 @@ export interface PrinterProfile {
 }
 
 export interface PricingSettings {
+  defaultTemplateId?: string | null;
   tax?: import('./taxes.ts').TaxSettings;
   electricityTariffUahPerKwh: string | null; // e.g. "5.00"
   pricingMode: PricingMode;
@@ -118,6 +119,7 @@ export interface FilamentUsage {
   trayId: number;
   colorHex: string;
   typeFromFile: string;
+  effectiveMaterialType?: string; // Explicit clarification only when the file type is unknown
   weightGrams: string;
   lengthMeters: string | null;
   mappedMaterialId: string | null;
@@ -176,6 +178,8 @@ export interface CalculationResult {
 }
 
 export interface CalculationSnapshot {
+  algorithmVersion?: string;
+  sourceCalculationId?: string | null;
   id: string;
   title: string;
   createdAt: string;
@@ -185,6 +189,16 @@ export interface CalculationSnapshot {
   fileName: string;
   clientName?: string;
   notes?: string;
+}
+
+export interface CalculationTemplate {
+  id: string;
+  name: string;
+  parameters: Omit<CalculationInput, 'job' | 'filaments'>;
+  materialMappings: Record<string, string>;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ImportIssue {

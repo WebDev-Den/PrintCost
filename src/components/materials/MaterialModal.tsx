@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import { Modal } from '../common/Modal.tsx';
 import { Button } from '../common/Button.tsx';
 import { Input } from '../common/Input.tsx';
@@ -12,6 +12,7 @@ interface MaterialModalProps {
   onClose: () => void;
   onSave: (data: Omit<MaterialProfile, 'id' | 'createdAt'>) => Promise<void>;
   initialMaterial?: MaterialProfile | null;
+  seededType?: string;
 }
 
 const COMMON_SPOOLS = [
@@ -27,7 +28,9 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   onClose,
   onSave,
   initialMaterial,
+  seededType,
 }) => {
+  const fieldId = useId();
   const [name, setName] = useState('');
   const [type, setType] = useState('PETG');
   const [family, setFamily] = useState('Стандартні');
@@ -75,7 +78,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       setVatRecoverable(initialMaterial.vatRecoverable === true);
     } else {
       setName('');
-      setType('PETG');
+      setType(seededType || 'PETG');
       setFamily('Стандартні');
       setBrand('Bambu Lab');
       setColorName('');
@@ -88,7 +91,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       setNotes('');
       setPriceVatMode('not_applicable'); setVatRatePercent('20'); setVatRecoverable(false);
     }
-  }, [initialMaterial, isOpen]);
+  }, [initialMaterial, isOpen, seededType]);
 
   // Recalculate automatic fields when weight in kg changes
   const handleWeightKgChange = (kgVal: string) => {
@@ -234,10 +237,11 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+            <label htmlFor={`${fieldId}-type`} className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
               Тип полімеру
             </label>
             <input
+              id={`${fieldId}-type`}
               type="text"
               placeholder="PETG, PLA, ABS, ASA, TPU, PA-CF..."
               value={type}

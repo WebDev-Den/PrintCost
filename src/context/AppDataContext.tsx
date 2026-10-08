@@ -4,11 +4,15 @@ import type {
   PrinterProfile,
   PricingSettings,
   CalculationSnapshot,
+  CalculationTemplate,
 } from '../domain/types.ts';
 import { materialRepository } from '../services/materialRepository.ts';
 import { printerRepository } from '../services/printerRepository.ts';
 import { settingsRepository } from '../services/settingsRepository.ts';
 import { calculationRepository } from '../services/calculationRepository.ts';
+import { templateRepository } from '../services/templateRepository.ts';
+import type { CalculationCursor, TemplateInput, TemplateUpdates } from '../services/api.ts';
+import { findMaterialMatch, isCompatibleMaterial, normalizeMaterialType } from '../domain/materialMatching.ts';
 import { INITIAL_PRICING_SETTINGS } from '../domain/defaultData.ts';
 import { useAuth } from './AuthContext.tsx';
 import { authService } from '../services/authService.ts';
@@ -18,6 +22,14 @@ interface AppDataContextType {
   printers: PrinterProfile[];
   settings: PricingSettings;
   calculations: CalculationSnapshot[];
+  templates: CalculationTemplate[];
+  calculationsHasMore: boolean;
+  calculationsLoadingMore: boolean;
+  loadMoreCalculations: () => Promise<void>;
+  createTemplate: (input: TemplateInput) => Promise<CalculationTemplate>;
+  updateTemplate: (id: string, expectedVersion: number, updates: TemplateUpdates) => Promise<CalculationTemplate>;
+  deleteTemplate: (id: string, expectedVersion: number) => Promise<void>;
+  updateCalculationMetadata: (id: string, updates: Pick<Partial<CalculationSnapshot>, 'title' | 'clientName' | 'notes'>) => Promise<CalculationSnapshot>;
   isLoading: boolean;
   loadError: string | null;
   actionError: string | null;
@@ -71,6 +83,12 @@ const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [printers, setPrinters] = useState<PrinterProfile[]>([]);
   const [settings, setSettings] = useState<PricingSettings>(INITIAL_PRICING_SETTINGS);
   const [calculations, setCalculations] = useState<CalculationSnapshot[]>([]);
+  const [templates, setTemplates] = useState<CalculationTemplate[]>([]);
+  const [calculationCursor, setCalculationCursor] = useState<CalculationCursor | null>(null);
+  const [calculationsHasMore, setCalculationsHasMore] = useState(false);
+  const [calculationsLoadingMore, setCalculationsLoadingMore] = useState(false);
+  const loadMoreRef = useRef<number | null>(null);
+  const loadGenerationRef = useRef(0);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -84,22 +102,25 @@ const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const refreshAll = useCallback(async () => {
     if (authLoading || sessionRef.current !== sessionKey) return;
-    setMaterials([]); setPrinters([]); setCalculations([]); setSettings(INITIAL_PRICING_SETTINGS);
+    const generation = ++loadGenerationRef.current; loadMoreRef.current = null; setCalculationsLoadingMore(false);
+    setMaterials([]); setPrinters([]); setCalculations([]); setTemplates([]); setCalculationCursor(null); setCalculationsHasMore(false); setSettings(INITIAL_PRICING_SETTINGS);
     setLoadError(null); setActionError(null);
     if (!user || !canUsePrivateData) { setLoadedFor(sessionKey); setIsLoading(false); return; }
     setIsLoading(true);
     try {
-      const [mats, prns, setts, calcs] = await Promise.all([
+      const [mats, prns, setts, page, savedTemplates] = await Promise.all([
         materialRepository.getAll(),
         printerRepository.getAll(),
         settingsRepository.getSettings(),
-        calculationRepository.getAll(),
+        calculationRepository.getPage(),
+        templateRepository.getAll(),
       ]);
-      if (sessionRef.current !== sessionKey) return;
+      if (sessionRef.current !== sessionKey || loadGenerationRef.current !== generation) return;
       setMaterials(mats);
       setPrinters(prns);
       setSettings(setts);
-      setCalculations(calcs);
+      setCalculations(page.items); setCalculationCursor(page.cursor); setCalculationsHasMore(page.hasMore);
+      setTemplates(savedTemplates);
       const storedTheme = (() => {
         try {
           return localStorage.getItem('kilog_theme') as 'light' | 'dark' | 'system' | null;
@@ -116,9 +137,9 @@ const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch {}
       }
     } catch (err) {
-      if (sessionRef.current === sessionKey) setLoadError(err instanceof Error ? err.message : 'Не вдалося завантажити дані. Перевірте з’єднання.');
+      if (sessionRef.current === sessionKey && loadGenerationRef.current === generation) setLoadError(err instanceof Error ? err.message : 'Не вдалося завантажити дані. Перевірте з’єднання.');
     } finally {
-      if (sessionRef.current === sessionKey) { setLoadedFor(sessionKey); setIsLoading(false); }
+      if (sessionRef.current === sessionKey && loadGenerationRef.current === generation) { setLoadedFor(sessionKey); setIsLoading(false); }
     }
   }, [authLoading, sessionKey]);
 
@@ -298,19 +319,49 @@ const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const saveCalculation = async (calc: Omit<CalculationSnapshot, 'id' | 'createdAt'>) => {
     const res = await checked(calculationRepository.save(calc));
-    setCalculations((prev) => [res, ...prev].slice(0, 200));
+    setCalculations((prev) => [res, ...prev]);
     return res;
   };
 
   const duplicateCalculation = async (id: string) => {
     const res = await checked(calculationRepository.duplicate(id));
-    setCalculations((prev) => [res, ...prev].slice(0, 200));
+    setCalculations((prev) => [res, ...prev]);
     return res;
   };
 
   const deleteCalculation = async (id: string) => {
     await checked(calculationRepository.delete(id));
     setCalculations((prev) => prev.filter((c) => c.id !== id));
+  };
+
+  const loadMoreCalculations = async () => {
+    if (!calculationsHasMore || loadMoreRef.current !== null) return;
+    const generation = loadGenerationRef.current;
+    loadMoreRef.current = generation; setCalculationsLoadingMore(true);
+    try {
+      const page = await checked(calculationRepository.getPage(calculationCursor));
+      if (loadGenerationRef.current !== generation) return;
+      setCalculations(previous => [...new Map([...previous, ...page.items].map(value => [value.id, value])).values()]);
+      setCalculationCursor(page.cursor); setCalculationsHasMore(page.hasMore);
+    } finally { if (loadGenerationRef.current === generation) { loadMoreRef.current = null; setCalculationsLoadingMore(false); } }
+  };
+  const updateCalculationMetadata = async (id: string, updates: Pick<Partial<CalculationSnapshot>, 'title' | 'clientName' | 'notes'>) => {
+    const value = await checked(calculationRepository.updateMetadata(id, updates));
+    setCalculations(previous => previous.map(item => item.id === id ? value : item));
+    return value;
+  };
+  const createTemplate = async (input: TemplateInput) => {
+    const value = await checked(templateRepository.create(input));
+    setTemplates(previous => [value, ...previous]); return value;
+  };
+  const updateTemplate = async (id: string, version: number, updates: TemplateUpdates) => {
+    const value = await checked(templateRepository.update(id, version, updates));
+    setTemplates(previous => previous.map(item => item.id === id ? value : item)); return value;
+  };
+  const deleteTemplate = async (id: string, version: number) => {
+    await checked(templateRepository.delete(id, version));
+    setTemplates(previous => previous.filter(item => item.id !== id));
+    setSettings(previous => previous.defaultTemplateId === id ? { ...previous, defaultTemplateId: null } : previous);
   };
 
   /**
@@ -320,31 +371,13 @@ const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * 3. Else unmatched
    */
   const findBestMaterialMatch = (typeFromFile: string) => {
-    const cleanType = typeFromFile.trim().toUpperCase();
-
-    // 1. Check presets
-    if (settings.filamentMappingPresets && settings.filamentMappingPresets[cleanType]) {
-      const presetId = settings.filamentMappingPresets[cleanType];
-      const found = materials.find((m) => m.id === presetId && !m.isArchived);
-      if (found) {
-        return { material: found, method: 'exact_preset' as const };
-      }
-    }
-
-    // 2. Direct exact type match
-    // Note: PETG doesn't equal PLA; PLA-CF doesn't equal PLA!
-    const directMatch = materials.find(
-      (m) => !m.isArchived && m.type.trim().toUpperCase() === cleanType
-    );
-    if (directMatch) {
-      return { material: directMatch, method: 'type_match' as const };
-    }
-
-    return { material: null, method: 'unmatched' as const };
+    return findMaterialMatch(typeFromFile, materials, settings.filamentMappingPresets);
   };
 
   const saveFilamentMapping = async (typeFromFile: string, materialId: string) => {
-    const cleanType = typeFromFile.trim().toUpperCase();
+    const cleanType = normalizeMaterialType(typeFromFile);
+    const selected = materials.find(material => material.id === materialId);
+    if (!selected || !isCompatibleMaterial(selected, cleanType)) throw new Error('Виберіть активний матеріал відповідного типу.');
     const updatedPresets = {
       ...(settings.filamentMappingPresets || {}),
       [cleanType]: materialId,
@@ -359,6 +392,14 @@ const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         printers,
         settings,
         calculations,
+        templates,
+        calculationsHasMore,
+        calculationsLoadingMore,
+        loadMoreCalculations: () => perform(loadMoreCalculations),
+        createTemplate: input => perform(() => createTemplate(input)),
+        updateTemplate: (id, version, updates) => perform(() => updateTemplate(id, version, updates)),
+        deleteTemplate: (id, version) => perform(() => deleteTemplate(id, version)),
+        updateCalculationMetadata: (id, updates) => perform(() => updateCalculationMetadata(id, updates)),
         isLoading: isLoading || authLoading || loadedFor !== sessionKey,
         loadError,
         actionError,

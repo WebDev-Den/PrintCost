@@ -2,11 +2,12 @@ import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestContext, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
-import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, deleteField, doc, documentId, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc, startAfter, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { INITIAL_MATERIALS, INITIAL_PRINTERS, INITIAL_PRICING_SETTINGS, getInitialCalculationSnapshots } from '../src/domain/defaultData.ts';
 import { MANUFACTURERS_LIST, PUBLIC_FILAMENTS_CATALOG, STANDARD_TEMPERATURE_PROFILES } from '../src/domain/filamentsDirectory.ts';
 import { api } from '../src/services/api.ts';
 import { calculatePrintCost } from '../src/domain/calculator.ts';
+import { CALCULATION_ALGORITHM_VERSION, extractTemplateParameters, validateCalculationTemplate } from '../src/domain/calculationTemplates.ts';
 import { createTaxPreset, TAX_SOURCE_URLS, type TaxSettings } from '../src/domain/taxes.ts';
 
 let environment: RulesTestEnvironment;
@@ -14,9 +15,14 @@ const profile = { email: 'alice@example.com', fullName: 'Alice', workshopName: '
 const settings = { ...INITIAL_PRICING_SETTINGS, defaultPrinterId: null, filamentMappingPresets: {} };
 const material = { ...INITIAL_MATERIALS[0], id: 'material' };
 const printer = { ...INITIAL_PRINTERS[0], id: 'printer' };
-const snapshot = JSON.parse(JSON.stringify({ ...getInitialCalculationSnapshots()[0], id: 'calculation' }));
+const snapshot = JSON.parse(JSON.stringify({ ...getInitialCalculationSnapshots()[0], id: 'calculation', algorithmVersion: CALCULATION_ALGORITHM_VERSION }));
 const user = (id: string, claims: Record<string, unknown> = {}) => environment.authenticatedContext(id, { email: `${id}@example.com`, email_verified: true, ...claims }).firestore();
 const alice = () => user('alice', { email: profile.email });
+let snapshotCounter = 0;
+function writeNewSnapshot(value: Record<string, unknown>) {
+  const id = `new-snapshot-${++snapshotCounter}`;
+  return setDoc(doc(alice(), `users/alice/calculations/${id}`), { ...value, id });
+}
 let changeCounter = 0;
 const nextChange = () => `change-${++changeCounter}`;
 const historicalTime = Timestamp.fromDate(new Date('2026-10-08T00:00:00Z'));
@@ -30,6 +36,12 @@ async function seedAuthorization(adminUids = ['administrator']) {
 async function seedDirectory(id: string, verified = true) {
   await environment.withSecurityRulesDisabled(async context => {
     await setDoc(doc(context.firestore(), `userDirectory/${id}`), { uid: id, email: `${id}@example.com`, displayName: id, verified, updatedAt: historicalTime });
+  });
+}
+
+async function seedUnblockedAccess(id = 'alice') {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), `accountAccess/${id}`), { blocked: false, updatedAt: historicalTime, updatedBy: 'administrator', changeId: 'seed' });
   });
 }
 
@@ -194,7 +206,7 @@ test('settings and money validation reject invalid types, enums, unsafe margins 
 test('valid calculation snapshots include incomplete drafts; malformed nested data is rejected', async () => {
   const user = alice();
   for (const [index, item] of getInitialCalculationSnapshots().entries()) {
-    const value = JSON.parse(JSON.stringify({ ...item, id: `example-${index}` }));
+    const value = JSON.parse(JSON.stringify({ ...item, id: `example-${index}`, algorithmVersion: CALCULATION_ALGORITHM_VERSION }));
     await assertSucceeds(setDoc(doc(user, `users/alice/calculations/example-${index}`), value));
   }
   await assertFails(setDoc(doc(user, 'users/alice/calculations/calculation'), { ...snapshot, input: { ...snapshot.input, pricingMode: 'wrong' } }));
@@ -655,6 +667,7 @@ test('tax settings retain legacy records and validate regimes, bases, precision 
 });
 
 test('taxed snapshots save actual domain results while legacy and 500-row snapshots remain valid', async () => {
+  await seedUnblockedAccess();
   const db = alice();
   await assertSucceeds(setDoc(doc(db, 'users/alice/calculations/calculation'), snapshot));
   for (const [index, regime] of ['fop1', 'fop2', 'fop3', 'general', 'manual'].entries()) {
@@ -663,14 +676,15 @@ test('taxed snapshots save actual domain results while legacy and 500-row snapsh
     const input = { ...snapshot.input, tax, filaments: snapshot.input.filaments.map((row: Record<string, unknown>) => ({ ...row, priceVatMode: 'included', vatRatePercent: '20', vatRecoverable: false })) };
     const result = calculatePrintCost(input);
     const id = `taxed-${index}`;
-    const value = { ...snapshot, id, input, result, status: result.status };
+    const value = { ...snapshot, id, input, result, status: result.status, clientName: 'C'.repeat(200), notes: 'N'.repeat(10000), sourceCalculationId: `source-${index}` };
     await assertSucceeds(setDoc(doc(db, `users/alice/calculations/${id}`), value));
     assert.equal((await getDoc(doc(db, `users/alice/calculations/${id}`))).data()?.result.tax.regime, regime);
     await assertSucceeds(setDoc(doc(db, `users/alice/calculations/${id}`), { ...value, title: `Saved ${regime}` }));
+    await assertSucceeds(writeNewSnapshot({ ...value, sourceCalculationId: id, title: `Copy ${regime}` }));
   }
   const large = { ...snapshot, id: 'large', input: { ...snapshot.input, filaments: Array.from({ length: 500 }, () => snapshot.input.filaments[0]) } };
   await assertSucceeds(setDoc(doc(db, 'users/alice/calculations/large'), large));
-  await assertFails(setDoc(doc(db, 'users/alice/calculations/large'), { ...large, input: { ...large.input, filaments: Array.from({ length: 501 }, () => snapshot.input.filaments[0]) } }));
+  await assertFails(writeNewSnapshot({ ...large, input: { ...large.input, filaments: Array.from({ length: 501 }, () => snapshot.input.filaments[0]) } }));
   await assertFails(setDoc(doc(user('bob'), 'users/alice/calculations/calculation'), snapshot));
 });
 
@@ -683,18 +697,18 @@ test('tax snapshot input and result enforce strict fields, signed profit rules a
   const ref = doc(alice(), 'users/alice/calculations/calculation');
   await assertSucceeds(setDoc(ref, value));
   for (const patch of [{ vatRatePercent: '101' }, { regime: 'unknown' }, { customerPriceUah: '-1' }, { monthlyEsvUah: '-1' }, { fakeExemption: true }]) {
-    await assertFails(setDoc(ref, { ...value, input: { ...input, tax: { ...tax, ...patch } } }));
+    await assertFails(writeNewSnapshot({ ...value, input: { ...input, tax: { ...tax, ...patch } } }));
   }
   const missing = { ...result.tax };
   Reflect.deleteProperty(missing, 'vatUah');
-  await assertFails(setDoc(ref, { ...value, result: { ...result, tax: missing } }));
+  await assertFails(writeNewSnapshot({ ...value, result: { ...result, tax: missing } }));
   for (const patch of [
     { unifiedTaxUah: '-1' }, { vatUah: '-1' }, { totalPaymentsUah: 'NaN' }, { grossPriceUah: 100 },
     { netTaxableIncomeUah: '-1' }, { profitAfterTaxUah: '1e10' }, { marginAfterTaxPercent: '-1.0000001' },
     { incomeTaxUah: '1000000000000' }, { scenario: 'refund' }, { presetVersion: 'x'.repeat(65) }, { invented: true },
     { sourceUrls: ['https://evil.example/tax'] }, { sourceUrls: [TAX_SOURCE_URLS[0], 100] }, { sourceUrls: [...TAX_SOURCE_URLS, TAX_SOURCE_URLS[0]] },
-  ]) await assertFails(setDoc(ref, { ...value, result: { ...result, tax: { ...result.tax, ...patch } } }));
-  await assertSucceeds(setDoc(ref, { ...value, result: { ...result, tax: { ...result.tax, profitBeforeTaxUah: '-500.00', profitAfterTaxUah: '-600.00', marginAfterTaxPercent: '-60.00', netTaxableIncomeUah: '0.00' } } }));
+  ]) await assertFails(writeNewSnapshot({ ...value, result: { ...result, tax: { ...result.tax, ...patch } } }));
+  await assertSucceeds(writeNewSnapshot({ ...value, result: { ...result, tax: { ...result.tax, profitBeforeTaxUah: '-500.00', profitAfterTaxUah: '-600.00', marginAfterTaxPercent: '-60.00', netTaxableIncomeUah: '0.00' } } }));
 });
 
 test('numeric batches reject coercion, separators and every missing mandatory field', async () => {
@@ -712,46 +726,192 @@ test('numeric batches reject coercion, separators and every missing mandatory fi
     ['result.tax', result.tax as unknown as Record<string, unknown>, patch => ({ ...value, result: { ...result, tax: patch } })],
   ];
   for (const [location, original, build] of groups) {
-    const amounts = Object.entries(original).filter(([key, v]) => typeof v === 'string' && (key.endsWith('Uah') || key.endsWith('Percent') || key === 'totalWeightGrams' || key === 'totalEnergyKwh'));
+    const amounts = Object.entries(original).filter(([key, v]) => typeof v === 'string' && (key.endsWith('Uah') || key.endsWith('Percent') || ['totalWeightGrams', 'totalEnergyKwh', 'averagePowerWatts', 'markupPercentActual'].includes(key)));
     for (const [field] of amounts) {
       for (const forged of [1, true, null, ['1'], { value: '1' }, '1|2']) {
-        await assert.rejects(setDoc(ref, build({ ...original, [field]: forged }) as typeof value), { code: 'permission-denied' }, `${location}.${field} accepted ${JSON.stringify(forged)}`);
+        await assert.rejects(writeNewSnapshot(build({ ...original, [field]: forged }) as Record<string, unknown>), { code: 'permission-denied' }, `${location}.${field} accepted ${JSON.stringify(forged)}`);
       }
     }
     for (const field of Object.keys(original).filter(key => key !== 'tax')) {
       const missing = { ...original, unknownReplacement: true };
       Reflect.deleteProperty(missing, field);
-      await assert.rejects(setDoc(ref, build(missing) as typeof value), { code: 'permission-denied' }, `${location}.${field} can be replaced by an unknown key`);
+      await assert.rejects(writeNewSnapshot(build(missing) as Record<string, unknown>), { code: 'permission-denied' }, `${location}.${field} can be replaced by an unknown key`);
     }
   }
   for (const field of ['fileSizeBytes', 'totalPredictionSeconds', 'totalWeightGrams']) {
     for (const forged of ['1', true, null, [], {}]) {
-      await assertFails(setDoc(ref, { ...value, input: { ...input, job: { ...input.job, [field]: forged } } }));
+      await assertFails(writeNewSnapshot({ ...value, input: { ...input, job: { ...input.job, [field]: forged } } }));
     }
   }
   for (const field of ['fileName', 'fileSizeBytes', 'slicerSource', 'plates', 'totalPredictionSeconds', 'totalWeightGrams', 'warnings', 'parseStatus']) {
     const missing = { ...input.job, unknownReplacement: true };
     Reflect.deleteProperty(missing, field);
-    await assertFails(setDoc(ref, { ...value, input: { ...input, job: missing } }));
+    await assertFails(writeNewSnapshot({ ...value, input: { ...input, job: missing } }));
   }
-  await assertFails(setDoc(ref, { ...value, result: { ...result, totalDurationSeconds: '1' } }));
+  await assertFails(writeNewSnapshot({ ...value, result: { ...result, totalDurationSeconds: '1' } }));
   await assertSucceeds(setDoc(ref, value));
 });
 
 test('fully taxed updates persist nonnull general bases and maximum manual precision', async () => {
-  const ref = doc(alice(), 'users/alice/calculations/calculation');
-  for (const tax of [
+  await seedUnblockedAccess();
+  for (const [index, tax] of [
     { ...createTaxPreset('general', true), scenario: 'estimate' as const, customerPriceUah: '1500', netTaxableIncomeUah: '500' },
     { ...createTaxPreset('manual'), scenario: 'estimate' as const, customerPriceUah: '1500', netTaxableIncomeUah: '999999999999.999999', monthlyOrders: '1000000000', monthlyBillableHours: '1000000000' },
-  ]) {
+  ].entries()) {
+    const id = `fully-taxed-${index}`;
+    const ref = doc(alice(), `users/alice/calculations/${id}`);
     const input = { ...snapshot.input, tax };
     const result = calculatePrintCost(input);
     assert.ok(result.tax);
-    const value = { ...snapshot, input, result, status: result.status };
+    const value = { ...snapshot, id, input, result, status: result.status, clientName: 'C'.repeat(200), notes: 'N'.repeat(10000), sourceCalculationId: `source-${index}` };
     await assertSucceeds(setDoc(ref, value));
     await assertSucceeds(setDoc(ref, { ...value, title: 'Updated complete taxable snapshot' }));
     assert.equal((await getDoc(ref)).data()?.result.tax.netTaxableIncomeUah, tax.netTaxableIncomeUah);
+    await assertSucceeds(writeNewSnapshot({ ...value, sourceCalculationId: id, algorithmVersion: 'legacy' }));
   }
+});
+
+const templateFixture = () => ({
+  id: 'template', name: 'PLA print', parameters: extractTemplateParameters(snapshot.input),
+  materialMappings: { PLA: 'material' }, version: 1, createdAt: profile.createdAt, updatedAt: profile.createdAt,
+});
+let templateCounter = 0;
+function writeNewTemplate(value: Record<string, unknown>) {
+  const id = `template-case-${++templateCounter}`;
+  return setDoc(doc(alice(), `users/alice/templates/${id}`), { ...value, id });
+}
+
+test('templates persist all scalar parameters, tax and 100 mappings with CAS updates', async () => {
+  await seedUnblockedAccess();
+  const fixture = templateFixture();
+  const large = { ...fixture, parameters: { ...fixture.parameters, tax: createTaxPreset('general', true) }, materialMappings: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`CUSTOM-TYPE${i}`, `material-${i}`])) };
+  const normalized = validateCalculationTemplate(large);
+  const ref = doc(alice(), 'users/alice/templates/template');
+  await assertSucceeds(setDoc(ref, normalized));
+  await assertSucceeds(updateDoc(ref, { version: 2, name: 'Saved template', updatedAt: '2026-10-08T11:00:00.000Z' }));
+  await assertFails(updateDoc(ref, { version: 2, name: 'Stale version' }));
+  await assertFails(updateDoc(ref, { version: 4, name: 'Skipped version' }));
+  await assertFails(updateDoc(ref, { version: 3, createdAt: '2020-01-01T00:00:00.000Z' }));
+  await assertFails(updateDoc(ref, { version: 3, id: 'other' }));
+  await assertSucceeds(getDocs(query(collection(alice(), 'users/alice/templates'), limit(51))));
+  await assertFails(getDocs(query(collection(alice(), 'users/alice/templates'), limit(101))));
+  await assertFails(getDocs(collection(alice(), 'users/alice/templates')));
+  await assertSucceeds(writeNewTemplate({ ...fixture, materialMappings: {}, parameters: { ...fixture.parameters, selectedPrinterId: null, electricityTariffUahPerKwh: null } }));
+  await assertSucceeds(deleteDoc(ref));
+});
+
+test('template schemas reject invalid parameters, mapping values, sizes and creation versions', async () => {
+  const fixture = templateFixture();
+  for (const patch of [
+    { name: '' }, { name: ' ' }, { name: 'x'.repeat(121) }, { name: 1 }, { version: 0 }, { version: 2 }, { version: 1.5 },
+    { createdAt: 'bad' }, { createdAt: '2026-10-08Tgarbage' }, { updatedAt: '2026-99-99T99:99:99Z' }, { updatedAt: 'bad' }, { updatedAt: 1 }, { updatedAt: 'x'.repeat(41) }, { role: 'admin' }, { ownerUid: 'bob' },
+    { materialMappings: [] }, { materialMappings: null }, { materialMappings: { PLA: '' } }, { materialMappings: { PLA: ' ' } }, { materialMappings: { PLA: '.' } },
+    { materialMappings: { PLA: '..' } }, { materialMappings: { PLA: 'users/bob/material' } }, { materialMappings: { PLA: 'x'.repeat(181) } },
+  ]) await assertFails(writeNewTemplate({ ...fixture, ...patch }));
+  for (const field of Object.keys(fixture)) {
+    if (field === 'id') continue;
+    const missing = { ...fixture, unknownReplacement: true };
+    Reflect.deleteProperty(missing, field);
+    await assertFails(writeNewTemplate(missing));
+  }
+  for (const patch of [
+    { selectedPrinterId: '' }, { selectedPrinterId: 1 }, { selectedPrinterId: 'users/bob/printer' }, { averagePowerWatts: 10 },
+    { machineHourlyRateUah: '1|2' }, { operatorFeeUah: '-1' }, { marginPercent: '100' }, { roundingMode: 'nearest' },
+    { pricingMode: 'unknown' }, { minOrderPriceUah: 'NaN' }, { minOrderPriceUah: '1.1234567' }, { job: snapshot.input.job }, { filaments: [] },
+    { tax: { ...createTaxPreset(), militaryTaxPercent: '100.000001' } },
+  ]) await assertFails(writeNewTemplate({ ...fixture, parameters: { ...fixture.parameters, ...patch } }));
+  for (const field of Object.keys(fixture.parameters)) {
+    const missing = { ...fixture.parameters, unknownReplacement: true };
+    Reflect.deleteProperty(missing, field);
+    await assertFails(writeNewTemplate({ ...fixture, parameters: missing }));
+  }
+  const mappings = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`TYPE${i}`, `material-${i}`]));
+  for (const bad of [1, true, null, [], {}, '', 'a/b']) {
+    await assertFails(writeNewTemplate({ ...fixture, materialMappings: { ...mappings, TYPE99: bad } }));
+  }
+  await assertFails(writeNewTemplate({ ...fixture, materialMappings: { ...mappings, TYPE100: 'material-100' } }));
+});
+
+test('templates and default references are private to verified unblocked owners', async () => {
+  const fixture = templateFixture();
+  const ref = doc(alice(), 'users/alice/templates/template');
+  await setDoc(ref, fixture);
+  await seedAuthorization();
+  for (const db of [user('bob'), user('administrator'), user('alice', { email_verified: false }), environment.unauthenticatedContext().firestore()]) {
+    await assertFails(getDoc(doc(db, 'users/alice/templates/template')));
+    await assertFails(getDocs(query(collection(db, 'users/alice/templates'), limit(51))));
+    await assertFails(updateDoc(doc(db, 'users/alice/templates/template'), { name: 'Forbidden', version: 2 }));
+    await assertFails(deleteDoc(doc(db, 'users/alice/templates/template')));
+  }
+  const settingsRef = doc(alice(), 'users/alice/settings/pricing');
+  await assertSucceeds(setDoc(settingsRef, { ...settings, defaultTemplateId: 'template' }));
+  await assertSucceeds(updateDoc(settingsRef, { defaultTemplateId: null }));
+  for (const bad of ['', '.', '..', 'a/b', 'x'.repeat(181), 1, false]) await assertFails(updateDoc(settingsRef, { defaultTemplateId: bad }));
+  await seedDirectory('alice');
+  await (await roleBatch(user('administrator'), 'administrator', 'alice', 'user', { action: 'block', blocked: true })).commit();
+  await assertFails(getDoc(ref));
+  await assertFails(updateDoc(ref, { name: 'Blocked edit', version: 2 }));
+  await assertFails(deleteDoc(ref));
+  await assertFails(updateDoc(settingsRef, { defaultTemplateId: 'template' }));
+});
+
+test('historical payloads stay immutable while legacy metadata edits preserve exact money strings', async () => {
+  const legacy = { ...snapshot, id: 'legacy', input: { ...snapshot.input, operatorFeeUah: '50.00' }, result: { ...snapshot.result, sellingPriceUah: '150.00' } };
+  Reflect.deleteProperty(legacy, 'algorithmVersion');
+  await environment.withSecurityRulesDisabled(async context => { await setDoc(doc(context.firestore(), 'users/alice/calculations/legacy'), legacy); });
+  const ref = doc(alice(), 'users/alice/calculations/legacy');
+  await assertSucceeds(updateDoc(ref, { title: 'Edited legacy quote', clientName: 'Customer', notes: 'x'.repeat(10000) }));
+  const saved = (await getDoc(ref)).data()!;
+  assert.deepEqual(saved.input, legacy.input);
+  assert.deepEqual(saved.result, legacy.result);
+  assert.equal(saved.algorithmVersion, undefined);
+  for (const patch of [
+    { input: { ...legacy.input, operatorFeeUah: '50' } }, { 'input.operatorFeeUah': '50' },
+    { result: { ...legacy.result, sellingPriceUah: '150' } }, { 'result.profitUah': '999' },
+    { status: legacy.status === 'complete' ? 'incomplete' : 'complete' }, { fileName: 'changed.3mf' },
+    { createdAt: '2020-01-01T00:00:00.000Z' }, { algorithmVersion: CALCULATION_ALGORITHM_VERSION }, { sourceCalculationId: 'other' }, { id: 'other' }, { extra: true },
+  ]) await assertFails(updateDoc(ref, patch));
+  for (const patch of [{ title: '' }, { title: ' ' }, { title: 'x'.repeat(301) }, { clientName: 'x'.repeat(201) }, { notes: 'x'.repeat(10001) }, { notes: null }]) await assertFails(updateDoc(ref, patch));
+  await assertSucceeds(updateDoc(ref, { clientName: deleteField(), notes: deleteField() }));
+});
+
+test('new snapshots record bounded algorithm/source identities and retain immutable payloads', async () => {
+  const legacyNew = { ...snapshot };
+  Reflect.deleteProperty(legacyNew, 'algorithmVersion');
+  await assertFails(writeNewSnapshot(legacyNew));
+  for (const patch of [
+    { algorithmVersion: '' }, { algorithmVersion: 'x'.repeat(65) }, { algorithmVersion: null }, { algorithmVersion: 1 },
+    { sourceCalculationId: '' }, { sourceCalculationId: '   ' }, { sourceCalculationId: '\t\n' }, { sourceCalculationId: '.' }, { sourceCalculationId: '..' }, { sourceCalculationId: 'a/b' }, { sourceCalculationId: 1 }, { sourceCalculationId: 'x'.repeat(181) },
+  ]) await assertFails(writeNewSnapshot({ ...snapshot, ...patch }));
+  for (const patch of [{ sourceCalculationId: null }, { sourceCalculationId: 'legacy', algorithmVersion: 'legacy' }, { algorithmVersion: 'kilog-2026-previous' }]) await assertSucceeds(writeNewSnapshot({ ...snapshot, ...patch }));
+  const ref = doc(alice(), 'users/alice/calculations/calculation');
+  await setDoc(ref, snapshot);
+  await assertSucceeds(updateDoc(ref, { title: 'Updated title', notes: 'Kept payload' }));
+  await assertFails(updateDoc(ref, { algorithmVersion: 'legacy' }));
+  await assertFails(updateDoc(ref, { sourceCalculationId: 'legacy' }));
+  await assertFails(updateDoc(ref, { input: { ...snapshot.input, otherFeeUah: '100' } }));
+  await assertFails(updateDoc(ref, { result: { ...snapshot.result, profitUah: '999' } }));
+});
+
+test('private history pagination uses deterministic tie-breakers without exposing another account', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    const batch = writeBatch(context.firestore());
+    for (let i = 0; i < 54; i++) {
+      const id = `history-${String(i).padStart(3, '0')}`;
+      batch.set(doc(context.firestore(), `users/alice/calculations/${id}`), { ...snapshot, id });
+    }
+    await batch.commit();
+  });
+  const history = collection(alice(), 'users/alice/calculations');
+  const first = await assertSucceeds(getDocs(query(history, orderBy('createdAt', 'desc'), orderBy(documentId(), 'desc'), limit(51))));
+  const second = await assertSucceeds(getDocs(query(history, orderBy('createdAt', 'desc'), orderBy(documentId(), 'desc'), startAfter(first.docs.at(-1)!), limit(51))));
+  const ids = [...first.docs, ...second.docs].map(item => item.id);
+  assert.equal(ids.length, 54);
+  assert.equal(new Set(ids).size, 54);
+  assert.equal(ids[0], 'history-053');
+  assert.equal(ids.at(-1), 'history-000');
+  await seedAuthorization();
+  for (const db of [user('bob'), user('administrator')]) await assertFails(getDocs(query(collection(db, 'users/alice/calculations'), orderBy('createdAt', 'desc'), orderBy(documentId(), 'desc'), limit(51))));
 });
 
 test('demo persistence is explicit and isolated, failed real reads never use demo data', async () => {

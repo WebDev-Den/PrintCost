@@ -1,7 +1,11 @@
 rules_version = '2';
 // Assumed data model:
 // users/{uid}: private profile; only its owner may read it or edit names.
-// users/{uid}/{materials,printers,calculations,settings,likes}: private owner data.
+// users/{uid}/{materials,printers,calculations,templates,settings,likes}: private owner data.
+// templates: exact scalar parameters, optional tax, <=100 material mapping IDs,
+//   version CAS and immutable creation identity; key normalization is application-validated.
+// calculations: creation records algorithm/source IDs; only title/clientName/notes
+//   may change afterward, preserving original input, result and legacy data.
 // Material VAT metadata and optional tax settings/results are strictly validated.
 // Snapshot filament arrays retain the 500-row contract; every nested row and its
 // VAT metadata is validated by the application, since Rules cannot loop over it.
@@ -216,27 +220,21 @@ service cloud.firestore {
           && (data.priceVatMode == 'not_applicable' || 'vatRatePercent' in data)
           && taxRate(data.get('vatRatePercent', '0')) && data.get('vatRecoverable', false) is bool);
     }
-    function taxRegime(value) { return value in ['fop1', 'fop2', 'fop3', 'general', 'manual']; }
-    function taxScenario(value) { return value in ['cover', 'estimate']; }
-    function taxPreset(data) {
-      return data.presetVersion.matches('(?s)^[^[:space:]](.{0,62}[^[:space:]])?$')
-        && data.presetEffectiveDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
-    }
-    // Every mandatory field is directly validated below. Exact cardinality plus
-    // the counted optional keys forbids unknown keys without redundant key lists.
-    // Amount batches round-trip through split to reject coercion and delimiters.
+
+
+
     function validTaxSettings(data) {
       let amounts1 = [data.monthlyUnifiedTaxUah, data.monthlyMilitaryTaxUah, data.monthlyEsvUah, data.monthlyOtherUah];
       let encoded1 = amounts1.join('|');
       return (data.size() == 19)
-        && data.enabled is bool && taxScenario(data.scenario) && data.vatPayer is bool
+        && data.enabled is bool && data.scenario in ['cover', 'estimate'] && data.vatPayer is bool
         && data.vatRatePercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.unifiedTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.incomeTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.militaryTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$')
         && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
         && data.monthlyOrders.matches('^([0-9]{1,9}|1000000000)$')
         && data.monthlyBillableHours.matches('^([0-9]{1,9}([.][0-9]{1,6})?|1000000000([.]0{1,6})?)$')
         && data.allocationMode in ['orders', 'hours']
         && (data.netTaxableIncomeUah == null || data.netTaxableIncomeUah.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?$'))
-        && (data.customerPriceUah == null || data.customerPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')) && taxPreset(data)
+        && (data.customerPriceUah == null || data.customerPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')) && data.presetVersion.matches('(?s)^[^[:space:]](.{0,62}[^[:space:]])?$') && data.presetEffectiveDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && (data.regime == 'manual' ? true
           : data.regime == 'fop3' ? (data.incomeTaxPercent == '0' && data.militaryTaxPercent == '1'
               && data.monthlyUnifiedTaxUah == '0' && data.monthlyMilitaryTaxUah == '0'
@@ -254,7 +252,7 @@ service cloud.firestore {
       let amounts2 = [data.profitBeforeTaxUah, data.profitAfterTaxUah, data.marginAfterTaxPercent];
       let encoded2 = amounts2.join('|');
       return (data.size() == 21)
-        && taxRegime(data.regime) && taxScenario(data.scenario) && taxPreset(data)
+        && data.regime in ['fop1', 'fop2', 'fop3', 'general', 'manual'] && data.scenario in ['cover', 'estimate'] && data.presetVersion.matches('(?s)^[^[:space:]](.{0,62}[^[:space:]])?$') && data.presetEffectiveDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
         && (encoded2.split('[|]') == amounts2 && encoded2.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?([|]-?[0-9]{1,12}([.][0-9]{1,6})?)*$'))
         && (data.netTaxableIncomeUah == null || data.netTaxableIncomeUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'))
@@ -262,7 +260,8 @@ service cloud.firestore {
         && (data.sourceUrls.size() < 1 || taxSource(data.sourceUrls[0]))
         && (data.sourceUrls.size() < 2 || taxSource(data.sourceUrls[1]));
     }
-    function identity(data, id) { return data.id == id && data.createdAt.matches('(?s)^.{0,40}$') && data.createdAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*'); }
+    function privateId(value) { return value.matches('^([^/.][^/]?|[.][^/.]|[^/]{3,180})$') && value.matches('(?s).*[^[:space:]].*'); }
+    function identity(data, id) { return data.id == id && data.createdAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.{0,29}$'); }
     function immutable() { return request.resource.data.id == resource.data.id && request.resource.data.createdAt == resource.data.createdAt; }
     function pricingMode(value) { return value in ['markup', 'target_margin']; }
     function rounding(value) { return value in ['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100']; }
@@ -292,14 +291,15 @@ service cloud.firestore {
     }
     function validSettings(data) {
       return data.keys().hasAll(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone'])
-        && data.keys().hasOnly(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone', 'folderAutoImportPath', 'tax'])
+        && data.keys().hasOnly(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone', 'folderAutoImportPath', 'tax', 'defaultTemplateId'])
         && optionalMoney(data.electricityTariffUahPerKwh) && pricingMode(data.pricingMode) && rounding(data.roundingMode)
         && money(data.defaultMarkupPercent) && money(data.defaultMarginPercent) && float(data.defaultMarginPercent) < 100 && money(data.scrapReservePercent) && money(data.minOrderPriceUah)
         && money(data.defaultOperatorFeeUah) && money(data.defaultPackagingFeeUah) && money(data.defaultPostProcessingFeeUah) && money(data.defaultOtherFeeUah)
         && (data.defaultPrinterId == null || text(data.defaultPrinterId, 180))
         && data.filamentMappingPresets is map && data.filamentMappingPresets.size() <= 100
         && data.theme in ['light', 'dark', 'system'] && text(data.timezone, 100) && text(data.get('folderAutoImportPath', ''), 500)
-        && (!('tax' in data) || validTaxSettings(data.tax));
+        && (!('tax' in data) || validTaxSettings(data.tax))
+        && (data.get('defaultTemplateId', null) == null || privateId(data.defaultTemplateId));
     }
     function validJob(data) {
       return (data.size() == 8 + ('printerModelName' in data ? 1 : 0) + ('nozzleDiameterMm' in data ? 1 : 0) + ('isDemoJob' in data ? 1 : 0) + ('errorMessage' in data ? 1 : 0))
@@ -310,31 +310,68 @@ service cloud.firestore {
         && data.get('isDemoJob', false) is bool && data.get('printerModelName', '').matches('(?s)^.{0,200}$') && data.get('nozzleDiameterMm', '').matches('(?s)^.{0,50}$') && text(data.get('errorMessage', ''), 2000);
     }
     function validInput(data) {
+      let amounts = [data.averagePowerWatts, data.machineHourlyRateUah, data.operatorFeeUah, data.packagingFeeUah, data.postProcessingFeeUah, data.otherFeeUah, data.scrapReservePercent, data.markupPercent, data.marginPercent, data.minOrderPriceUah];
+      let encoded = amounts.join('|');
+      return (data.size() == 16 + ('tax' in data ? 1 : 0))
+        && data.filaments is list && data.filaments.size() <= 500
+        && (data.selectedPrinterId == null || data.selectedPrinterId.matches('(?s)^.{0,180}$'))
+        && (data.electricityTariffUahPerKwh == null || data.electricityTariffUahPerKwh == '' || data.electricityTariffUahPerKwh.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'))
+        && encoded.split('[|]') == amounts && encoded.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$') && float(data.marginPercent) < 100
+        && data.pricingMode in ['markup', 'target_margin'] && data.roundingMode in ['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100'];
+    }
+    function validTemplateParameters(data) {
       let amounts1 = [data.machineHourlyRateUah, data.operatorFeeUah, data.packagingFeeUah, data.postProcessingFeeUah, data.otherFeeUah];
       let encoded1 = amounts1.join('|');
       let amounts2 = [data.scrapReservePercent, data.markupPercent, data.marginPercent];
       let encoded2 = amounts2.join('|');
-      return (data.size() == 16 + ('tax' in data ? 1 : 0))
-        && data.filaments is list && data.filaments.size() <= 500
-        && (data.selectedPrinterId == null || data.selectedPrinterId.matches('(?s)^.{0,180}$')) && data.averagePowerWatts.matches('^[0-9]{1,12}([.][0-9]{1,6})?$') && optionalMoney(data.electricityTariffUahPerKwh)
+      return (data.size() == 14 + ('tax' in data ? 1 : 0))
+        && (data.selectedPrinterId == null || privateId(data.selectedPrinterId)) && data.averagePowerWatts.matches('^[0-9]{1,12}([.][0-9]{1,6})?$') && optionalMoney(data.electricityTariffUahPerKwh)
         && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
         && (encoded2.split('[|]') == amounts2 && encoded2.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$')) && float(data.marginPercent) < 100 && data.minOrderPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')
-        && pricingMode(data.pricingMode) && rounding(data.roundingMode);
+        && pricingMode(data.pricingMode) && rounding(data.roundingMode)
+        && (!('tax' in data) || validTaxSettings(data.tax));
     }
+    function validMaterialMappings(data) {
+      let values = data.values();
+      let encoded = values.join('/');
+      return data.size() <= 100 && !values.hasAny(['.', '..'])
+        && (data.size() == 0 || (encoded.split('/') == values && encoded.matches('^[^/]{1,180}([/][^/]{1,180})*$')
+          && encoded.matches('(?s)^[^/]{0,179}[^/[:space:]][^/]{0,179}([/][^/]{0,179}[^/[:space:]][^/]{0,179})*$')));
+    }
+    function templateDate(value) {
+      return text(value, 40) && value.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9]([.][0-9]{1,9})?)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])?$');
+    }
+    function validTemplate(data, id) {
+      return data.keys().hasAll(['id', 'name', 'parameters', 'materialMappings', 'version', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'parameters', 'materialMappings', 'version', 'createdAt', 'updatedAt'])
+        && privateId(data.id) && data.id == id && templateDate(data.createdAt) && data.name.matches('(?s)^.{1,120}$') && data.name.matches('(?s).*[^[:space:]].*')
+        && data.parameters is map && validTemplateParameters(data.parameters)
+        && data.materialMappings is map && validMaterialMappings(data.materialMappings)
+        && data.version is int && data.version >= 1 && data.version <= 9007199254740991
+        && templateDate(data.updatedAt);
+    }
+    function validCalculationMetadata(data) {
+      return data.title.matches('(?s)^.{1,300}$') && data.title.matches('(?s).*[^[:space:]].*')
+        && data.get('clientName', '').matches('(?s)^.{0,200}$') && text(data.get('notes', ''), 10000);
+    }
+
     function validResult(data) {
-      let amounts1 = [data.materialsCostUah, data.electricityCostUah, data.machineCostUah, data.operatorCostUah, data.packagingCostUah, data.postProcessingCostUah, data.otherCostUah, data.baseCostSubtotalUah, data.scrapReserveUah, data.costPriceUah, data.preRoundingPriceUah];
+      let amounts1 = [data.totalWeightGrams, data.totalEnergyKwh, data.materialsCostUah, data.electricityCostUah, data.machineCostUah, data.operatorCostUah, data.packagingCostUah, data.postProcessingCostUah, data.otherCostUah, data.baseCostSubtotalUah, data.scrapReserveUah, data.costPriceUah, data.preRoundingPriceUah, data.sellingPriceUah];
       let encoded1 = amounts1.join('|');
       let amounts2 = [data.profitUah, data.marginPercent, data.markupPercentActual];
       let encoded2 = amounts2.join('|');
       return (data.size() == 21 + ('tax' in data ? 1 : 0))
         && data.status in ['complete', 'incomplete'] && data.incompleteReasons is list && data.incompleteReasons.size() <= 100
-        && data.totalWeightGrams.matches('^[0-9]{1,12}([.][0-9]{1,6})?$') && data.totalDurationSeconds >= 0 && data.totalEnergyKwh.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')
+        && data.totalDurationSeconds >= 0
         && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
-        && data.minOrderApplied is bool && data.sellingPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$') && (encoded2.split('[|]') == amounts2 && encoded2.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?([|]-?[0-9]{1,12}([.][0-9]{1,6})?)*$'));
+        && data.minOrderApplied is bool && (encoded2.split('[|]') == amounts2 && encoded2.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?([|]-?[0-9]{1,12}([.][0-9]{1,6})?)*$'));
     }
     function validCalculation(data, id) {
-      return (data.size() == 7 + ('clientName' in data ? 1 : 0) + ('notes' in data ? 1 : 0))
-        && identity(data, id) && data.title.matches('(?s)^.{0,300}$') && data.fileName.matches('(?s)^.{0,500}$') && data.get('clientName', '').matches('(?s)^.{0,200}$') && text(data.get('notes', ''), 5000)
+      return (data.size() == 8 + ('clientName' in data ? 1 : 0) + ('notes' in data ? 1 : 0) + ('sourceCalculationId' in data ? 1 : 0))
+        && identity(data, id) && data.fileName.matches('(?s)^.{0,500}$')
+        && data.algorithmVersion.matches('(?s)^.{1,64}$')
+        && (data.get('sourceCalculationId', null) == null || (data.sourceCalculationId.matches('^([^/.][^/]?|[.][^/.]|[^/]{3,180})$')
+          && data.sourceCalculationId.matches('(?s).*[^[:space:]].*')))
         && data.status == data.result.status;
     }
     function tombstone(data, id) { return data.keys().hasOnly(['id', 'deleted']) && data.id == id && data.deleted == true; }
@@ -381,14 +418,20 @@ service cloud.firestore {
       match /calculations/{id} {
         allow get: if privateOwner(uid);
         allow list: if privateOwner(uid) && request.query.limit <= 200;
-        allow create: if privateOwner(uid) && validCalculation(request.resource.data, id)
+        allow create: if privateOwner(uid) && validCalculationMetadata(request.resource.data) && validCalculation(request.resource.data, id)
           && validInput(request.resource.data.input) && validJob(request.resource.data.input.job) && validResult(request.resource.data.result)
           && (!('tax' in request.resource.data.input) || validTaxSettings(request.resource.data.input.tax))
           && (!('tax' in request.resource.data.result) || validTaxResult(request.resource.data.result.tax));
-        allow update: if privateOwner(uid) && immutable() && validCalculation(request.resource.data, id)
-          && validInput(request.resource.data.input) && validJob(request.resource.data.input.job) && validResult(request.resource.data.result)
-          && (!('tax' in request.resource.data.input) || validTaxSettings(request.resource.data.input.tax))
-          && (!('tax' in request.resource.data.result) || validTaxResult(request.resource.data.result.tax));
+        allow update: if privateOwner(uid) && validCalculationMetadata(request.resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'clientName', 'notes']);
+        allow delete: if privateOwner(uid);
+      }
+      match /templates/{id} {
+        allow get: if privateOwner(uid);
+        allow list: if privateOwner(uid) && request.query.limit <= 100;
+        allow create: if privateOwner(uid) && validTemplate(request.resource.data, id) && request.resource.data.version == 1;
+        allow update: if privateOwner(uid) && immutable() && validTemplate(request.resource.data, id)
+          && request.resource.data.version == resource.data.version + 1;
         allow delete: if privateOwner(uid);
       }
       match /settings/pricing {

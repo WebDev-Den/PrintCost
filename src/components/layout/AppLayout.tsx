@@ -75,6 +75,7 @@ export const AppLayout: React.FC = () => {
   const navItems = [
     { to: '/app/dashboard', label: 'Огляд', icon: LayoutDashboard },
     { to: '/app/calculator', label: 'Калькулятор', icon: Calculator },
+    { to: '/app/templates', label: 'Шаблони розрахунку', icon: BookOpen },
     { to: '/app/calculations', label: 'Історія розрахунків', icon: History },
     { to: '/app/materials', label: 'Матеріали', icon: Layers },
     { to: '/filaments', label: 'Каталог пластиків', icon: BookOpen },
