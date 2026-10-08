@@ -6,6 +6,8 @@ import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, limit, orderB
 import { INITIAL_MATERIALS, INITIAL_PRINTERS, INITIAL_PRICING_SETTINGS, getInitialCalculationSnapshots } from '../src/domain/defaultData.ts';
 import { MANUFACTURERS_LIST, PUBLIC_FILAMENTS_CATALOG, STANDARD_TEMPERATURE_PROFILES } from '../src/domain/filamentsDirectory.ts';
 import { api } from '../src/services/api.ts';
+import { calculatePrintCost } from '../src/domain/calculator.ts';
+import { createTaxPreset, TAX_SOURCE_URLS, type TaxSettings } from '../src/domain/taxes.ts';
 
 let environment: RulesTestEnvironment;
 const profile = { email: 'alice@example.com', fullName: 'Alice', workshopName: 'Майстерня', createdAt: '2026-10-08T10:00:00.000Z' };
@@ -108,6 +110,14 @@ async function setupOffers() {
   await (await roleBatch(administrator, 'administrator', 'alice', 'manager', { companyId: 'company-a' })).commit();
   await (await roleBatch(administrator, 'administrator', 'bob', 'manager', { companyId: 'company-b' })).commit();
   return { administrator, manager: alice(), otherManager: user('bob'), anonymous: environment.unauthenticatedContext().firestore() };
+}
+
+function taxSettings(overrides: Record<string, unknown> = {}) {
+  return {
+    enabled: true, regime: 'fop3', scenario: 'cover', vatPayer: true, vatRatePercent: '20', unifiedTaxPercent: '3', incomeTaxPercent: '0', militaryTaxPercent: '1',
+    monthlyUnifiedTaxUah: '0', monthlyMilitaryTaxUah: '0', monthlyEsvUah: '0', monthlyOtherUah: '0', monthlyOrders: '20', monthlyBillableHours: '100',
+    allocationMode: 'orders', netTaxableIncomeUah: null, customerPriceUah: null, presetVersion: 'ua-2026-v1', presetEffectiveDate: '2026-01-01', ...overrides,
+  };
 }
 
 before(async () => {
@@ -595,6 +605,153 @@ test('manager role revocation, blocking or unverified token immediately denies o
   await (await roleBatch(administrator, 'administrator', 'alice', 'user', { action: 'block', blocked: true })).commit();
   await assertFails(getDoc(doc(manager, 'companyOffers/offer-a')));
   await assertFails(updateDoc(doc(manager, 'companyOffers/offer-a'), { name: 'Blocked edit', version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+});
+
+test('private material VAT metadata is optional, strict and owner-only', async () => {
+  const ref = doc(alice(), 'users/alice/materials/material');
+  await assertSucceeds(setDoc(ref, material));
+  await assertSucceeds(updateDoc(ref, { priceVatMode: 'included', vatRatePercent: '20', vatRecoverable: true }));
+  for (const invalid of [
+    { priceVatMode: 'inclusive' }, { priceVatMode: null }, { vatRatePercent: 20 }, { vatRatePercent: '-1' },
+    { vatRatePercent: '100.000001' }, { vatRatePercent: 'NaN' }, { vatRatePercent: '1e2' }, { vatRatePercent: '20.0000001' },
+    { vatRecoverable: 'true' }, { vatRecoverable: null }, { taxCreditUah: '100' },
+  ]) await assertFails(updateDoc(ref, invalid));
+  await assertSucceeds(updateDoc(ref, { priceVatMode: 'excluded', vatRatePercent: '100', vatRecoverable: false }));
+  await assertFails(updateDoc(doc(user('bob'), 'users/alice/materials/material'), { vatRecoverable: true }));
+  await seedAuthorization();
+  await assertFails(updateDoc(doc(user('administrator'), 'users/alice/materials/material'), { vatRecoverable: true }));
+});
+
+test('tax settings retain legacy records and validate regimes, bases, precision and bounded values', async () => {
+  const ref = doc(alice(), 'users/alice/settings/pricing');
+  await assertSucceeds(setDoc(ref, settings));
+  await assertSucceeds(setDoc(ref, { ...settings, tax: taxSettings() }));
+  const accepted = [
+    { regime: 'manual', vatPayer: true, unifiedTaxPercent: '100', incomeTaxPercent: '50.123456', militaryTaxPercent: '0', netTaxableIncomeUah: '-500', customerPriceUah: '999999999999.999999' },
+    { regime: 'fop1', vatPayer: false, unifiedTaxPercent: '0', incomeTaxPercent: '0', militaryTaxPercent: '0', monthlyUnifiedTaxUah: '300', monthlyMilitaryTaxUah: '800' },
+    { regime: 'fop2', vatPayer: false, unifiedTaxPercent: '0', incomeTaxPercent: '0', militaryTaxPercent: '0', allocationMode: 'hours' },
+    { regime: 'fop3', vatPayer: false, unifiedTaxPercent: '5' },
+    { regime: 'general', unifiedTaxPercent: '0', incomeTaxPercent: '18', militaryTaxPercent: '5', netTaxableIncomeUah: '-999999999999.999999' },
+  ];
+  for (const value of accepted) await assertSucceeds(setDoc(ref, { ...settings, tax: taxSettings(value) }));
+  const rejected = [
+    { enabled: 'true' }, { regime: 'unknown' }, { scenario: 'refund' }, { vatPayer: 'true' }, { vatRatePercent: '-1' }, { vatRatePercent: '100.000001' },
+    { unifiedTaxPercent: 3 }, { incomeTaxPercent: 'NaN' }, { militaryTaxPercent: '1.0000001' },
+    { monthlyEsvUah: '-1' }, { monthlyOtherUah: '1000000000000' }, { monthlyOtherUah: '1000000000000.000001' }, { monthlyOtherUah: '1000000000001' },
+    { monthlyOrders: '0.5' }, { monthlyOrders: '1000000001' }, { monthlyBillableHours: '-1' }, { monthlyBillableHours: '1000000000.000001' },
+    { allocationMode: 'minutes' }, { customerPriceUah: '-1' }, { customerPriceUah: 100 }, { netTaxableIncomeUah: '-1000000000000.000001' },
+    { presetVersion: '' }, { presetVersion: 'x'.repeat(65) }, { presetEffectiveDate: 'yesterday' }, { extra: true },
+    { regime: 'fop1', vatPayer: true }, { regime: 'fop2', vatPayer: false, unifiedTaxPercent: '1' },
+    { regime: 'fop3', vatPayer: false, unifiedTaxPercent: '3' }, { regime: 'fop3', vatPayer: true, unifiedTaxPercent: '5' },
+    { regime: 'fop3', militaryTaxPercent: '0' }, { regime: 'fop3', monthlyUnifiedTaxUah: '1' },
+    { regime: 'general', unifiedTaxPercent: '0', incomeTaxPercent: '18', militaryTaxPercent: '4' },
+  ];
+  for (const value of rejected) await assertFails(setDoc(ref, { ...settings, tax: taxSettings(value) }));
+  const missing = taxSettings();
+  Reflect.deleteProperty(missing, 'monthlyEsvUah');
+  await assertFails(setDoc(ref, { ...settings, tax: missing }));
+  await assertFails(setDoc(ref, { ...settings, tax: null }));
+  await assertFails(setDoc(doc(user('bob'), 'users/alice/settings/pricing'), { ...settings, tax: taxSettings() }));
+});
+
+test('taxed snapshots save actual domain results while legacy and 500-row snapshots remain valid', async () => {
+  const db = alice();
+  await assertSucceeds(setDoc(doc(db, 'users/alice/calculations/calculation'), snapshot));
+  for (const [index, regime] of ['fop1', 'fop2', 'fop3', 'general', 'manual'].entries()) {
+    const tax = createTaxPreset(regime as TaxSettings['regime'], regime === 'fop3');
+    if (regime === 'general' || regime === 'manual') tax.netTaxableIncomeUah = '-500';
+    const input = { ...snapshot.input, tax, filaments: snapshot.input.filaments.map((row: Record<string, unknown>) => ({ ...row, priceVatMode: 'included', vatRatePercent: '20', vatRecoverable: false })) };
+    const result = calculatePrintCost(input);
+    const id = `taxed-${index}`;
+    const value = { ...snapshot, id, input, result, status: result.status };
+    await assertSucceeds(setDoc(doc(db, `users/alice/calculations/${id}`), value));
+    assert.equal((await getDoc(doc(db, `users/alice/calculations/${id}`))).data()?.result.tax.regime, regime);
+    await assertSucceeds(setDoc(doc(db, `users/alice/calculations/${id}`), { ...value, title: `Saved ${regime}` }));
+  }
+  const large = { ...snapshot, id: 'large', input: { ...snapshot.input, filaments: Array.from({ length: 500 }, () => snapshot.input.filaments[0]) } };
+  await assertSucceeds(setDoc(doc(db, 'users/alice/calculations/large'), large));
+  await assertFails(setDoc(doc(db, 'users/alice/calculations/large'), { ...large, input: { ...large.input, filaments: Array.from({ length: 501 }, () => snapshot.input.filaments[0]) } }));
+  await assertFails(setDoc(doc(user('bob'), 'users/alice/calculations/calculation'), snapshot));
+});
+
+test('tax snapshot input and result enforce strict fields, signed profit rules and trusted preset sources', async () => {
+  const tax = createTaxPreset('fop3', true);
+  tax.monthlyEsvUah = '0';
+  const input = { ...snapshot.input, tax };
+  const result = calculatePrintCost(input);
+  const value = { ...snapshot, input, result, status: result.status };
+  const ref = doc(alice(), 'users/alice/calculations/calculation');
+  await assertSucceeds(setDoc(ref, value));
+  for (const patch of [{ vatRatePercent: '101' }, { regime: 'unknown' }, { customerPriceUah: '-1' }, { monthlyEsvUah: '-1' }, { fakeExemption: true }]) {
+    await assertFails(setDoc(ref, { ...value, input: { ...input, tax: { ...tax, ...patch } } }));
+  }
+  const missing = { ...result.tax };
+  Reflect.deleteProperty(missing, 'vatUah');
+  await assertFails(setDoc(ref, { ...value, result: { ...result, tax: missing } }));
+  for (const patch of [
+    { unifiedTaxUah: '-1' }, { vatUah: '-1' }, { totalPaymentsUah: 'NaN' }, { grossPriceUah: 100 },
+    { netTaxableIncomeUah: '-1' }, { profitAfterTaxUah: '1e10' }, { marginAfterTaxPercent: '-1.0000001' },
+    { incomeTaxUah: '1000000000000' }, { scenario: 'refund' }, { presetVersion: 'x'.repeat(65) }, { invented: true },
+    { sourceUrls: ['https://evil.example/tax'] }, { sourceUrls: [TAX_SOURCE_URLS[0], 100] }, { sourceUrls: [...TAX_SOURCE_URLS, TAX_SOURCE_URLS[0]] },
+  ]) await assertFails(setDoc(ref, { ...value, result: { ...result, tax: { ...result.tax, ...patch } } }));
+  await assertSucceeds(setDoc(ref, { ...value, result: { ...result, tax: { ...result.tax, profitBeforeTaxUah: '-500.00', profitAfterTaxUah: '-600.00', marginAfterTaxPercent: '-60.00', netTaxableIncomeUah: '0.00' } } }));
+});
+
+test('numeric batches reject coercion, separators and every missing mandatory field', async () => {
+  const tax = createTaxPreset('fop3', true);
+  tax.monthlyEsvUah = '0';
+  const input = { ...snapshot.input, tax };
+  const result = calculatePrintCost(input);
+  const value = { ...snapshot, input, result, status: result.status };
+  const ref = doc(alice(), 'users/alice/calculations/calculation');
+  await assertSucceeds(setDoc(ref, value));
+  const groups: [string, Record<string, unknown>, (patch: Record<string, unknown>) => unknown][] = [
+    ['input', input, patch => ({ ...value, input: patch })],
+    ['result', result as unknown as Record<string, unknown>, patch => ({ ...value, result: patch })],
+    ['input.tax', tax as unknown as Record<string, unknown>, patch => ({ ...value, input: { ...input, tax: patch } })],
+    ['result.tax', result.tax as unknown as Record<string, unknown>, patch => ({ ...value, result: { ...result, tax: patch } })],
+  ];
+  for (const [location, original, build] of groups) {
+    const amounts = Object.entries(original).filter(([key, v]) => typeof v === 'string' && (key.endsWith('Uah') || key.endsWith('Percent') || key === 'totalWeightGrams' || key === 'totalEnergyKwh'));
+    for (const [field] of amounts) {
+      for (const forged of [1, true, null, ['1'], { value: '1' }, '1|2']) {
+        await assert.rejects(setDoc(ref, build({ ...original, [field]: forged }) as typeof value), { code: 'permission-denied' }, `${location}.${field} accepted ${JSON.stringify(forged)}`);
+      }
+    }
+    for (const field of Object.keys(original).filter(key => key !== 'tax')) {
+      const missing = { ...original, unknownReplacement: true };
+      Reflect.deleteProperty(missing, field);
+      await assert.rejects(setDoc(ref, build(missing) as typeof value), { code: 'permission-denied' }, `${location}.${field} can be replaced by an unknown key`);
+    }
+  }
+  for (const field of ['fileSizeBytes', 'totalPredictionSeconds', 'totalWeightGrams']) {
+    for (const forged of ['1', true, null, [], {}]) {
+      await assertFails(setDoc(ref, { ...value, input: { ...input, job: { ...input.job, [field]: forged } } }));
+    }
+  }
+  for (const field of ['fileName', 'fileSizeBytes', 'slicerSource', 'plates', 'totalPredictionSeconds', 'totalWeightGrams', 'warnings', 'parseStatus']) {
+    const missing = { ...input.job, unknownReplacement: true };
+    Reflect.deleteProperty(missing, field);
+    await assertFails(setDoc(ref, { ...value, input: { ...input, job: missing } }));
+  }
+  await assertFails(setDoc(ref, { ...value, result: { ...result, totalDurationSeconds: '1' } }));
+  await assertSucceeds(setDoc(ref, value));
+});
+
+test('fully taxed updates persist nonnull general bases and maximum manual precision', async () => {
+  const ref = doc(alice(), 'users/alice/calculations/calculation');
+  for (const tax of [
+    { ...createTaxPreset('general', true), scenario: 'estimate' as const, customerPriceUah: '1500', netTaxableIncomeUah: '500' },
+    { ...createTaxPreset('manual'), scenario: 'estimate' as const, customerPriceUah: '1500', netTaxableIncomeUah: '999999999999.999999', monthlyOrders: '1000000000', monthlyBillableHours: '1000000000' },
+  ]) {
+    const input = { ...snapshot.input, tax };
+    const result = calculatePrintCost(input);
+    assert.ok(result.tax);
+    const value = { ...snapshot, input, result, status: result.status };
+    await assertSucceeds(setDoc(ref, value));
+    await assertSucceeds(setDoc(ref, { ...value, title: 'Updated complete taxable snapshot' }));
+    assert.equal((await getDoc(ref)).data()?.result.tax.netTaxableIncomeUah, tax.netTaxableIncomeUah);
+  }
 });
 
 test('demo persistence is explicit and isolated, failed real reads never use demo data', async () => {

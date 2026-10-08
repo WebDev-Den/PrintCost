@@ -23,6 +23,8 @@ import { PricingSummaryCard } from '../../components/calculator/PricingSummaryCa
 import { ClientQuoteModal } from '../../components/calculator/ClientQuoteModal.tsx';
 import { MaterialModal } from '../../components/materials/MaterialModal.tsx';
 import { CostBreakdownChart } from '../../components/calculator/CostBreakdownChart.tsx';
+import { TaxSettingsPanel } from '../../components/calculator/TaxSettingsPanel.tsx';
+import { DEFAULT_TAX_SETTINGS, materialPriceForCost, normalizeTaxSettings, type MaterialVatMetadata, type TaxSettings } from '../../domain/taxes.ts';
 import {
   Calculator as CalcIcon,
   PieChart as ChartIcon,
@@ -34,7 +36,12 @@ import {
 } from 'lucide-react';
 
 const EMPTY_JOB: ParsedJob = { fileName: '', fileSizeBytes: 0, slicerSource: '', plates: [], totalPredictionSeconds: 0, totalWeightGrams: 0, warnings: [], parseStatus: 'empty' };
-const filamentCost = (weight: string | number, price: string | null) => price && isValidDecimalString(price) && isValidDecimalString(String(weight)) ? new Decimal(normalizeDecimalInput(String(weight))).div(1000).mul(normalizeDecimalInput(price)).toFixed(2) : null;
+const filamentCost = (weight: string | number, price: string | null, vat: MaterialVatMetadata = {}, tax?: TaxSettings) => {
+  if (!price || !isValidDecimalString(price) || !isValidDecimalString(String(weight))) return null;
+  const reasons: string[] = [];
+  const effectivePrice = materialPriceForCost(new Decimal(normalizeDecimalInput(price)), vat, tax, reasons);
+  return reasons.length ? null : new Decimal(normalizeDecimalInput(String(weight))).div(1000).mul(effectivePrice).toFixed(2);
+};
 
 export const CalculatorPage: React.FC = () => {
   const navigate = useNavigate();
@@ -107,6 +114,11 @@ export const CalculatorPage: React.FC = () => {
     minOrderPriceUah: settings.minOrderPriceUah || '200',
     roundingMode: (settings.roundingMode || 'up_10') as RoundingMode,
   });
+  const [taxSettings, setTaxSettings] = useState<TaxSettings>(() => ({ ...DEFAULT_TAX_SETTINGS, ...settings.tax }));
+  const validTaxSettings = useMemo(() => {
+    if (!taxSettings.enabled) return undefined;
+    try { return normalizeTaxSettings(taxSettings); } catch { return undefined; }
+  }, [taxSettings]);
 
   // When a job is loaded or changed, construct initial filament usage rows
   const handleJobLoaded = useCallback(
@@ -134,12 +146,16 @@ export const CalculatorPage: React.FC = () => {
           let mappedName = mappedMaterial ? mappedMaterial.name : undefined;
           let colorHex = layer.colorHex;
           let matchMethod = matchResult.method;
+          let priceVatMode = mappedMaterial?.priceVatMode || 'not_applicable';
+          let vatRatePercent = mappedMaterial?.vatRatePercent || '20';
+          let vatRecoverable = mappedMaterial?.vatRecoverable === true;
 
           if (preselectedInfo && layer.type.trim().toUpperCase() === preselectedInfo.type?.trim().toUpperCase()) {
             price = preselectedInfo.pricePerKgUah;
             mappedName = preselectedInfo.name;
             if (preselectedInfo.colorHex) colorHex = preselectedInfo.colorHex;
             matchMethod = 'exact_preset';
+            priceVatMode = 'not_applicable'; vatRatePercent = '20'; vatRecoverable = false;
           }
 
           const cost = filamentCost(layer.weightGrams, price);
@@ -158,6 +174,7 @@ export const CalculatorPage: React.FC = () => {
             pricePerKgUah: price,
             costUah: cost,
             matchMethod,
+            priceVatMode, vatRatePercent, vatRecoverable,
           });
         });
       });
@@ -204,6 +221,9 @@ export const CalculatorPage: React.FC = () => {
           pricePerKgUah: price,
           costUah: cost,
           matchMethod: selectedMat ? 'manual' : 'unmatched',
+          priceVatMode: selectedMat?.priceVatMode || 'not_applicable',
+          vatRatePercent: selectedMat?.vatRatePercent || '20',
+          vatRecoverable: selectedMat?.vatRecoverable === true,
         };
       })
     );
@@ -254,6 +274,7 @@ export const CalculatorPage: React.FC = () => {
       defaultPackagingFeeUah: calcParams.packagingFeeUah,
       defaultPostProcessingFeeUah: calcParams.postProcessingFeeUah,
       defaultOtherFeeUah: calcParams.otherFeeUah,
+      tax: taxSettings,
     });
     setSaveSuccessMsg('Поточні параметри збережено як типові налаштування кабінету.');
     setTimeout(() => setSaveSuccessMsg(null), 3000);
@@ -264,7 +285,7 @@ export const CalculatorPage: React.FC = () => {
   const calculationInput: CalculationInput = useMemo(() => {
     return {
       job: currentJob || EMPTY_JOB,
-      filaments: filamentsUsage,
+      filaments: filamentsUsage.map(filament => ({ ...filament, costUah: filamentCost(filament.weightGrams, filament.pricePerKgUah, filament, validTaxSettings) })),
       selectedPrinterId: defaultPrinter?.id || null,
       averagePowerWatts: calcParams.averagePowerWatts,
       electricityTariffUahPerKwh: calcParams.electricityTariffUahPerKwh,
@@ -279,8 +300,9 @@ export const CalculatorPage: React.FC = () => {
       marginPercent: calcParams.marginPercent,
       minOrderPriceUah: calcParams.minOrderPriceUah,
       roundingMode: calcParams.roundingMode,
+      tax: taxSettings.enabled ? taxSettings : undefined,
     };
-  }, [currentJob, filamentsUsage, defaultPrinter, calcParams]);
+  }, [currentJob, filamentsUsage, defaultPrinter, calcParams, taxSettings, validTaxSettings]);
 
   const calculationResult: CalculationResult = useMemo(() => {
     return calculatePrintCost(calculationInput);
@@ -301,11 +323,11 @@ export const CalculatorPage: React.FC = () => {
       .reduce((sum, p) => sum + p.totalWeightGrams * (p.repeatsCount || 1), 0);
   }, [currentJob]);
 
-  const activeFilaments = filamentsUsage.filter((f) => currentJob?.plates.some((p) => p.selected && p.plateIndex === f.plateIndex));
+  const activeFilaments = calculationInput.filaments.filter((f) => currentJob?.plates.some((p) => p.selected && p.plateIndex === f.plateIndex));
   const displayedFilaments = activeFilaments.map((f) => {
     const repeats = currentJob?.plates.find((p) => p.plateIndex === f.plateIndex)?.repeatsCount || 1;
     const weightGrams = new Decimal(f.weightGrams).mul(repeats).toFixed(2);
-    return { ...f, weightGrams, costUah: filamentCost(weightGrams, f.pricePerKgUah) };
+    return { ...f, weightGrams, costUah: filamentCost(weightGrams, f.pricePerKgUah, f, validTaxSettings) };
   });
 
   // Save calculation snapshot
@@ -331,10 +353,7 @@ export const CalculatorPage: React.FC = () => {
 
   // Export JSON
   const handleExportJson = () => {
-    const dataStr =
-      'data:text/json;charset=utf-8,' +
-      encodeURIComponent(
-        JSON.stringify(
+    const dataStr = JSON.stringify(
           {
             snapshotDate: new Date().toISOString(),
             job: currentJob,
@@ -343,14 +362,15 @@ export const CalculatorPage: React.FC = () => {
           },
           null,
           2
-        )
-      );
+        );
+    const objectUrl = URL.createObjectURL(new Blob([dataStr], { type: 'application/json;charset=utf-8' }));
     const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute('href', dataStr);
+    downloadAnchor.setAttribute('href', objectUrl);
     downloadAnchor.setAttribute('download', `${currentJob?.fileName || 'print'}_calc.json`);
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   };
 
   // Export CSV
@@ -375,17 +395,31 @@ export const CalculatorPage: React.FC = () => {
       ['Прибуток', calculationResult.profitUah, 'грн'],
       ['Маржинальність', calculationResult.marginPercent, '%'],
     ];
+    if (calculationResult.tax) {
+      const tax = calculationResult.tax;
+      const fixedMonthly = tax.regime === 'fop1' || tax.regime === 'fop2';
+      rows.push(['Податковий режим', tax.regime, ''], ['Сценарій податкової оцінки', tax.scenario, ''],
+        ['Ціна без ПДВ', tax.netRevenueUah, 'грн'], ['ПДВ продажу (не сплата до бюджету)', tax.vatUah, 'грн'],
+        [fixedMonthly ? 'ЄП: частка місячного платежу' : 'ЄП / податок від виручки без ПДВ', tax.unifiedTaxUah, 'грн'],
+        [fixedMonthly ? 'Військовий збір: частка місячного платежу' : tax.regime === 'fop3' ? 'Військовий збір від виручки без ПДВ' : 'Військовий збір від заданої бази', tax.militaryTaxUah, 'грн'], ['ПДФО від заданої бази', tax.incomeTaxUah, 'грн'],
+        ['У складі ЄП: частка місячного платежу', tax.allocatedUnifiedTaxUah, 'грн'], ['У складі військового збору: частка місячного платежу', tax.allocatedMilitaryTaxUah, 'грн'],
+        ['Частка місячного ЄСВ', tax.allocatedEsvUah, 'грн'], ['Частка інших місячних платежів', tax.allocatedOtherUah, 'грн'],
+        ['Враховані податки без ПДВ продажу', tax.totalTaxesUah, 'грн'], ['Усі враховані платежі', tax.totalPaymentsUah, 'грн'],
+        ['Прибуток до врахованих платежів', tax.profitBeforeTaxUah, 'грн'], ['Прибуток після врахованих платежів', tax.profitAfterTaxUah, 'грн'],
+        ['Маржа після платежів', tax.marginAfterTaxPercent, '%'], ['Версія податкового пресета', tax.presetVersion, ''],
+        ['Дата дії пресета', tax.presetEffectiveDate, ''], ['Джерела ставок', tax.sourceUrls.join(' '), '']);
+      if (tax.netTaxableIncomeUah !== null) rows.push(['Явно задана оподатковувана база', tax.netTaxableIncomeUah, 'грн']);
+    }
 
-    const csvContent =
-      'data:text/csv;charset=utf-8,' +
-      [headers.join(','), ...rows.map((e) => e.map((val) => `"${String(val).replace(/"/g, '""').replace(/^[=+@-]/, "'$&")}"`).join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const csvContent = [headers.join(','), ...rows.map((e) => e.map((val) => `"${String(val).replace(/^\s*[=+@-]/, "'$&").replace(/"/g, '""')}"`).join(','))].join('\n');
+    const csvUrl = URL.createObjectURL(new Blob(['\uFEFF', csvContent], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
+    link.setAttribute('href', csvUrl);
     link.setAttribute('download', `${currentJob.fileName}_cost_breakdown.csv`);
     document.body.appendChild(link);
     link.click();
     link.remove();
+    setTimeout(() => URL.revokeObjectURL(csvUrl), 0);
   };
 
   return (
@@ -545,6 +579,11 @@ export const CalculatorPage: React.FC = () => {
                     onChangeInput={handleChangeInput}
                     onSaveAsDefault={handleSaveAsDefault}
                   />
+                  {activeFilaments.some(filament => filament.priceVatMode && filament.priceVatMode !== 'not_applicable') && <div className="p-3 rounded-lg bg-neutral-100 dark:bg-neutral-800 text-xs text-neutral-600 dark:text-neutral-400 space-y-1">
+                    <p>Ціна за кг зберігається у режимі ПДВ вибраного матеріалу. Вартість рядка враховує цей режим:</p>
+                    {activeFilaments.filter(filament => filament.priceVatMode && filament.priceVatMode !== 'not_applicable').map(filament => <p key={filament.key}>{filament.mappedMaterialName || filament.typeFromFile}: {filament.priceVatMode === 'included' ? 'ПДВ включено' : 'ціна без ПДВ'}, {filament.vatRatePercent}%; {validTaxSettings?.vatPayer && filament.vatRecoverable ? 'підтверджений вхідний ПДВ виключено із витрат' : 'вхідний ПДВ залишається у витратах'}.</p>)}
+                  </div>}
+                  <TaxSettingsPanel value={taxSettings} onChange={setTaxSettings} />
 
                   {/* Embedded Cost Breakdown Chart preview */}
                   <CostBreakdownChart result={calculationResult} />
@@ -578,6 +617,7 @@ export const CalculatorPage: React.FC = () => {
             sellingPriceUah: calculationResult.sellingPriceUah,
             totalWeightGrams: calculationResult.totalWeightGrams,
             totalDurationSeconds: calculationResult.totalDurationSeconds,
+            tax: calculationResult.tax ? { netRevenueUah: calculationResult.tax.netRevenueUah, vatUah: calculationResult.tax.vatUah, grossPriceUah: calculationResult.tax.grossPriceUah, vatPayer: calculationInput.tax?.vatPayer === true } : undefined,
             filaments: activeFilaments,
           }}
         />

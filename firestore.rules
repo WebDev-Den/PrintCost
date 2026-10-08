@@ -2,6 +2,9 @@ rules_version = '2';
 // Assumed data model:
 // users/{uid}: private profile; only its owner may read it or edit names.
 // users/{uid}/{materials,printers,calculations,settings,likes}: private owner data.
+// Material VAT metadata and optional tax settings/results are strictly validated.
+// Snapshot filament arrays retain the 500-row contract; every nested row and its
+// VAT metadata is validated by the application, since Rules cannot loop over it.
 // userDirectory/{uid}: trusted-token email/verification and bounded display name;
 //   only owner and verified, unblocked system administrators may read it.
 // system/authorization: nonempty unique adminUids (<=32), immutable bootstrapUid
@@ -203,10 +206,63 @@ service cloud.firestore {
     function allowedOfferHost(data) {
       return data.productUrl.split('[/?#]')[2] in get(/databases/$(database)/documents/companies/$(data.companyId)).data.allowedDomains;
     }
-    function money(value) { return value is string && value.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'); }
-    function signedMoney(value) { return value is string && value.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?$'); }
+    // matches is string-only, so non-string values fail closed without duplicate type checks.
+    function money(value) { return value.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'); }
     function optionalMoney(value) { return value == null || value == '' || money(value); }
-    function identity(data, id) { return data.id == id && text(data.createdAt, 40) && data.createdAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*'); }
+    function taxRate(value) { return value.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$'); }
+    function validVatMetadata(data) {
+      return (!('priceVatMode' in data) && !('vatRatePercent' in data) && !('vatRecoverable' in data))
+        || (data.get('priceVatMode', '') in ['included', 'excluded', 'not_applicable']
+          && (data.priceVatMode == 'not_applicable' || 'vatRatePercent' in data)
+          && taxRate(data.get('vatRatePercent', '0')) && data.get('vatRecoverable', false) is bool);
+    }
+    function taxRegime(value) { return value in ['fop1', 'fop2', 'fop3', 'general', 'manual']; }
+    function taxScenario(value) { return value in ['cover', 'estimate']; }
+    function taxPreset(data) {
+      return data.presetVersion.matches('(?s)^[^[:space:]](.{0,62}[^[:space:]])?$')
+        && data.presetEffectiveDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+    // Every mandatory field is directly validated below. Exact cardinality plus
+    // the counted optional keys forbids unknown keys without redundant key lists.
+    // Amount batches round-trip through split to reject coercion and delimiters.
+    function validTaxSettings(data) {
+      let amounts1 = [data.monthlyUnifiedTaxUah, data.monthlyMilitaryTaxUah, data.monthlyEsvUah, data.monthlyOtherUah];
+      let encoded1 = amounts1.join('|');
+      return (data.size() == 19)
+        && data.enabled is bool && taxScenario(data.scenario) && data.vatPayer is bool
+        && data.vatRatePercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.unifiedTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.incomeTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.militaryTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$')
+        && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && data.monthlyOrders.matches('^([0-9]{1,9}|1000000000)$')
+        && data.monthlyBillableHours.matches('^([0-9]{1,9}([.][0-9]{1,6})?|1000000000([.]0{1,6})?)$')
+        && data.allocationMode in ['orders', 'hours']
+        && (data.netTaxableIncomeUah == null || data.netTaxableIncomeUah.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?$'))
+        && (data.customerPriceUah == null || data.customerPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')) && taxPreset(data)
+        && (data.regime == 'manual' ? true
+          : data.regime == 'fop3' ? (data.incomeTaxPercent == '0' && data.militaryTaxPercent == '1'
+              && data.monthlyUnifiedTaxUah == '0' && data.monthlyMilitaryTaxUah == '0'
+              && data.unifiedTaxPercent == (data.vatPayer ? '3' : '5'))
+          : data.regime == 'general' ? (data.unifiedTaxPercent == '0' && data.incomeTaxPercent == '18'
+              && data.militaryTaxPercent == '5' && data.monthlyUnifiedTaxUah == '0' && data.monthlyMilitaryTaxUah == '0')
+          : (data.regime in ['fop1', 'fop2'] && data.vatPayer == false && data.unifiedTaxPercent == '0' && data.incomeTaxPercent == '0' && data.militaryTaxPercent == '0'));
+    }
+    function taxSource(value) {
+      return value in ['https://sumy.tax.gov.ua/media-ark/news-ark/print-975635.html', 'https://mk.tax.gov.ua/media-ark/news-ark/976670.html'];
+    }
+    function validTaxResult(data) {
+      let amounts1 = [data.unifiedTaxUah, data.militaryTaxUah, data.incomeTaxUah, data.allocatedUnifiedTaxUah, data.allocatedMilitaryTaxUah, data.allocatedEsvUah, data.allocatedOtherUah, data.totalTaxesUah, data.totalPaymentsUah, data.netRevenueUah, data.vatUah, data.grossPriceUah];
+      let encoded1 = amounts1.join('|');
+      let amounts2 = [data.profitBeforeTaxUah, data.profitAfterTaxUah, data.marginAfterTaxPercent];
+      let encoded2 = amounts2.join('|');
+      return (data.size() == 21)
+        && taxRegime(data.regime) && taxScenario(data.scenario) && taxPreset(data)
+        && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && (encoded2.split('[|]') == amounts2 && encoded2.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?([|]-?[0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && (data.netTaxableIncomeUah == null || data.netTaxableIncomeUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'))
+        && data.sourceUrls is list && data.sourceUrls.size() <= 2
+        && (data.sourceUrls.size() < 1 || taxSource(data.sourceUrls[0]))
+        && (data.sourceUrls.size() < 2 || taxSource(data.sourceUrls[1]));
+    }
+    function identity(data, id) { return data.id == id && data.createdAt.matches('(?s)^.{0,40}$') && data.createdAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*'); }
     function immutable() { return request.resource.data.id == resource.data.id && request.resource.data.createdAt == resource.data.createdAt; }
     function pricingMode(value) { return value in ['markup', 'target_margin']; }
     function rounding(value) { return value in ['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100']; }
@@ -219,11 +275,12 @@ service cloud.firestore {
     }
     function validMaterial(data, id) {
       return data.keys().hasAll(['id', 'name', 'type', 'family', 'brand', 'pricePerKgUah', 'isArchived', 'createdAt'])
-        && data.keys().hasOnly(['id', 'name', 'type', 'family', 'brand', 'colorHex', 'colorName', 'pricePerKgUah', 'spoolWeightGrams', 'spoolPriceUah', 'spoolsInStock', 'isArchived', 'createdAt', 'notes'])
+        && data.keys().hasOnly(['id', 'name', 'type', 'family', 'brand', 'colorHex', 'colorName', 'pricePerKgUah', 'spoolWeightGrams', 'spoolPriceUah', 'spoolsInStock', 'isArchived', 'createdAt', 'notes', 'priceVatMode', 'vatRatePercent', 'vatRecoverable'])
         && identity(data, id) && text(data.name, 200) && data.name.size() > 0 && text(data.type, 80) && text(data.family, 100) && text(data.brand, 200)
         && optionalMoney(data.pricePerKgUah) && optionalMoney(data.get('spoolWeightGrams', null)) && optionalMoney(data.get('spoolPriceUah', null))
         && text(data.get('colorName', ''), 100) && text(data.get('colorHex', ''), 20) && text(data.get('notes', ''), 5000)
-        && data.get('spoolsInStock', 0) is int && data.get('spoolsInStock', 0) >= 0 && data.get('spoolsInStock', 0) <= 1000000 && data.isArchived is bool;
+        && data.get('spoolsInStock', 0) is int && data.get('spoolsInStock', 0) >= 0 && data.get('spoolsInStock', 0) <= 1000000 && data.isArchived is bool
+        && validVatMetadata(data);
     }
     function validPrinter(data, id) {
       return data.keys().hasAll(['id', 'name', 'averagePowerWatts', 'costCalculationMode', 'machineHourlyRateUah', 'isDefault', 'createdAt'])
@@ -235,46 +292,50 @@ service cloud.firestore {
     }
     function validSettings(data) {
       return data.keys().hasAll(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone'])
-        && data.keys().hasOnly(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone', 'folderAutoImportPath'])
+        && data.keys().hasOnly(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone', 'folderAutoImportPath', 'tax'])
         && optionalMoney(data.electricityTariffUahPerKwh) && pricingMode(data.pricingMode) && rounding(data.roundingMode)
         && money(data.defaultMarkupPercent) && money(data.defaultMarginPercent) && float(data.defaultMarginPercent) < 100 && money(data.scrapReservePercent) && money(data.minOrderPriceUah)
         && money(data.defaultOperatorFeeUah) && money(data.defaultPackagingFeeUah) && money(data.defaultPostProcessingFeeUah) && money(data.defaultOtherFeeUah)
         && (data.defaultPrinterId == null || text(data.defaultPrinterId, 180))
         && data.filamentMappingPresets is map && data.filamentMappingPresets.size() <= 100
-        && data.theme in ['light', 'dark', 'system'] && text(data.timezone, 100) && text(data.get('folderAutoImportPath', ''), 500);
+        && data.theme in ['light', 'dark', 'system'] && text(data.timezone, 100) && text(data.get('folderAutoImportPath', ''), 500)
+        && (!('tax' in data) || validTaxSettings(data.tax));
     }
     function validJob(data) {
-      return data is map && data.keys().hasAll(['fileName', 'fileSizeBytes', 'slicerSource', 'plates', 'totalPredictionSeconds', 'totalWeightGrams', 'warnings', 'parseStatus'])
-        && data.keys().hasOnly(['fileName', 'fileSizeBytes', 'slicerSource', 'printerModelName', 'nozzleDiameterMm', 'plates', 'totalPredictionSeconds', 'totalWeightGrams', 'warnings', 'isDemoJob', 'parseStatus', 'errorMessage'])
-        && text(data.fileName, 500) && data.fileSizeBytes is number && data.fileSizeBytes >= 0 && text(data.slicerSource, 200)
+      return (data.size() == 8 + ('printerModelName' in data ? 1 : 0) + ('nozzleDiameterMm' in data ? 1 : 0) + ('isDemoJob' in data ? 1 : 0) + ('errorMessage' in data ? 1 : 0))
+        && data.fileName.matches('(?s)^.{0,500}$') && data.fileSizeBytes >= 0 && data.slicerSource.matches('(?s)^.{0,200}$')
         && data.plates is list && data.plates.size() <= 100 && data.warnings is list && data.warnings.size() <= 100
-        && data.totalPredictionSeconds is number && data.totalPredictionSeconds >= 0 && data.totalWeightGrams is number && data.totalWeightGrams >= 0
+        && data.totalPredictionSeconds >= 0 && data.totalWeightGrams >= 0
         && data.parseStatus in ['empty', 'reading', 'success', 'no_slicing_data', 'corrupted', 'file_limit_exceeded', 'error']
-        && data.get('isDemoJob', false) is bool && text(data.get('printerModelName', ''), 200) && text(data.get('nozzleDiameterMm', ''), 50) && text(data.get('errorMessage', ''), 2000);
+        && data.get('isDemoJob', false) is bool && data.get('printerModelName', '').matches('(?s)^.{0,200}$') && data.get('nozzleDiameterMm', '').matches('(?s)^.{0,50}$') && text(data.get('errorMessage', ''), 2000);
     }
     function validInput(data) {
-      return data is map && data.keys().hasAll(['job', 'filaments', 'selectedPrinterId', 'averagePowerWatts', 'electricityTariffUahPerKwh', 'machineHourlyRateUah', 'operatorFeeUah', 'packagingFeeUah', 'postProcessingFeeUah', 'otherFeeUah', 'scrapReservePercent', 'pricingMode', 'markupPercent', 'marginPercent', 'minOrderPriceUah', 'roundingMode'])
-        && data.keys().hasOnly(['job', 'filaments', 'selectedPrinterId', 'averagePowerWatts', 'electricityTariffUahPerKwh', 'machineHourlyRateUah', 'operatorFeeUah', 'packagingFeeUah', 'postProcessingFeeUah', 'otherFeeUah', 'scrapReservePercent', 'pricingMode', 'markupPercent', 'marginPercent', 'minOrderPriceUah', 'roundingMode'])
-        && validJob(data.job) && data.filaments is list && data.filaments.size() <= 500
-        && (data.selectedPrinterId == null || text(data.selectedPrinterId, 180)) && money(data.averagePowerWatts) && optionalMoney(data.electricityTariffUahPerKwh)
-        && money(data.machineHourlyRateUah) && money(data.operatorFeeUah) && money(data.packagingFeeUah) && money(data.postProcessingFeeUah) && money(data.otherFeeUah)
-        && money(data.scrapReservePercent) && money(data.markupPercent) && money(data.marginPercent) && float(data.marginPercent) < 100 && money(data.minOrderPriceUah)
+      let amounts1 = [data.machineHourlyRateUah, data.operatorFeeUah, data.packagingFeeUah, data.postProcessingFeeUah, data.otherFeeUah];
+      let encoded1 = amounts1.join('|');
+      let amounts2 = [data.scrapReservePercent, data.markupPercent, data.marginPercent];
+      let encoded2 = amounts2.join('|');
+      return (data.size() == 16 + ('tax' in data ? 1 : 0))
+        && data.filaments is list && data.filaments.size() <= 500
+        && (data.selectedPrinterId == null || data.selectedPrinterId.matches('(?s)^.{0,180}$')) && data.averagePowerWatts.matches('^[0-9]{1,12}([.][0-9]{1,6})?$') && optionalMoney(data.electricityTariffUahPerKwh)
+        && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && (encoded2.split('[|]') == amounts2 && encoded2.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$')) && float(data.marginPercent) < 100 && data.minOrderPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')
         && pricingMode(data.pricingMode) && rounding(data.roundingMode);
     }
     function validResult(data) {
-      return data is map && data.keys().hasAll(['status', 'incompleteReasons', 'totalWeightGrams', 'totalDurationSeconds', 'totalEnergyKwh', 'materialsCostUah', 'electricityCostUah', 'machineCostUah', 'operatorCostUah', 'packagingCostUah', 'postProcessingCostUah', 'otherCostUah', 'baseCostSubtotalUah', 'scrapReserveUah', 'costPriceUah', 'preRoundingPriceUah', 'minOrderApplied', 'sellingPriceUah', 'profitUah', 'marginPercent', 'markupPercentActual'])
-        && data.keys().hasOnly(['status', 'incompleteReasons', 'totalWeightGrams', 'totalDurationSeconds', 'totalEnergyKwh', 'materialsCostUah', 'electricityCostUah', 'machineCostUah', 'operatorCostUah', 'packagingCostUah', 'postProcessingCostUah', 'otherCostUah', 'baseCostSubtotalUah', 'scrapReserveUah', 'costPriceUah', 'preRoundingPriceUah', 'minOrderApplied', 'sellingPriceUah', 'profitUah', 'marginPercent', 'markupPercentActual'])
+      let amounts1 = [data.materialsCostUah, data.electricityCostUah, data.machineCostUah, data.operatorCostUah, data.packagingCostUah, data.postProcessingCostUah, data.otherCostUah, data.baseCostSubtotalUah, data.scrapReserveUah, data.costPriceUah, data.preRoundingPriceUah];
+      let encoded1 = amounts1.join('|');
+      let amounts2 = [data.profitUah, data.marginPercent, data.markupPercentActual];
+      let encoded2 = amounts2.join('|');
+      return (data.size() == 21 + ('tax' in data ? 1 : 0))
         && data.status in ['complete', 'incomplete'] && data.incompleteReasons is list && data.incompleteReasons.size() <= 100
-        && money(data.totalWeightGrams) && data.totalDurationSeconds is number && data.totalDurationSeconds >= 0 && money(data.totalEnergyKwh)
-        && money(data.materialsCostUah) && money(data.electricityCostUah) && money(data.machineCostUah) && money(data.operatorCostUah) && money(data.packagingCostUah)
-        && money(data.postProcessingCostUah) && money(data.otherCostUah) && money(data.baseCostSubtotalUah) && money(data.scrapReserveUah) && money(data.costPriceUah) && money(data.preRoundingPriceUah)
-        && data.minOrderApplied is bool && money(data.sellingPriceUah) && signedMoney(data.profitUah) && signedMoney(data.marginPercent) && signedMoney(data.markupPercentActual);
+        && data.totalWeightGrams.matches('^[0-9]{1,12}([.][0-9]{1,6})?$') && data.totalDurationSeconds >= 0 && data.totalEnergyKwh.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')
+        && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && data.minOrderApplied is bool && data.sellingPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$') && (encoded2.split('[|]') == amounts2 && encoded2.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?([|]-?[0-9]{1,12}([.][0-9]{1,6})?)*$'));
     }
     function validCalculation(data, id) {
-      return data.keys().hasAll(['id', 'title', 'createdAt', 'status', 'input', 'result', 'fileName'])
-        && data.keys().hasOnly(['id', 'title', 'createdAt', 'status', 'input', 'result', 'fileName', 'clientName', 'notes'])
-        && identity(data, id) && text(data.title, 300) && text(data.fileName, 500) && text(data.get('clientName', ''), 200) && text(data.get('notes', ''), 5000)
-        && data.status in ['complete', 'incomplete'] && validInput(data.input) && validResult(data.result) && data.status == data.result.status;
+      return (data.size() == 7 + ('clientName' in data ? 1 : 0) + ('notes' in data ? 1 : 0))
+        && identity(data, id) && data.title.matches('(?s)^.{0,300}$') && data.fileName.matches('(?s)^.{0,500}$') && data.get('clientName', '').matches('(?s)^.{0,200}$') && text(data.get('notes', ''), 5000)
+        && data.status == data.result.status;
     }
     function tombstone(data, id) { return data.keys().hasOnly(['id', 'deleted']) && data.id == id && data.deleted == true; }
     function validFilament(data, id) {
@@ -320,8 +381,14 @@ service cloud.firestore {
       match /calculations/{id} {
         allow get: if privateOwner(uid);
         allow list: if privateOwner(uid) && request.query.limit <= 200;
-        allow create: if privateOwner(uid) && validCalculation(request.resource.data, id);
-        allow update: if privateOwner(uid) && immutable() && validCalculation(request.resource.data, id);
+        allow create: if privateOwner(uid) && validCalculation(request.resource.data, id)
+          && validInput(request.resource.data.input) && validJob(request.resource.data.input.job) && validResult(request.resource.data.result)
+          && (!('tax' in request.resource.data.input) || validTaxSettings(request.resource.data.input.tax))
+          && (!('tax' in request.resource.data.result) || validTaxResult(request.resource.data.result.tax));
+        allow update: if privateOwner(uid) && immutable() && validCalculation(request.resource.data, id)
+          && validInput(request.resource.data.input) && validJob(request.resource.data.input.job) && validResult(request.resource.data.result)
+          && (!('tax' in request.resource.data.input) || validTaxSettings(request.resource.data.input.tax))
+          && (!('tax' in request.resource.data.result) || validTaxResult(request.resource.data.result.tax));
         allow delete: if privateOwner(uid);
       }
       match /settings/pricing {

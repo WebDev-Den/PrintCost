@@ -17,6 +17,8 @@ import { NumberInput } from '../../components/common/NumberInput.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { Modal } from '../../components/common/Modal.tsx';
 import type { PricingMode, RoundingMode } from '../../domain/types.ts';
+import { DEFAULT_TAX_SETTINGS } from '../../domain/taxes.ts';
+import { TaxSettingsPanel } from '../../components/calculator/TaxSettingsPanel.tsx';
 
 export const SettingsPage: React.FC = () => {
   const {
@@ -29,13 +31,13 @@ export const SettingsPage: React.FC = () => {
     setTheme,
   } = useAppData();
 
-  const [form, setForm] = useState(() => ({ ...settings, electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh ?? '', defaultPrinterId: settings.defaultPrinterId ?? '' }));
+  const [form, setForm] = useState(() => ({ ...settings, tax: { ...DEFAULT_TAX_SETTINGS, ...settings.tax }, electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh ?? '', defaultPrinterId: settings.defaultPrinterId ?? '' }));
   const [formVersion, setFormVersion] = useState(0);
   useEffect(() => {
-    setForm({ ...settings, electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh ?? '', defaultPrinterId: settings.defaultPrinterId ?? '' });
+    setForm({ ...settings, tax: { ...DEFAULT_TAX_SETTINGS, ...settings.tax }, electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh ?? '', defaultPrinterId: settings.defaultPrinterId ?? '' });
   }, [settings.electricityTariffUahPerKwh, settings.pricingMode, settings.defaultMarkupPercent, settings.defaultMarginPercent,
     settings.scrapReservePercent, settings.minOrderPriceUah, settings.roundingMode, settings.defaultOperatorFeeUah,
-    settings.defaultPackagingFeeUah, settings.defaultPostProcessingFeeUah, settings.defaultOtherFeeUah, settings.defaultPrinterId, settings.timezone, formVersion]);
+    settings.defaultPackagingFeeUah, settings.defaultPostProcessingFeeUah, settings.defaultOtherFeeUah, settings.defaultPrinterId, settings.timezone, settings.tax, formVersion]);
 
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
@@ -68,6 +70,7 @@ export const SettingsPage: React.FC = () => {
       defaultOtherFeeUah: form.defaultOtherFeeUah,
       defaultPrinterId: form.defaultPrinterId || null,
       timezone: form.timezone,
+      tax: form.tax,
     });
     setSavedSuccess(true);
     } catch (error) { setError(error instanceof Error ? error.message : 'Не вдалося зберегти налаштування.'); }
@@ -284,6 +287,8 @@ export const SettingsPage: React.FC = () => {
             />
           </div>
         </div>
+
+        <TaxSettingsPanel value={form.tax} onChange={tax => { setForm({ ...form, tax }); setSavedSuccess(false); }} disabled={isPending} />
 
         {/* Section 4: Interface & System */}
         <div className="bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">

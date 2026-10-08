@@ -19,6 +19,8 @@ import { Button } from '../../components/common/Button.tsx';
 import { StatusBadge } from '../../components/common/StatusBadge.tsx';
 import { ClientQuoteModal } from '../../components/calculator/ClientQuoteModal.tsx';
 import { CostBreakdownChart } from '../../components/calculator/CostBreakdownChart.tsx';
+import { TaxBreakdown } from '../../components/calculator/TaxBreakdown.tsx';
+import { DEFAULT_TAX_SETTINGS, materialPriceForCost, normalizeTaxSettings, type TaxSettings } from '../../domain/taxes.ts';
 import { formatUah, formatDurationUk, formatWeightUk, formatNumberUk } from '../../domain/formatters.ts';
 
 export const CalculationDetailsPage: React.FC = () => {
@@ -58,6 +60,10 @@ export const CalculationDetailsPage: React.FC = () => {
   }
 
   const { input, result } = snapshot;
+  const storedTax = (() => {
+    if (!input.tax?.enabled) return undefined;
+    try { return normalizeTaxSettings(input.tax); } catch { return undefined; }
+  })();
 
   /**
    * Section 11 requirement:
@@ -67,6 +73,9 @@ export const CalculationDetailsPage: React.FC = () => {
     setIsRecalculating(true);
     try {
       const activePrinter = printers.find((p) => p.id === settings.defaultPrinterId) || printers[0];
+      const currentTax = { ...DEFAULT_TAX_SETTINGS, ...settings.tax };
+      let validTax: TaxSettings | undefined;
+      try { if (currentTax.enabled) validTax = normalizeTaxSettings(currentTax); } catch { /* The calculator reports invalid tax parameters. */ }
 
       // Update filament prices from current master catalog
       const updatedFilaments = input.filaments.map((f) => {
@@ -74,12 +83,15 @@ export const CalculationDetailsPage: React.FC = () => {
         const currentPrice = f.mappedMaterialId ? (catalogMat && !catalogMat.isArchived ? catalogMat.pricePerKgUah : null) : f.pricePerKgUah;
         let updatedCost = null;
         if (currentPrice && parseFloat(f.weightGrams) > 0) {
-          updatedCost = new Decimal(f.weightGrams).div(1000).mul(currentPrice).toFixed(2);
+          updatedCost = new Decimal(f.weightGrams).div(1000).mul(materialPriceForCost(new Decimal(currentPrice), catalogMat || f, validTax, [])).toFixed(2);
         }
         return {
           ...f,
           pricePerKgUah: currentPrice,
           costUah: updatedCost,
+          priceVatMode: catalogMat?.priceVatMode || (f.mappedMaterialId ? 'not_applicable' : f.priceVatMode || 'not_applicable'),
+          vatRatePercent: catalogMat?.vatRatePercent || (f.mappedMaterialId ? '20' : f.vatRatePercent || '20'),
+          vatRecoverable: catalogMat ? catalogMat.vatRecoverable === true : !f.mappedMaterialId && f.vatRecoverable === true,
         };
       });
 
@@ -100,6 +112,7 @@ export const CalculationDetailsPage: React.FC = () => {
         marginPercent: settings.defaultMarginPercent || input.marginPercent,
         minOrderPriceUah: settings.minOrderPriceUah || input.minOrderPriceUah,
         roundingMode: settings.roundingMode || input.roundingMode,
+        tax: currentTax,
       };
 
       // Import calculator dynamically or call calculation engine
@@ -222,9 +235,10 @@ export const CalculationDetailsPage: React.FC = () => {
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums">
                         {formatUah(f.pricePerKgUah)}/кг
+                        {f.priceVatMode && f.priceVatMode !== 'not_applicable' && <p className="text-[10px] text-neutral-500">{f.priceVatMode === 'included' ? 'З ПДВ' : 'Без ПДВ'} {f.vatRatePercent}%</p>}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums font-semibold">
-                        {formatUah(f.pricePerKgUah === null ? null : new Decimal(f.weightGrams).div(1000).mul(f.pricePerKgUah).mul(input.job.plates.find((p) => p.plateIndex === f.plateIndex)?.repeatsCount || 1).toFixed(2))}
+                        {formatUah(f.pricePerKgUah === null ? null : new Decimal(f.weightGrams).div(1000).mul(materialPriceForCost(new Decimal(f.pricePerKgUah), f, storedTax, [])).mul(input.job.plates.find((p) => p.plateIndex === f.plateIndex)?.repeatsCount || 1).toFixed(2))}
                       </td>
                     </tr>
                   ))}
@@ -356,15 +370,18 @@ export const CalculationDetailsPage: React.FC = () => {
               </div>
               <div className="flex justify-around text-xs font-mono pt-2 border-t border-emerald-500/20">
                 <div>
-                  <span className="text-neutral-500 text-[10px] block">Прибуток:</span>
-                  <span className="font-bold">+{formatUah(result.profitUah)}</span>
+                  <span className="text-neutral-500 text-[10px] block">{result.tax ? 'Прибуток після платежів:' : 'Прибуток без податкової оцінки:'}</span>
+                  <span className="font-bold">{formatUah(result.tax?.profitAfterTaxUah || result.profitUah)}</span>
                 </div>
                 <div>
-                  <span className="text-neutral-500 text-[10px] block">Маржа:</span>
-                  <span className="font-bold text-emerald-600">{result.marginPercent}%</span>
+                  <span className="text-neutral-500 text-[10px] block">{result.tax ? 'Маржа після платежів:' : 'Маржа:'}</span>
+                  <span className="font-bold text-emerald-600">{result.tax?.marginAfterTaxPercent || result.marginPercent}%</span>
                 </div>
               </div>
             </div>
+
+            {result.tax && <TaxBreakdown tax={result.tax} />}
+            {result.status !== 'complete' && <div role="status" className="p-3 text-xs text-amber-700 dark:text-amber-300"><p>Розрахунок неповний:</p><ul className="list-disc list-inside">{result.incompleteReasons.map(reason => <li key={reason}>{reason}</li>)}</ul></div>}
 
             <Button
               variant="outline"
@@ -389,6 +406,7 @@ export const CalculationDetailsPage: React.FC = () => {
           sellingPriceUah: result.sellingPriceUah,
           totalWeightGrams: result.totalWeightGrams,
           totalDurationSeconds: result.totalDurationSeconds,
+          tax: result.tax ? { netRevenueUah: result.tax.netRevenueUah, vatUah: result.tax.vatUah, grossPriceUah: result.tax.grossPriceUah, vatPayer: input.tax?.vatPayer === true } : undefined,
           filaments: input.filaments.filter((f) => input.job.plates.some((p) => p.selected && p.plateIndex === f.plateIndex)),
         }}
       />

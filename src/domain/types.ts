@@ -32,6 +32,9 @@ export interface MaterialProfile {
   colorHex?: string;
   colorName?: string;
   pricePerKgUah: string | null; // e.g. "650.00" or null if unconfigured
+  priceVatMode?: import('./taxes.ts').MaterialPriceVatMode;
+  vatRatePercent?: string;
+  vatRecoverable?: boolean;
   spoolWeightGrams?: string; // e.g. "1000"
   spoolPriceUah?: string; // e.g. "650"
   spoolsInStock?: number; // e.g. 1, 2, 3 котушки на складі
@@ -55,6 +58,7 @@ export interface PrinterProfile {
 }
 
 export interface PricingSettings {
+  tax?: import('./taxes.ts').TaxSettings;
   electricityTariffUahPerKwh: string | null; // e.g. "5.00"
   pricingMode: PricingMode;
   defaultMarkupPercent: string; // e.g. "100"
@@ -119,11 +123,15 @@ export interface FilamentUsage {
   mappedMaterialId: string | null;
   mappedMaterialName?: string;
   pricePerKgUah: string | null;
+  priceVatMode?: import('./taxes.ts').MaterialPriceVatMode;
+  vatRatePercent?: string;
+  vatRecoverable?: boolean;
   costUah: string | null;
   matchMethod: FilamentMatchMethod;
 }
 
 export interface CalculationInput {
+  tax?: import('./taxes.ts').TaxSettings;
   job: ParsedJob;
   filaments: FilamentUsage[];
   selectedPrinterId: string | null;
@@ -143,6 +151,7 @@ export interface CalculationInput {
 }
 
 export interface CalculationResult {
+  tax?: import('./taxes.ts').TaxResult;
   status: CalculationStatus;
   incompleteReasons: string[];
   totalWeightGrams: string;
@@ -161,7 +170,7 @@ export interface CalculationResult {
   preRoundingPriceUah: string;
   minOrderApplied: boolean;
   sellingPriceUah: string; // Продажна ціна клієнту
-  profitUah: string; // Розрахунковий прибуток до податків
+  profitUah: string; // With tax enabled: profit after the estimated taxes/payments
   marginPercent: string; // Маржинальність %
   markupPercentActual: string; // Фактична націнка %
 }

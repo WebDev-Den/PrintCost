@@ -10,6 +10,7 @@ import { PUBLIC_FILAMENTS_CATALOG, MANUFACTURERS_LIST, STANDARD_TEMPERATURE_PROF
 import { firebaseAuth, firestoreDb } from './firebaseClient.ts';
 import { authService } from './authService.ts';
 import { fileAnalysisService } from './fileAnalysisService.ts';
+import { DEFAULT_TAX_SETTINGS, validateMaterialVat, validateTaxResult, validateTaxSettings } from '../domain/taxes.ts';
 
 export interface ApiResponse<T = unknown> { success: boolean; data?: T; error?: string; statusCode?: number }
 
@@ -43,11 +44,11 @@ function validId(id: string) {
 }
 function clean<T>(value: T): T {
   const json = JSON.stringify(value, (key, item) => {
-    const numeric = /(?:Uah(?:PerKwh)?|Percent(?:Actual)?)$/.test(key) || ['averagePowerWatts', 'spoolWeightGrams', 'lifespanHours', 'weightGrams', 'lengthMeters', 'totalWeightGrams', 'totalEnergyKwh'].includes(key);
+    const numeric = /(?:Uah(?:PerKwh)?|Percent(?:Actual)?)$/.test(key) || ['averagePowerWatts', 'spoolWeightGrams', 'lifespanHours', 'weightGrams', 'lengthMeters', 'totalWeightGrams', 'totalEnergyKwh', 'monthlyOrders', 'monthlyBillableHours'].includes(key);
     if (!numeric || typeof item !== 'string') return item;
     const normalized = normalizeDecimalInput(item);
     if (normalized === '') return normalized;
-    const signed = ['profitUah', 'marginPercent', 'markupPercentActual'].includes(key);
+    const signed = ['profitUah', 'marginPercent', 'markupPercentActual', 'profitBeforeTaxUah', 'profitAfterTaxUah', 'marginAfterTaxPercent', 'netTaxableIncomeUah'].includes(key);
     if (!(signed ? /^-?(?:\d+(?:\.\d*)?|\.\d+)$/ : /^(?:\d+(?:\.\d*)?|\.\d+)$/).test(normalized)) throw new Error('Введіть коректне десяткове число.');
     const canonical = new Decimal(normalized).toFixed();
     if (!/^-?\d{1,12}(?:\.\d{1,6})?$/.test(canonical)) throw new Error('Число може містити до 12 цифр перед крапкою та до 6 після неї.');
@@ -70,6 +71,8 @@ function validateSnapshot(snapshot: CalculationSnapshot) {
   const fail = (): never => { throw new Error('Некоректні дані збереженого розрахунку.'); };
   if (!job || !Array.isArray(job.plates) || !Array.isArray(snapshot.input.filaments)) fail();
   if (job.plates.length > 100 || snapshot.input.filaments.length > 500) fail();
+  if (snapshot.input.tax !== undefined) snapshot.input.tax = validateTaxSettings(snapshot.input.tax);
+  if (snapshot.result.tax !== undefined) validateTaxResult(snapshot.result.tax);
   for (const plate of job.plates) {
     if (!plate || !Number.isSafeInteger(plate.plateIndex) || typeof plate.plateName !== 'string' || typeof plate.selected !== 'boolean' || !Number.isSafeInteger(plate.repeatsCount) || plate.repeatsCount < 1 || !Number.isFinite(plate.predictionSeconds) || plate.predictionSeconds < 0 || !Number.isFinite(plate.totalWeightGrams) || plate.totalWeightGrams < 0 || !Array.isArray(plate.filaments)) fail();
     for (const filament of plate.filaments) {
@@ -77,6 +80,7 @@ function validateSnapshot(snapshot: CalculationSnapshot) {
     }
   }
   for (const filament of snapshot.input.filaments) {
+    validateMaterialVat(filament);
     if (!filament || !Number.isSafeInteger(filament.plateIndex) || !Number.isSafeInteger(filament.trayId) || typeof filament.key !== 'string' || typeof filament.plateName !== 'string' || typeof filament.typeFromFile !== 'string' || typeof filament.colorHex !== 'string' || typeof filament.weightGrams !== 'string' || !money.test(filament.weightGrams) || !['exact_preset', 'type_match', 'manual', 'unmatched'].includes(filament.matchMethod)) fail();
     for (const key of ['pricePerKgUah', 'costUah', 'lengthMeters'] as const) {
       if (filament[key] !== null && (typeof filament[key] !== 'string' || !money.test(filament[key]!))) fail();
@@ -86,8 +90,9 @@ function validateSnapshot(snapshot: CalculationSnapshot) {
   }
 }
 function validateSettings(settings: PricingSettings) {
-  const allowed = [...Object.keys(INITIAL_PRICING_SETTINGS), 'folderAutoImportPath'];
+  const allowed = [...Object.keys(INITIAL_PRICING_SETTINGS), 'folderAutoImportPath', 'tax'];
   if (Object.keys(settings).some((key) => !allowed.includes(key))) throw new Error('Невідомі поля налаштувань.');
+  if (settings.tax !== undefined) settings.tax = validateTaxSettings(settings.tax);
   const numeric = ['defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah'] as const;
   if (numeric.some((key) => typeof settings[key] !== 'string' || !money.test(settings[key])) || (settings.electricityTariffUahPerKwh !== null && !money.test(settings.electricityTariffUahPerKwh))) throw new Error('Тарифи мають бути невід’ємними числами.');
   if (!['markup', 'target_margin'].includes(settings.pricingMode) || !['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100'].includes(settings.roundingMode) || !['light', 'dark', 'system'].includes(settings.theme)) throw new Error('Некоректний режим налаштувань.');
@@ -98,7 +103,12 @@ function privateRepository<T extends { id: string; createdAt: string }>(name: st
   function itemsRef() { return collection(db(), `${userPath()}/${name}`); }
   return {
     async getAll(): Promise<T[]> {
-      if (authService.isDemoSession()) return readDemo(key, initial());
+      if (authService.isDemoSession()) {
+        const items = readDemo(key, initial());
+        if (name === 'calculations') items.forEach(item => validateSnapshot(item as unknown as CalculationSnapshot));
+        if (name === 'materials') items.forEach(validateMaterialVat);
+        return items;
+      }
       // shortcut: only the latest 200 calculations are loaded, add history pagination before this is insufficient.
       const scope = itemsRef();
       const items: T[] = [];
@@ -108,6 +118,7 @@ function privateRepository<T extends { id: string; createdAt: string }>(name: st
         const result: QuerySnapshot<DocumentData> = await getDocsFromServer(query(scope, ...constraints));
         const page = result.docs.map((snapshot) => ({ ...snapshot.data(), id: snapshot.id }) as T);
         if (name === 'calculations') page.forEach((item) => validateSnapshot(item as unknown as CalculationSnapshot));
+        if (name === 'materials') page.forEach(validateMaterialVat);
         items.push(...page);
         if (name === 'calculations' || result.size < 200) return items;
         cursor = result.docs.at(-1)!;
@@ -119,11 +130,13 @@ function privateRepository<T extends { id: string; createdAt: string }>(name: st
       const result = await getDocFromServer(doc(itemsRef(), id));
       const value = result.exists() ? { ...result.data(), id: result.id } as T : null;
       if (value && name === 'calculations') validateSnapshot(value as unknown as CalculationSnapshot);
+      if (value && name === 'materials') validateMaterialVat(value);
       return value;
     },
     async create(input: Omit<T, 'id' | 'createdAt'>): Promise<T> {
       const value = clean({ ...input, id: crypto.randomUUID(), createdAt: new Date().toISOString() }) as T;
       if (name === 'calculations') validateSnapshot(value as unknown as CalculationSnapshot);
+      if (name === 'materials') validateMaterialVat(value);
       if (authService.isDemoSession()) { writeDemo(key, [value, ...await this.getAll()]); return value; }
       await write(doc(itemsRef(), value.id), value);
       return value;
@@ -135,6 +148,8 @@ function privateRepository<T extends { id: string; createdAt: string }>(name: st
         const original = items.find((item) => item.id === id);
         if (!original) throw new Error('Запис не знайдено.');
         const updated = clean({ ...original, ...updates, id, createdAt: original.createdAt }) as T;
+        if (name === 'calculations') validateSnapshot(updated as unknown as CalculationSnapshot);
+        if (name === 'materials') validateMaterialVat(updated);
         writeDemo(key, items.map((item) => item.id === id ? updated : item));
         return updated;
       }
@@ -143,6 +158,8 @@ function privateRepository<T extends { id: string; createdAt: string }>(name: st
         const original = await transaction.get(ref);
         if (!original.exists()) throw new Error('Запис не знайдено.');
         const updated = clean({ ...original.data(), ...updates, id, createdAt: original.data().createdAt }) as T;
+        if (name === 'calculations') validateSnapshot(updated as unknown as CalculationSnapshot);
+        if (name === 'materials') validateMaterialVat(updated);
         transaction.set(ref, updated);
         return updated;
       });
@@ -431,9 +448,15 @@ export const calculationsApi = {
 
 export const settingsApi = {
   async getSettings(): Promise<PricingSettings> {
-    if (authService.isDemoSession()) return readDemo(STORAGE_KEYS.SETTINGS, INITIAL_PRICING_SETTINGS);
+    if (authService.isDemoSession()) {
+      const value = readDemo(STORAGE_KEYS.SETTINGS, INITIAL_PRICING_SETTINGS);
+      if (value.tax !== undefined) validateTaxSettings(value.tax);
+      return value;
+    }
     const settings = await getDocFromServer(doc(db(), `${userPath()}/settings/pricing`));
-    return settings.exists() ? settings.data() as PricingSettings : { ...structuredClone(INITIAL_PRICING_SETTINGS), electricityTariffUahPerKwh: null, defaultPrinterId: null, filamentMappingPresets: {} };
+    const value = settings.exists() ? settings.data() as PricingSettings : { ...structuredClone(INITIAL_PRICING_SETTINGS), electricityTariffUahPerKwh: null, defaultPrinterId: null, filamentMappingPresets: {} };
+    if (value.tax !== undefined) validateTaxSettings(value.tax);
+    return value;
   },
   async updateSettings(updates: Partial<PricingSettings>): Promise<PricingSettings> {
     const identity = sessionIdentity();
@@ -470,9 +493,9 @@ export const settingsApi = {
   async importConfigJson(jsonString: string): Promise<PricingSettings> {
     const parsed = JSON.parse(jsonString);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Очікується JSON-об’єкт налаштувань.');
-    return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, ...parsed });
+    return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, tax: { ...DEFAULT_TAX_SETTINGS }, ...parsed });
   },
-  async resetToDefaults(): Promise<PricingSettings> { return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, defaultPrinterId: null, filamentMappingPresets: {} }); },
+  async resetToDefaults(): Promise<PricingSettings> { return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, tax: { ...DEFAULT_TAX_SETTINGS }, defaultPrinterId: null, filamentMappingPresets: {} }); },
 };
 export const profileApi = {
   async getProfile(): Promise<UserProfile> {

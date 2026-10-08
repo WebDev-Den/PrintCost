@@ -16,6 +16,7 @@ import type { CalculationResult, CalculationInput } from '../../domain/types.ts'
 import { formatUah } from '../../domain/formatters.ts';
 import { Button } from '../common/Button.tsx';
 import { StatusBadge } from '../common/StatusBadge.tsx';
+import { TaxBreakdown } from './TaxBreakdown.tsx';
 
 interface PricingSummaryCardProps {
   input: CalculationInput;
@@ -179,7 +180,7 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-neutral-600 dark:text-neutral-400">
             <span className="font-semibold">
-              {input.pricingMode === 'markup'
+              {input.tax?.enabled && input.tax.scenario === 'estimate' ? 'Аналіз заданої ціни клієнту' : input.pricingMode === 'markup'
                 ? `Націнка (+${input.markupPercent}%)`
                 : `Цільова маржа (${input.marginPercent}%)`}
             </span>
@@ -199,17 +200,18 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
 
         {showPricingExplanation && (
           <div className="p-2.5 bg-white dark:bg-neutral-900 rounded-lg border border-neutral-200 dark:border-neutral-700 text-[11px] space-y-1 text-neutral-600 dark:text-neutral-300">
-            <p>
+            {input.tax?.enabled ? <p>Націнка задає бажаний прибуток після врахованих платежів від собівартості; цільова маржа — його частку у виручці без ПДВ. Податки компенсуються при підборі ціни. У сценарії заданої ціни ці параметри не змінюють результат.</p> : <><p>
               <strong>Націнка (%):</strong> скільки додається до собівартості. Ціна = Собівартість × (1 + Націнка / 100).
             </p>
             <p>
               <strong>Цільова маржа (%):</strong> частка прибутку у фінальній ціні. Ціна = Собівартість / (1 - Маржа / 100).
             </p>
+            </>}
           </div>
         )}
 
         <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-[11px]">
-          <span>Мінімальне замовлення: {formatUah(input.minOrderPriceUah)}</span>
+          <span>{input.tax?.enabled && input.tax.scenario === 'estimate' ? 'Задана ціна зберігається без мінімуму та округлення' : `Мінімальне замовлення: ${formatUah(input.minOrderPriceUah)}`}</span>
           {result.minOrderApplied && (
             <span className="text-amber-600 dark:text-amber-400 font-semibold">
               (застосовано мінімум)
@@ -231,22 +233,25 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
         <div className="pt-2 border-t border-emerald-500/20 flex items-center justify-around text-xs font-mono tabular-nums">
           <div>
             <span className="text-neutral-500 dark:text-neutral-400 block text-[10px]">
-              Чистий прибуток
+              {result.tax ? 'Прибуток після врахованих платежів' : 'Прибуток без податкової оцінки'}
             </span>
             <span className="font-bold text-neutral-900 dark:text-neutral-100 text-sm">
-              +{formatUah(result.profitUah)}
+              {formatUah(result.tax?.profitAfterTaxUah || result.profitUah)}
             </span>
           </div>
           <div>
             <span className="text-neutral-500 dark:text-neutral-400 block text-[10px]">
-              Маржинальність
+              {result.tax ? 'Маржа після платежів' : 'Маржинальність'}
             </span>
             <span className="font-bold text-emerald-700 dark:text-emerald-400 text-sm">
-              {result.marginPercent}%
+              {result.tax?.marginAfterTaxPercent || result.marginPercent}%
             </span>
           </div>
         </div>
       </div>
+
+      {result.tax && <TaxBreakdown tax={result.tax} />}
+      {input.tax?.enabled && !result.tax && <p role="status" className="text-xs text-amber-700 dark:text-amber-300">Податковий підсумок не обчислено. Виправте параметри з пояснення вище для повної ціни.</p>}
 
       {/* Primary Actions */}
       <div className="space-y-2 pt-1">
