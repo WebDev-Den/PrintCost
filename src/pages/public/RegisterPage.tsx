@@ -94,7 +94,7 @@ export const RegisterPage: React.FC = () => {
             />
 
             <div>
-              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
+              <label htmlFor="register-password" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
                 Пароль
               </label>
               <div className="relative flex items-center rounded-lg border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900 focus-within:ring-2 focus-within:ring-emerald-500">
@@ -102,6 +102,7 @@ export const RegisterPage: React.FC = () => {
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
+                  id="register-password"
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="new-password"
                   value={password}
@@ -122,7 +123,7 @@ export const RegisterPage: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
+              <label htmlFor="register-password-confirm" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
                 Повторіть пароль
               </label>
               <div className="relative flex items-center rounded-lg border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900 focus-within:ring-2 focus-within:ring-emerald-500">
@@ -130,6 +131,7 @@ export const RegisterPage: React.FC = () => {
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
+                  id="register-password-confirm"
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="new-password"
                   value={confirmPassword}

@@ -61,7 +61,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
 const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, isLoading: authLoading, isDemoSession } = useAuth();
-  const sessionKey = isDemoSession ? 'demo' : user?.id || 'guest';
+  const canUsePrivateData = isDemoSession || Boolean(user?.emailVerified && !user?.isBlocked);
+  const identity = isDemoSession ? 'demo' : user?.id || 'guest';
+  const sessionKey = canUsePrivateData ? identity : `restricted:${identity}`;
   const sessionRef = useRef(sessionKey);
   sessionRef.current = sessionKey;
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
@@ -84,7 +86,7 @@ const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (authLoading || sessionRef.current !== sessionKey) return;
     setMaterials([]); setPrinters([]); setCalculations([]); setSettings(INITIAL_PRICING_SETTINGS);
     setLoadError(null); setActionError(null);
-    if (!user) { setLoadedFor(sessionKey); setIsLoading(false); return; }
+    if (!user || !canUsePrivateData) { setLoadedFor(sessionKey); setIsLoading(false); return; }
     setIsLoading(true);
     try {
       const [mats, prns, setts, calcs] = await Promise.all([

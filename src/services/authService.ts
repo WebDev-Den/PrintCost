@@ -3,7 +3,7 @@ import {
   confirmPasswordReset,
   createUserWithEmailAndPassword,
   EmailAuthProvider,
-  getIdTokenResult,
+  getIdToken,
   onAuthStateChanged,
   reauthenticateWithCredential,
   reload,
@@ -12,6 +12,7 @@ import {
   signInWithEmailAndPassword,
   signOut,
   updatePassword,
+  updateProfile as updateFirebaseProfile,
   verifyPasswordResetCode,
 } from 'firebase/auth';
 import type { User } from 'firebase/auth';
@@ -19,6 +20,7 @@ import { doc, getDoc, runTransaction } from 'firebase/firestore';
 import type { UserProfile } from '../domain/types.ts';
 import { INITIAL_USER_PROFILE } from '../domain/defaultData.ts';
 import { firebaseAuth, firestoreDb } from './firebaseClient.ts';
+import { organizationRepository } from './organizationRepository.ts';
 
 const DEMO_KEY = 'printcost_is_demo_mode';
 const DEMO_PROFILE_KEY = 'printcost_demo_profile';
@@ -43,7 +45,7 @@ export function authErrorMessage(error: unknown): string {
     'auth/operation-not-allowed': 'Вхід за електронною поштою ще не ввімкнено у Firebase.',
     'auth/unauthorized-continue-uri': 'Адресу сайту ще не додано до дозволених доменів Firebase.',
     'auth/invalid-api-key': 'Налаштування Firebase неправильні. Перевірте конфігурацію сайту.',
-    'permission-denied': 'Немає дозволу на збереження профілю. Перевірте правила доступу Firestore.',
+    'permission-denied': 'Немає дозволу на цю дію. Перевірте підтвердження пошти та актуальні права акаунта.',
     'unavailable': 'База даних тимчасово недоступна. Повторіть спробу пізніше.',
   };
   return messages[code] || (code ? 'Не вдалося виконати дію. Повторіть спробу пізніше.' :
@@ -56,20 +58,25 @@ function requireAuth() {
 }
 
 async function readProfile(user: User): Promise<UserProfile> {
-  const [snapshot, token] = await Promise.all([
-    getDoc(doc(firestoreDb!, 'users', user.uid)),
-    getIdTokenResult(user),
-  ]);
-  const data = snapshot.data();
+  await organizationRepository.ensureIdentity(user);
+  authService.assertSession(user.uid);
+  const access = await organizationRepository.getAccess(user.uid);
+  authService.assertSession(user.uid);
+  const snapshot = user.emailVerified && !access.blocked ? await getDoc(doc(firestoreDb!, 'users', user.uid)) : null;
+  authService.assertSession(user.uid);
+  const data = snapshot?.data();
   return {
     id: user.uid,
     email: user.email || '',
     fullName: typeof data?.fullName === 'string' ? data.fullName : user.displayName || '',
     workshopName: typeof data?.workshopName === 'string' ? data.workshopName : '',
-    createdAt: typeof data?.createdAt === 'string' ? data.createdAt : user.metadata.creationTime || '',
+    createdAt: typeof data?.createdAt === 'string' ? data.createdAt : new Date(user.metadata.creationTime || Date.now()).toISOString(),
     isDemoUser: false,
     emailVerified: user.emailVerified,
-    isAdmin: token.claims.admin === true,
+    isAdmin: access.role === 'admin',
+    role: access.role,
+    companyId: access.companyId,
+    isBlocked: access.blocked,
   };
 }
 
@@ -105,19 +112,43 @@ export class FirebaseAuthService implements AuthService {
       try { updates = saved ? JSON.parse(saved) : {}; } catch { /* Ignore malformed demo preferences. */ }
       return { ...INITIAL_USER_PROFILE, fullName: typeof updates?.fullName === 'string' ? updates.fullName : INITIAL_USER_PROFILE.fullName,
         workshopName: typeof updates?.workshopName === 'string' ? updates.workshopName : INITIAL_USER_PROFILE.workshopName,
-        isAdmin: false, emailVerified: false };
+        isAdmin: false, role: 'user', companyId: null, isBlocked: false, emailVerified: false };
     }
     return firebaseAuth?.currentUser ? readProfile(firebaseAuth.currentUser) : null;
   }
 
-  subscribe(onUser: (user: UserProfile | null) => void, onError: (error: unknown) => void): () => void {
+  subscribe(onUser: (user: UserProfile | null) => void, onError: (error: unknown) => void, onPending?: () => void): () => void {
     let revision = 0;
     let active = true;
+    let latest: UserProfile | null = null;
+    let accessIdentity = '';
+    let stopAccess: (() => void) | undefined;
     const refresh = async () => {
       const currentRevision = ++revision;
+      const identity = this.getSessionIdentity();
+      if (identity !== (latest ? latest.isDemoUser ? 'demo' : latest.id : '') || (accessIdentity && accessIdentity !== identity)) {
+        latest = null;
+        stopAccess?.(); stopAccess = undefined; accessIdentity = '';
+        onPending?.();
+      }
       try {
         const user = await this.getCurrentUser();
-        if (active && currentRevision === revision) onUser(user);
+        if (!active || currentRevision !== revision || identity !== this.getSessionIdentity()) return;
+        latest = user;
+        onUser(user);
+        if (user && !user.isDemoUser && accessIdentity !== user.id) {
+          stopAccess?.();
+          accessIdentity = user.id;
+          stopAccess = organizationRepository.observeAccess(user.id, access => {
+            if (!active || this.getSessionIdentity() !== user.id || latest?.id !== user.id) return;
+            ++revision;
+            latest = { ...latest, emailVerified: firebaseAuth?.currentUser?.emailVerified === true,
+              role: access.role, isAdmin: access.role === 'admin', companyId: access.companyId, isBlocked: access.blocked };
+            onUser(latest);
+          }, error => {
+            if (active && this.getSessionIdentity() === user.id) { ++revision; latest = null; onError(error); }
+          });
+        }
       } catch (error) {
         if (active && currentRevision === revision) onError(error);
       }
@@ -131,6 +162,7 @@ export class FirebaseAuthService implements AuthService {
     if (!firebaseAuth) void refresh();
     return () => {
       active = false;
+      stopAccess?.();
       stopAuth?.();
       this.listeners.delete(refresh);
       window.removeEventListener('storage', onStorage);
@@ -157,13 +189,8 @@ export class FirebaseAuthService implements AuthService {
     const { user } = await createUserWithEmailAndPassword(auth, email.trim(), password);
     this.assertSession(user.uid);
     try {
-      await runTransaction(firestoreDb!, async transaction => {
-        this.assertSession(user.uid);
-        const ref = doc(firestoreDb!, 'users', user.uid);
-        await transaction.get(ref);
-        this.assertSession(user.uid);
-        transaction.set(ref, { fullName: '', workshopName: '', email: user.email || '', createdAt: new Date().toISOString() });
-      });
+      await organizationRepository.ensureIdentity(user);
+      this.assertSession(user.uid);
     } catch (error) {
       throw new Error(`Акаунт створено, але профіль не збережено. ${authErrorMessage(error)} Увійдіть і збережіть дані у налаштуваннях акаунта.`);
     }
@@ -202,14 +229,14 @@ export class FirebaseAuthService implements AuthService {
   async verifyEmail(code: string): Promise<void> {
     if (!code) throw new Error('У посиланні немає коду підтвердження.');
     await applyActionCode(requireAuth(), code);
-    this.notify();
+    await this.refreshCurrentUser();
   }
 
   async refreshCurrentUser(): Promise<UserProfile | null> {
     if (firebaseAuth) await firebaseAuth.authStateReady();
     const identity = this.getSessionIdentity();
     const current = firebaseAuth?.currentUser;
-    if (current && identity !== 'demo') await reload(current);
+    if (current && identity !== 'demo') { await reload(current); this.assertSession(identity); await getIdToken(current, true); }
     this.assertSession(identity);
     const user = await this.getCurrentUser();
     this.assertSession(identity);
@@ -223,6 +250,7 @@ export class FirebaseAuthService implements AuthService {
     this.assertSession(identity);
     if (!current) throw new Error('Спочатку увійдіть у свій акаунт.');
     if ((current.isDemoUser ? 'demo' : current.id) !== identity) throw new Error('Акаунт змінився під час операції. Повторіть дію.');
+    if (!current.isDemoUser && (!current.emailVerified || current.isBlocked)) throw new Error('Редагування доступне після підтвердження пошти для активного акаунта.');
     const changes: Partial<ProfileUpdates> = {};
     for (const key of ['fullName', 'workshopName'] as const) {
       if (updates[key] !== undefined) {
@@ -242,9 +270,15 @@ export class FirebaseAuthService implements AuthService {
         else transaction.set(ref, { fullName: current.fullName, workshopName: current.workshopName,
           email: current.email, createdAt: current.createdAt, ...changes });
       });
+      this.assertSession(identity);
+      const firebaseUser = requireAuth().currentUser!;
+      if (changes.fullName !== undefined) await updateFirebaseProfile(firebaseUser, { displayName: changes.fullName });
+      this.assertSession(identity);
+      await organizationRepository.ensureIdentity(firebaseUser);
     }
     this.assertSession(identity);
-    const updated = { ...current, ...changes };
+    const updated = current.isDemoUser ? { ...current, ...changes } : await readProfile(requireAuth().currentUser!);
+    this.assertSession(identity);
     this.notify();
     return updated;
   }

@@ -1,9 +1,166 @@
 rules_version = '2';
+// Assumed data model:
+// users/{uid}: private profile; only its owner may read it or edit names.
+// users/{uid}/{materials,printers,calculations,settings,likes}: private owner data.
+// userDirectory/{uid}: trusted-token email/verification and bounded display name;
+//   only owner and verified, unblocked system administrators may read it.
+// system/authorization: nonempty unique adminUids (<=32), immutable bootstrapUid
+//   and initializedAt, integer version, fresh lastChangeId.
+// accountAccess/{uid}: blocked, timestamp updatedAt, actor updatedBy, changeId.
+// memberships/{uid}: nullable companyId, active, version, timestamp updatedAt,
+//   actor updatedBy, changeId. All role/block changes atomically update these
+//   two documents, the authorization registry and one immutable accessAudit.
+// accessAudit/{id}: actorUid, targetUid, action, role, nullable companyId,
+//   blocked, timestamp createdAt, registryVersion; append-only administrator log.
+// companies/{id}: public id/name/https website/allowedDomains/status/version,
+//   immutable createdBy/createdAt, updatedAt/updatedBy/changeId. No private PII.
+// filaments, manufacturers, temperatureProfiles: explicitly public catalog;
+//   mutations require the current authorization registry, never custom claims.
 service cloud.firestore {
   match /databases/{database}/documents {
     function owner(uid) { return request.auth != null && request.auth.uid == uid; }
-    function admin() { return request.auth != null && request.auth.token.get('admin', false) == true; }
+    function verified() { return request.auth != null && request.auth.token.get('email_verified', false) == true; }
+    function unblocked() {
+      return request.auth != null && (!exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid))
+        || get(/databases/$(database)/documents/accountAccess/$(request.auth.uid)).data.blocked == false);
+    }
+    function privateOwner(uid) { return owner(uid) && verified() && unblocked(); }
+    function admin() {
+      return verified() && unblocked() && exists(/databases/$(database)/documents/system/authorization)
+        && request.auth.uid in get(/databases/$(database)/documents/system/authorization).data.adminUids;
+    }
     function text(value, max) { return value is string && value.size() <= max; }
+    function uid(value) { return text(value, 128) && value.size() > 0 && value.matches('^[^/]+$'); }
+    function changeId(value) { return text(value, 128) && value.matches('^[A-Za-z0-9_-]+$'); }
+    function validAdminUids(values) {
+      // Contents are proven by the singleton bootstrap and exact one-UID transitions.
+      return values is list && values.size() > 0 && values.size() <= 32
+        && values.toSet().size() == values.size();
+    }
+    function validRegistry(data) {
+      return data.keys().hasAll(['adminUids', 'bootstrapUid', 'initializedAt', 'version', 'lastChangeId'])
+        && data.keys().hasOnly(['adminUids', 'bootstrapUid', 'initializedAt', 'version', 'lastChangeId'])
+        && validAdminUids(data.adminUids) && uid(data.bootstrapUid) && data.initializedAt is timestamp
+        && data.version is int && data.version >= 1 && changeId(data.lastChangeId);
+    }
+    function validAccess(data) {
+      return data.keys().hasAll(['blocked', 'updatedAt', 'updatedBy', 'changeId'])
+        && data.keys().hasOnly(['blocked', 'updatedAt', 'updatedBy', 'changeId'])
+        && data.blocked is bool && data.updatedAt == request.time && uid(data.updatedBy) && changeId(data.changeId);
+    }
+    function validMembership(data) {
+      return data.keys().hasAll(['companyId', 'active', 'version', 'updatedAt', 'updatedBy', 'changeId'])
+        && data.keys().hasOnly(['companyId', 'active', 'version', 'updatedAt', 'updatedBy', 'changeId'])
+        && (data.companyId == null || uid(data.companyId)) && data.active is bool
+        && data.version is int && data.version >= 1 && data.updatedAt == request.time
+        && uid(data.updatedBy) && changeId(data.changeId);
+    }
+    function validAudit(data) {
+      return data.keys().hasAll(['actorUid', 'targetUid', 'action', 'role', 'companyId', 'blocked', 'createdAt', 'registryVersion'])
+        && data.keys().hasOnly(['actorUid', 'targetUid', 'action', 'role', 'companyId', 'blocked', 'createdAt', 'registryVersion'])
+        && uid(data.actorUid) && (data.targetUid == '' || uid(data.targetUid))
+        && data.action in ['bootstrap', 'role', 'block', 'company'] && data.role in ['user', 'manager', 'admin']
+        && (data.companyId == null || uid(data.companyId)) && data.blocked is bool
+        && data.createdAt == request.time && data.registryVersion is int && data.registryVersion >= 1;
+    }
+    function freshAudit(id, data) {
+      return changeId(id) && !exists(/databases/$(database)/documents/accessAudit/$(id))
+        && data.actorUid == request.auth.uid;
+    }
+    function validDirectory(data, id) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'verified', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'verified', 'updatedAt'])
+        && data.uid == id && uid(data.uid) && text(data.email, 320) && data.email.size() > 0
+        && data.email == request.auth.token.email && text(data.displayName, 200)
+        && data.verified is bool && data.verified == request.auth.token.get('email_verified', false)
+        && data.updatedAt == request.time;
+    }
+    function verifiedTarget(target) {
+      return exists(/databases/$(database)/documents/userDirectory/$(target))
+        && get(/databases/$(database)/documents/userDirectory/$(target)).data.verified == true
+        && (!exists(/databases/$(database)/documents/accountAccess/$(target))
+          || get(/databases/$(database)/documents/accountAccess/$(target)).data.blocked == false);
+    }
+    function membershipVersion(target, next) {
+      return (!exists(/databases/$(database)/documents/memberships/$(target)) && next.version == 1)
+        || (exists(/databases/$(database)/documents/memberships/$(target))
+          && next.version == get(/databases/$(database)/documents/memberships/$(target)).data.version + 1);
+    }
+    function canonicalRole(target, audit, registry, access, membership) {
+      return access.blocked == audit.blocked && access.updatedBy == audit.actorUid
+        && membership.updatedBy == audit.actorUid && membershipVersion(target, membership)
+        && ((audit.role == 'admin' && target in registry.adminUids && audit.blocked == false
+              && audit.companyId == null && membership.companyId == null && membership.active == false)
+          || (audit.role == 'user' && !(target in registry.adminUids)
+              && audit.companyId == null && membership.companyId == null && membership.active == false)
+          || (audit.role == 'manager' && !(target in registry.adminUids) && audit.blocked == false
+              && membership.active == true && membership.companyId == audit.companyId
+              && audit.companyId != null
+              && getAfter(/databases/$(database)/documents/companies/$(audit.companyId)).data.status == 'active'));
+    }
+    function bootstrapTransition(target, audit, next) {
+      return !exists(/databases/$(database)/documents/system/authorization)
+        && verified() && unblocked() && request.auth.token.email == 'web.developer.den@gmail.com'
+        && target == request.auth.uid && audit.action == 'bootstrap' && audit.role == 'admin'
+        && next.adminUids == [request.auth.uid] && next.bootstrapUid == request.auth.uid
+        && next.initializedAt == request.time && next.version == 1;
+    }
+    function registryTransition(target, audit, next) {
+      let previous = get(/databases/$(database)/documents/system/authorization).data;
+      return admin() && audit.action in ['role', 'block']
+        && exists(/databases/$(database)/documents/userDirectory/$(target))
+        && (audit.action != 'block' || audit.role == 'user')
+        && (audit.action != 'block' || audit.blocked == true
+          || (exists(/databases/$(database)/documents/accountAccess/$(target))
+            && get(/databases/$(database)/documents/accountAccess/$(target)).data.blocked == true))
+        && (audit.action != 'role' || (audit.blocked == false
+          && (!exists(/databases/$(database)/documents/accountAccess/$(target))
+            || get(/databases/$(database)/documents/accountAccess/$(target)).data.blocked == false)))
+        && (audit.role == 'user' || verifiedTarget(target))
+        && next.bootstrapUid == previous.bootstrapUid && next.initializedAt == previous.initializedAt
+        && next.version == previous.version + 1
+        && next.adminUids == previous.adminUids.removeAll([target]).concat(audit.role == 'admin' ? [target] : []);
+    }
+    function roleChange(target, id) {
+      let registry = getAfter(/databases/$(database)/documents/system/authorization).data;
+      let audit = getAfter(/databases/$(database)/documents/accessAudit/$(id)).data;
+      let access = getAfter(/databases/$(database)/documents/accountAccess/$(target)).data;
+      let membership = getAfter(/databases/$(database)/documents/memberships/$(target)).data;
+      return request.auth != null && uid(target) && freshAudit(id, audit) && audit.targetUid == target
+        && registry.lastChangeId == id && audit.registryVersion == registry.version
+        && access.updatedAt == request.time && access.changeId == id
+        && membership.updatedAt == request.time && membership.changeId == id
+        && canonicalRole(target, audit, registry, access, membership)
+        && (bootstrapTransition(target, audit, registry) || registryTransition(target, audit, registry));
+    }
+    function domain(value) {
+      return text(value, 253) && value.matches('^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z]{2,63}$');
+    }
+    function validDomainAt(values, index) { return values.size() <= index || domain(values[index]); }
+    function validCompany(data, id) {
+      return data.keys().hasAll(['id', 'name', 'website', 'allowedDomains', 'status', 'version', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy', 'changeId'])
+        && data.keys().hasOnly(['id', 'name', 'website', 'allowedDomains', 'status', 'version', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy', 'changeId'])
+        && data.id == id && uid(data.id) && text(data.name, 200) && data.name.size() > 0
+        && text(data.website, 2000) && data.website.matches('^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][^ ]*)?$')
+        && data.allowedDomains is list && data.allowedDomains.size() >= 1 && data.allowedDomains.size() <= 10
+        && data.allowedDomains.toSet().size() == data.allowedDomains.size()
+        && validDomainAt(data.allowedDomains, 0) && validDomainAt(data.allowedDomains, 1)
+        && validDomainAt(data.allowedDomains, 2) && validDomainAt(data.allowedDomains, 3)
+        && validDomainAt(data.allowedDomains, 4) && validDomainAt(data.allowedDomains, 5)
+        && validDomainAt(data.allowedDomains, 6) && validDomainAt(data.allowedDomains, 7)
+        && validDomainAt(data.allowedDomains, 8) && validDomainAt(data.allowedDomains, 9)
+        && data.status in ['active', 'disabled'] && data.version is int && data.version >= 1
+        && uid(data.createdBy) && data.createdAt is timestamp && data.updatedAt == request.time
+        && uid(data.updatedBy) && changeId(data.changeId);
+    }
+    function companyChange(id, auditId) {
+      let company = getAfter(/databases/$(database)/documents/companies/$(id)).data;
+      let audit = getAfter(/databases/$(database)/documents/accessAudit/$(auditId)).data;
+      return admin() && freshAudit(auditId, audit) && audit.action == 'company'
+        && audit.targetUid == '' && audit.role == 'user' && audit.companyId == id && audit.blocked == false
+        && audit.registryVersion == get(/databases/$(database)/documents/system/authorization).data.version
+        && company.updatedAt == request.time && company.changeId == auditId && company.updatedBy == request.auth.uid;
+    }
     function money(value) { return value is string && value.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'); }
     function signedMoney(value) { return value is string && value.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?$'); }
     function optionalMoney(value) { return value == null || value == '' || money(value); }
@@ -102,39 +259,76 @@ service cloud.firestore {
     }
     match /users/{uid} {
       allow get: if owner(uid);
-      allow create: if owner(uid) && validProfile(request.resource.data, uid);
-      allow update: if owner(uid) && validProfile(request.resource.data, uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'workshopName']);
+      allow create: if owner(uid) && unblocked() && validProfile(request.resource.data, uid);
+      allow update: if owner(uid) && unblocked() && validProfile(request.resource.data, uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'workshopName']);
       match /materials/{id} {
-        allow get: if owner(uid);
-        allow list: if owner(uid) && request.query.limit <= 200;
-        allow create: if owner(uid) && validMaterial(request.resource.data, id);
-        allow update: if owner(uid) && immutable() && validMaterial(request.resource.data, id);
-        allow delete: if owner(uid);
+        allow get: if privateOwner(uid);
+        allow list: if privateOwner(uid) && request.query.limit <= 200;
+        allow create: if privateOwner(uid) && validMaterial(request.resource.data, id);
+        allow update: if privateOwner(uid) && immutable() && validMaterial(request.resource.data, id);
+        allow delete: if privateOwner(uid);
       }
       match /printers/{id} {
-        allow get: if owner(uid);
-        allow list: if owner(uid) && request.query.limit <= 200;
-        allow create: if owner(uid) && validPrinter(request.resource.data, id);
-        allow update: if owner(uid) && immutable() && validPrinter(request.resource.data, id);
-        allow delete: if owner(uid);
+        allow get: if privateOwner(uid);
+        allow list: if privateOwner(uid) && request.query.limit <= 200;
+        allow create: if privateOwner(uid) && validPrinter(request.resource.data, id);
+        allow update: if privateOwner(uid) && immutable() && validPrinter(request.resource.data, id);
+        allow delete: if privateOwner(uid);
       }
       match /calculations/{id} {
-        allow get: if owner(uid);
-        allow list: if owner(uid) && request.query.limit <= 200;
-        allow create: if owner(uid) && validCalculation(request.resource.data, id);
-        allow update: if owner(uid) && immutable() && validCalculation(request.resource.data, id);
-        allow delete: if owner(uid);
+        allow get: if privateOwner(uid);
+        allow list: if privateOwner(uid) && request.query.limit <= 200;
+        allow create: if privateOwner(uid) && validCalculation(request.resource.data, id);
+        allow update: if privateOwner(uid) && immutable() && validCalculation(request.resource.data, id);
+        allow delete: if privateOwner(uid);
       }
       match /settings/pricing {
-        allow read: if owner(uid);
-        allow create, update: if owner(uid) && validSettings(request.resource.data);
+        allow read: if privateOwner(uid);
+        allow create, update: if privateOwner(uid) && validSettings(request.resource.data);
       }
       match /likes/{id} {
-        allow get: if owner(uid);
-        allow list: if owner(uid) && request.query.limit <= 1000;
-        allow create: if owner(uid) && request.resource.data.keys().hasOnly(['filamentId']) && request.resource.data.filamentId == id;
-        allow delete: if owner(uid);
+        allow get: if privateOwner(uid);
+        allow list: if privateOwner(uid) && request.query.limit <= 1000;
+        allow create: if privateOwner(uid) && request.resource.data.keys().hasOnly(['filamentId']) && request.resource.data.filamentId == id && text(id, 180);
+        allow delete: if privateOwner(uid);
       }
+    }
+    match /userDirectory/{uid} {
+      allow get: if owner(uid) || admin();
+      allow list: if admin() && request.query.limit <= 100;
+      allow create, update: if owner(uid) && unblocked() && validDirectory(request.resource.data, uid);
+    }
+    match /system/authorization {
+      allow get: if request.auth != null;
+      allow create, update: if validRegistry(request.resource.data)
+        && roleChange(getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.lastChangeId)).data.targetUid, request.resource.data.lastChangeId);
+    }
+    match /accountAccess/{uid} {
+      allow get: if owner(uid) || admin();
+      allow list: if admin() && request.query.limit <= 100;
+      allow create, update: if validAccess(request.resource.data) && roleChange(uid, request.resource.data.changeId);
+    }
+    match /memberships/{uid} {
+      allow get: if owner(uid) || admin();
+      allow list: if admin() && request.query.limit <= 100;
+      allow create, update: if validMembership(request.resource.data) && roleChange(uid, request.resource.data.changeId);
+    }
+    match /accessAudit/{id} {
+      allow get: if admin();
+      allow list: if admin() && request.query.limit <= 100;
+      allow create: if validAudit(request.resource.data) && freshAudit(id, request.resource.data)
+        && ((request.resource.data.action == 'company' && companyChange(request.resource.data.companyId, id))
+          || (request.resource.data.action != 'company' && roleChange(request.resource.data.targetUid, id)));
+    }
+    match /companies/{id} {
+      allow get: if true;
+      allow list: if request.query.limit <= 200;
+      allow create: if validCompany(request.resource.data, id) && request.resource.data.version == 1
+        && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time
+        && companyChange(id, request.resource.data.changeId);
+      allow update: if validCompany(request.resource.data, id) && request.resource.data.id == resource.data.id
+        && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.version == resource.data.version + 1 && companyChange(id, request.resource.data.changeId);
     }
     match /filaments/{id} {
       allow get: if true;

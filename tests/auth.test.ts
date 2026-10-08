@@ -32,11 +32,14 @@ test('missing Firebase configuration refuses real auth and isolates explicit dem
     const demo = await authService.enableDemoSession();
     assert.equal(demo.isDemoUser, true);
     assert.equal(authService.isDemoSession(), true);
-    localStorage.setItem('printcost_demo_profile', JSON.stringify({ id: 'victim', email: 'victim@example.com', isAdmin: true, isDemoUser: false, fullName: 'Демо' }));
+    localStorage.setItem('printcost_demo_profile', JSON.stringify({ id: 'victim', email: 'victim@example.com', isAdmin: true, role: 'admin', companyId: 'victim-company', isBlocked: true, isDemoUser: false, fullName: 'Демо' }));
     const tampered = await authService.getCurrentUser();
     assert.equal(tampered?.id, demo.id);
     assert.equal(tampered?.email, demo.email);
     assert.equal(tampered?.isAdmin, false);
+    assert.equal(tampered?.role, 'user');
+    assert.equal(tampered?.companyId, null);
+    assert.equal(tampered?.isBlocked, false);
     assert.equal(tampered?.isDemoUser, true);
 
     const updated = await authService.updateProfile({ fullName: ' Оператор ', workshopName: ' Майстерня ' });

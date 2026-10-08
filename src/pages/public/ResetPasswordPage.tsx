@@ -118,7 +118,7 @@ export const ResetPasswordPage: React.FC = () => {
               )}
 
               <div>
-                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
+                <label htmlFor="reset-password" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
                   Новий пароль
                 </label>
                 <div className="relative flex items-center rounded-lg border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900 focus-within:ring-2 focus-within:ring-emerald-500">
@@ -126,7 +126,9 @@ export const ResetPasswordPage: React.FC = () => {
                     <Lock className="w-4 h-4" />
                   </div>
                   <input
+                    id="reset-password"
                     type={showPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Мінімум 6 знаків"
@@ -145,7 +147,7 @@ export const ResetPasswordPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
+                <label htmlFor="reset-password-confirm" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
                   Повторіть новий пароль
                 </label>
                 <div className="relative flex items-center rounded-lg border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900 focus-within:ring-2 focus-within:ring-emerald-500">
@@ -153,7 +155,9 @@ export const ResetPasswordPage: React.FC = () => {
                     <Lock className="w-4 h-4" />
                   </div>
                   <input
+                    id="reset-password-confirm"
                     type={showPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="Повторіть пароль"

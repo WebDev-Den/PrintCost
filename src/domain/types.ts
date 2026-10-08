@@ -18,6 +18,9 @@ export interface UserProfile {
   isDemoUser: boolean;
   emailVerified?: boolean;
   isAdmin?: boolean;
+  role?: import('./organizations.ts').Role;
+  companyId?: string | null;
+  isBlocked?: boolean;
 }
 
 export interface MaterialProfile {

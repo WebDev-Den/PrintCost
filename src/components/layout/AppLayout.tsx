@@ -26,6 +26,7 @@ import { useAppData } from '../../context/AppDataContext.tsx';
 import { DemoBanner } from '../common/DemoBanner.tsx';
 import { BrandLogo } from '../common/BrandLogo.tsx';
 import { ErrorPage } from '../../pages/ErrorPage.tsx';
+import { authErrorMessage } from '../../services/authService.ts';
 
 export const AppLayout: React.FC = () => {
   const { user, logout, isLoading: authLoading, isDemoSession, authError, reloadUser } = useAuth();
@@ -36,6 +37,7 @@ export const AppLayout: React.FC = () => {
 
   // Mobile menu drawer state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
 
   // Desktop sidebar collapsed state (persistent in localStorage)
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
@@ -77,14 +79,16 @@ export const AppLayout: React.FC = () => {
     { to: '/app/materials', label: 'Матеріали', icon: Layers },
     { to: '/filaments', label: 'Каталог пластиків', icon: BookOpen },
     { to: '/app/admin/catalog', label: 'Адмінка каталогу', icon: ShieldCheck },
+    { to: '/app/admin/access', label: 'Користувачі та компанії', icon: ShieldCheck },
     { to: '/app/printers', label: 'Принтери', icon: Printer },
     { to: '/app/settings', label: 'Налаштування', icon: Settings },
     { to: '/app/account', label: 'Акаунт', icon: User },
-  ].filter((item) => item.to !== '/app/admin/catalog' || canManageCatalog);
+  ].filter((item) => !item.to.startsWith('/app/admin') || canManageCatalog);
 
   const handleLogout = async () => {
+    setLogoutError(null);
     try { await logout(); navigate('/'); }
-    catch { /* AuthContext displays the error. */ }
+    catch (error) { setLogoutError(authErrorMessage(error)); }
   };
 
   const getPageTitle = () => {
@@ -97,6 +101,15 @@ export const AppLayout: React.FC = () => {
   if (authLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження акаунту" /></div>;
   if (authError) return <ErrorPage error={new Error(authError)} resetErrorBoundary={() => { void reloadUser(); }} />;
   if (!user) return <Navigate to="/auth/login" state={{ from: location }} replace />;
+  if (!isDemoSession && user.isBlocked) return <div className="min-h-screen flex items-center justify-center bg-neutral-100 dark:bg-neutral-950 p-6">
+    <div className="max-w-md rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 space-y-4">
+      <h1 className="text-lg font-semibold text-neutral-900 dark:text-white">Доступ до акаунта призупинено</h1>
+      <p className="text-sm text-neutral-600 dark:text-neutral-400">Адміністратор обмежив доступ для {user.email}. Зверніться до адміністратора системи.</p>
+      {logoutError && <p role="alert" className="text-sm text-red-600">{logoutError}</p>}
+      <button className="text-sm underline text-emerald-600" onClick={handleLogout}>Вийти з акаунта</button>
+    </div>
+  </div>;
+  if (!isDemoSession && !user.emailVerified) return <Navigate to="/auth/check-email" replace />;
   if (isLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження даних" /></div>;
   if (loadError) return <ErrorPage error={new Error(loadError)} resetErrorBoundary={retryLoad} />;
   if (location.pathname.startsWith('/app/admin') && !canManageCatalog) return <Navigate to="/app/dashboard" replace />;
@@ -327,6 +340,7 @@ export const AppLayout: React.FC = () => {
 
           {/* Page Content Viewport with Responsive Max-Width */}
           <main className="flex-1 p-3 sm:p-5 lg:p-6 w-full mx-auto max-w-full">
+            {logoutError && <p role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700">{logoutError}</p>}
             {actionError && <div role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 flex items-center justify-between gap-3"><span>{actionError}</span><button onClick={clearActionError} aria-label="Закрити повідомлення"><X className="w-4 h-4" /></button></div>}
             <Outlet key={isDemoSession ? 'demo' : user.id} />
           </main>

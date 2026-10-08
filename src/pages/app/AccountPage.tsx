@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { User, Building, Mail, Lock, FolderSync, LogOut, CheckCircle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
@@ -6,6 +6,7 @@ import { authService, authErrorMessage } from '../../services/authService.ts';
 import { Button } from '../../components/common/Button.tsx';
 import { Input } from '../../components/common/Input.tsx';
 import { Modal } from '../../components/common/Modal.tsx';
+import { organizationRepository } from '../../services/organizationRepository.ts';
 
 export const AccountPage: React.FC = () => {
   const navigate = useNavigate();
@@ -21,6 +22,17 @@ export const AccountPage: React.FC = () => {
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [companyName, setCompanyName] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    setCompanyName('');
+    if (user?.companyId && !isDemoSession) {
+      organizationRepository.getCompany(user.companyId).then(company => { if (active) setCompanyName(company?.name || ''); })
+        .catch(() => { if (active) setCompanyName('Назва компанії тимчасово недоступна'); });
+    }
+    return () => { active = false; };
+  }, [user?.companyId, isDemoSession]);
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,6 +93,7 @@ export const AccountPage: React.FC = () => {
             <div className="flex items-center gap-2 px-3 py-2 text-xs bg-neutral-100 dark:bg-neutral-800 rounded-lg text-neutral-600 dark:text-neutral-400 select-all"><Mail className="w-4 h-4" /><span>{user?.email}</span></div>
             {!isDemoSession && (user?.emailVerified ? <p className="text-xs text-emerald-600">Пошту підтверджено</p> : <NavLink to="/auth/check-email" className="text-xs text-amber-700 dark:text-amber-400 underline">Пошта ще не підтверджена — надіслати лист</NavLink>)}
           </div>
+          <p className="text-xs text-neutral-600 dark:text-neutral-400">Роль: <strong>{user?.role === 'admin' ? 'Адміністратор' : user?.role === 'manager' ? 'Менеджер компанії' : 'Користувач'}</strong>{user?.companyId ? ` · Компанія: ${companyName || 'завантаження…'}` : ''}</p>
           <div className="pt-2 flex flex-wrap gap-3 items-center justify-between">
             <Button type="submit" variant="primary" size="sm" isLoading={isSaving}>Зберегти зміни</Button>
             <Button type="button" variant="outline" size="sm" leftIcon={<Lock className="w-3.5 h-3.5" />} onClick={() => setIsPasswordModalOpen(true)} disabled={isDemoSession}>Змінити пароль</Button>

@@ -119,7 +119,7 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                <label htmlFor="login-password" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
                   Пароль
                 </label>
                 <NavLink
@@ -135,6 +135,7 @@ export const LoginPage: React.FC = () => {
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
+                  id="login-password"
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
                   value={password}

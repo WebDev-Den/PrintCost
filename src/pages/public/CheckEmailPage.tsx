@@ -6,7 +6,7 @@ import { useAuth } from '../../context/AuthContext.tsx';
 import { authService, authErrorMessage } from '../../services/authService.ts';
 
 export const CheckEmailPage: React.FC = () => {
-  const { user, isDemoSession } = useAuth();
+  const { user, isDemoSession, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [sent, setSent] = useState(Boolean(location.state?.verificationSent));
@@ -50,7 +50,11 @@ export const CheckEmailPage: React.FC = () => {
             <Button variant="outline" size="sm" className="w-full" onClick={sendVerification} isLoading={isLoading}>{sent ? 'Надіслати лист повторно' : 'Надіслати лист підтвердження'}</Button>
             <Button variant="primary" size="sm" className="w-full" onClick={checkVerification} disabled={isLoading}>Я підтвердив пошту — перевірити</Button>
           </>}
-          <NavLink to="/app/onboarding" className="block text-xs text-emerald-600 dark:text-emerald-400 underline">Перейти до налаштування майстерні</NavLink>
+          {user.emailVerified && <NavLink to="/app/onboarding" className="block text-xs text-emerald-600 dark:text-emerald-400 underline">Перейти до налаштування майстерні</NavLink>}
+          <Button variant="ghost" size="sm" className="w-full" onClick={async () => {
+            setError(null);
+            try { await logout(); navigate('/auth/login'); } catch (error) { setError(authErrorMessage(error)); }
+          }} disabled={isLoading}>Вийти та використати інший акаунт</Button>
         </div> : <NavLink to="/auth/login" className="block"><Button variant="outline" size="sm" className="w-full">Повернутися до входу</Button></NavLink>}
       </div>
     </div>
