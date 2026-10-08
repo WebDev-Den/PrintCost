@@ -7,7 +7,7 @@ import { BrandLogo } from '../common/BrandLogo.tsx';
 import { Menu, X, BookOpen, Sparkles, Layers, Calculator, Sun, Moon } from 'lucide-react';
 
 export const PublicNavbar: React.FC = () => {
-  const { user, enableDemoSession } = useAuth();
+  const { user, isDemoSession, enableDemoSession } = useAuth();
   const { theme, setTheme } = useAppData();
   const navigate = useNavigate();
   const location = useLocation();
@@ -104,12 +104,12 @@ export const PublicNavbar: React.FC = () => {
           )}
         </button>
 
-        <Button variant="outline" size="sm" onClick={handleOpenDemo} className="hidden sm:inline-flex">
-          Демо
-        </Button>
-        <Button variant="primary" size="sm" onClick={() => navigate('/auth/login')}>
-          Увійти
-        </Button>
+        {user && !isDemoSession ? <Button variant="primary" size="sm" onClick={() => navigate('/app/dashboard')}>
+          Мій кабінет
+        </Button> : <>
+          <Button variant="outline" size="sm" onClick={handleOpenDemo} className="hidden sm:inline-flex">Демо</Button>
+          <Button variant="primary" size="sm" onClick={() => navigate('/auth/login')}>Увійти</Button>
+        </>}
 
         {/* Mobile menu toggle */}
         <button
@@ -205,7 +205,7 @@ export const PublicNavbar: React.FC = () => {
           </div>
 
           <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 flex gap-2">
-            <Button
+            {(!user || isDemoSession) && <Button
               variant="outline"
               size="sm"
               className="w-full"
@@ -215,7 +215,7 @@ export const PublicNavbar: React.FC = () => {
               }}
             >
               Переглянути демо
-            </Button>
+            </Button>}
             <Button
               variant="primary"
               size="sm"

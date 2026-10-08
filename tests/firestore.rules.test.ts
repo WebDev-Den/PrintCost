@@ -2,7 +2,7 @@ import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestContext, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
-import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { INITIAL_MATERIALS, INITIAL_PRINTERS, INITIAL_PRICING_SETTINGS, getInitialCalculationSnapshots } from '../src/domain/defaultData.ts';
 import { MANUFACTURERS_LIST, PUBLIC_FILAMENTS_CATALOG, STANDARD_TEMPERATURE_PROFILES } from '../src/domain/filamentsDirectory.ts';
 import { api } from '../src/services/api.ts';
@@ -87,6 +87,27 @@ async function companyBatch(db: TestFirestore, actor: string, id = 'company-a', 
   });
   if (!omitAudit) batch.set(doc(db, `accessAudit/${auditId}`), { actorUid: actor, targetUid: '', action: 'company', role: 'user', companyId: id, blocked: false, createdAt: serverTimestamp(), registryVersion: registry.version });
   return batch;
+}
+
+function offerData(actor = 'alice', companyId = 'company-a', id = 'offer-a', overrides: Record<string, unknown> = {}) {
+  return {
+    id, companyId, createdBy: actor, updatedBy: actor, name: 'PLA White 1 кг', brand: 'Новий бренд', type: 'PLA', family: 'Стандартні',
+    colorName: 'Білий', colorHex: '#ffffff', colorTone: 'white', packagingType: 'spool', spoolWeightGrams: 1000,
+    priceUah: 599.99, diameterMm: 1.75, description: 'Пропозиція компанії', productUrl: 'https://shop.example.com/product/pla',
+    inStock: true, status: 'published', version: 1, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), ...overrides,
+  };
+}
+
+async function setupOffers() {
+  await seedAuthorization();
+  await seedDirectory('alice');
+  await seedDirectory('bob');
+  const administrator = user('administrator');
+  await (await companyBatch(administrator, 'administrator')).commit();
+  await (await companyBatch(administrator, 'administrator', 'company-b', { name: 'Компанія B', website: 'https://shop-b.example.com', allowedDomains: ['shop-b.example.com'] })).commit();
+  await (await roleBatch(administrator, 'administrator', 'alice', 'manager', { companyId: 'company-a' })).commit();
+  await (await roleBatch(administrator, 'administrator', 'bob', 'manager', { companyId: 'company-b' })).commit();
+  return { administrator, manager: alice(), otherManager: user('bob'), anonymous: environment.unauthenticatedContext().firestore() };
 }
 
 before(async () => {
@@ -427,6 +448,153 @@ test('a blocked designated bootstrap account cannot restore its own access', asy
   });
   const founder = user('founder', { email: 'web.developer.den@gmail.com' });
   await assertFails(bootstrapBatch(founder, 'founder').commit());
+});
+
+test('offers support own-company manager create/edit and public bounded published queries', async () => {
+  const { manager, anonymous, administrator } = await setupOffers();
+  const ref = doc(manager, 'companyOffers/offer-a');
+  await assertSucceeds(setDoc(ref, offerData()));
+  await assertSucceeds(updateDoc(ref, { priceUah: 900.29, version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  await assertSucceeds(getDoc(doc(anonymous, 'companyOffers/offer-a')));
+  const published = await assertSucceeds(getDocs(query(collection(anonymous, 'companyOffers'), where('companyId', '==', 'company-a'), where('status', '==', 'published'), orderBy('createdAt', 'desc'), limit(50))));
+  assert.equal(published.size, 1);
+  await assertSucceeds(getDocs(query(collection(manager, 'companyOffers'), where('companyId', '==', 'company-a'), orderBy('createdAt', 'desc'), limit(50))));
+  await assertSucceeds(getDocs(query(collection(administrator, 'companyOffers'), orderBy('createdAt', 'desc'), limit(50))));
+  await assertFails(getDocs(query(collection(anonymous, 'companyOffers'), where('status', '==', 'published'), limit(50))));
+  await assertFails(getDocs(query(collection(anonymous, 'companyOffers'), where('companyId', '==', 'company-a'), limit(50))));
+  await assertFails(getDocs(query(collection(anonymous, 'companyOffers'), where('companyId', '==', 'company-a'), where('status', '==', 'published'), limit(51))));
+  await assertFails(getDocs(collection(administrator, 'companyOffers')));
+  await assertFails(deleteDoc(ref));
+  await assertFails(deleteDoc(doc(administrator, 'companyOffers/offer-a')));
+});
+
+test('hidden and blocked offers are readable only by their active company manager or administrator', async () => {
+  const { manager, otherManager, administrator, anonymous } = await setupOffers();
+  await assertSucceeds(setDoc(doc(manager, 'companyOffers/offer-a'), offerData('alice', 'company-a', 'offer-a', { status: 'hidden' })));
+  await assertSucceeds(getDoc(doc(manager, 'companyOffers/offer-a')));
+  await assertSucceeds(getDoc(doc(administrator, 'companyOffers/offer-a')));
+  await assertFails(getDoc(doc(anonymous, 'companyOffers/offer-a')));
+  await assertFails(getDoc(doc(otherManager, 'companyOffers/offer-a')));
+  await assertFails(getDocs(query(collection(otherManager, 'companyOffers'), where('companyId', '==', 'company-a'), limit(50))));
+  await assertSucceeds(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'blocked', version: 2, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertSucceeds(getDoc(doc(manager, 'companyOffers/offer-a')));
+  await assertFails(getDoc(doc(anonymous, 'companyOffers/offer-a')));
+  for (const change of [{ status: 'published' }, { status: 'hidden' }, { priceUah: 800 }]) {
+    await assertFails(updateDoc(doc(manager, 'companyOffers/offer-a'), { ...change, version: 3, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  }
+  await assertSucceeds(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'published', version: 3, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertSucceeds(getDoc(doc(anonymous, 'companyOffers/offer-a')));
+});
+
+test('offer ownership and actors cannot be forged or moved across companies', async () => {
+  const { manager, otherManager, administrator, anonymous } = await setupOffers();
+  await assertFails(setDoc(doc(anonymous, 'companyOffers/offer-a'), offerData()));
+  await assertFails(setDoc(doc(user('customer'), 'companyOffers/offer-a'), offerData('customer')));
+  await assertFails(setDoc(doc(manager, 'companyOffers/offer-a'), offerData('bob')));
+  await assertFails(setDoc(doc(manager, 'companyOffers/offer-a'), offerData('alice', 'company-b', 'offer-a', { productUrl: 'https://shop-b.example.com/product/pla' })));
+  await assertFails(setDoc(doc(manager, 'companyOffers/offer-a'), offerData('alice', 'missing')));
+  await assertFails(setDoc(doc(manager, 'companyOffers/offer-a'), offerData('alice', 'company-a', 'offer-a', { updatedBy: 'administrator' })));
+  await assertFails(setDoc(doc(manager, 'companyOffers/offer-a'), offerData('alice', 'company-a', 'offer-a', { status: 'blocked' })));
+  await assertSucceeds(setDoc(doc(manager, 'companyOffers/offer-a'), offerData()));
+  await assertFails(updateDoc(doc(otherManager, 'companyOffers/offer-a'), { name: 'Takeover', version: 2, updatedAt: serverTimestamp(), updatedBy: 'bob' }));
+  for (const change of [{ id: 'other' }, { companyId: 'company-b', productUrl: 'https://shop-b.example.com/product/pla' }, { createdBy: 'bob' }, { createdAt: serverTimestamp() }, { updatedBy: 'bob' }]) {
+    await assertFails(updateDoc(doc(manager, 'companyOffers/offer-a'), { version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice', ...change }));
+  }
+  await assertFails(updateDoc(doc(administrator, 'companyOffers/offer-a'), { companyId: 'company-b', productUrl: 'https://shop-b.example.com/product/pla', version: 2, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertFails(setDoc(doc(manager, 'filaments/forged'), { ...PUBLIC_FILAMENTS_CATALOG[0], id: 'forged' }));
+});
+
+test('offer product URLs require exact approved HTTPS hosts and reject credentials, ports and suffix attacks', async () => {
+  const { manager } = await setupOffers();
+  for (const productUrl of [
+    'http://shop.example.com/product', 'javascript:alert(1)', 'https://shop.example.com.evil.example/product',
+    'https://evilshop.example.com/product', 'https://sub.shop.example.com/product', 'https://shop.example.com@evil.example/product',
+    'https://user:password@shop.example.com/product', 'https://shop.example.com:443/product', 'https://shop.example.com:8443/product',
+    'https://shop.example.com\\@evil.example/product', 'https://shop.example.com%2eevil.example/product',
+    'https://SHOP.example.com/product', 'https://shop.example.com./product', 'https://shop.example.com\n.evil.example/product',
+  ]) await assertFails(setDoc(doc(manager, 'companyOffers/offer-a'), offerData('alice', 'company-a', 'offer-a', { productUrl })));
+  for (const [index, productUrl] of ['https://shop.example.com', 'https://shop.example.com/product?sku=pla#white', 'https://shop.example.com/?next=https://other.example.com'].entries()) {
+    await assertSucceeds(setDoc(doc(manager, `companyOffers/url-${index}`), offerData('alice', 'company-a', `url-${index}`, { productUrl })));
+  }
+});
+
+test('offer create and update validate strict schemas, sizes, enums and exact two-decimal prices', async () => {
+  const { manager } = await setupOffers();
+  const ref = doc(manager, 'companyOffers/offer-a');
+  const invalidValues = [
+    { name: '' }, { name: 'x'.repeat(201) }, { brand: '' }, { brand: 'x'.repeat(201) }, { type: '' }, { type: 'x'.repeat(81) },
+    { family: 'unknown' }, { colorName: '' }, { colorName: 'x'.repeat(101) }, { colorHex: 'red' }, { colorHex: '#FFFFFF' },
+    { colorTone: 'ultraviolet' }, { packagingType: 'loose' }, { spoolWeightGrams: 0 }, { spoolWeightGrams: 0.5 }, { spoolWeightGrams: 100001 }, { spoolWeightGrams: '1000' },
+    { priceUah: 0 }, { priceUah: -1 }, { priceUah: Number.NaN }, { priceUah: Number.POSITIVE_INFINITY }, { priceUah: 10000001 }, { priceUah: 600.333 }, { priceUah: 900.2900000000001 }, { priceUah: '600' },
+    { diameterMm: 0 }, { diameterMm: 0.01 }, { diameterMm: 11 }, { diameterMm: '1.75' }, { description: 'x'.repeat(10001) },
+    { productUrl: 'https://shop.example.com/' + 'x'.repeat(2000) },
+    { inStock: 'yes' }, { status: 'pending' }, { version: 0 }, { version: 2 }, { verifiedSeller: true }, { createdAt: historicalTime }, { updatedAt: historicalTime },
+  ];
+  for (const invalid of invalidValues) await assertFails(setDoc(ref, offerData('alice', 'company-a', 'offer-a', invalid)));
+  const missing = offerData();
+  Reflect.deleteProperty(missing, 'brand');
+  await assertFails(setDoc(ref, missing));
+  await assertSucceeds(setDoc(ref, offerData()));
+  for (const invalid of invalidValues.filter(value => !('createdAt' in value) && !('version' in value))) {
+    await assertFails(updateDoc(ref, { version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice', ...invalid }));
+  }
+  await assertFails(updateDoc(ref, { brand: deleteField(), version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  for (const [index, priceUah] of [0.01, 31, 95.12, 599.99, 900.29, 9999999.99, 10000000].entries()) {
+    await assertSucceeds(setDoc(doc(manager, `companyOffers/price-${index}`), offerData('alice', 'company-a', `price-${index}`, { priceUah })));
+  }
+  await assertSucceeds(setDoc(doc(manager, 'companyOffers/boundary'), offerData('alice', 'company-a', 'boundary', { name: 'x'.repeat(200), spoolWeightGrams: 1, diameterMm: 0.1 })));
+});
+
+test('offer version comparisons reject stale edits and timestamps cannot be backdated', async () => {
+  const { manager } = await setupOffers();
+  const ref = doc(manager, 'companyOffers/offer-a');
+  await setDoc(ref, offerData());
+  await assertSucceeds(updateDoc(ref, { name: 'New name', version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  await assertFails(updateDoc(ref, { priceUah: 800, version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  await assertFails(updateDoc(ref, { priceUah: 800, version: 4, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  await assertFails(updateDoc(ref, { priceUah: 800, version: 3, updatedAt: historicalTime, updatedBy: 'alice' }));
+  assert.equal((await getDoc(ref)).data()?.name, 'New name');
+});
+
+test('disabled companies hide published offers and stop manager mutations while admins retain moderation', async () => {
+  const { manager, administrator, anonymous } = await setupOffers();
+  await setDoc(doc(manager, 'companyOffers/offer-a'), offerData());
+  await (await companyBatch(administrator, 'administrator', 'company-a', { status: 'disabled' })).commit();
+  await assertFails(getDoc(doc(anonymous, 'companyOffers/offer-a')));
+  await assertFails(getDocs(query(collection(anonymous, 'companyOffers'), where('companyId', '==', 'company-a'), where('status', '==', 'published'), limit(50))));
+  await assertFails(getDoc(doc(manager, 'companyOffers/offer-a')));
+  await assertFails(updateDoc(doc(manager, 'companyOffers/offer-a'), { name: 'Disabled edit', version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  await assertFails(setDoc(doc(manager, 'companyOffers/offer-new'), offerData('alice', 'company-a', 'offer-new')));
+  await assertSucceeds(getDoc(doc(administrator, 'companyOffers/offer-a')));
+  await assertSucceeds(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'blocked', version: 2, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+});
+
+test('removed offer hosts forbid edits and republishing but allow an administrator to block the unchanged URL', async () => {
+  const { manager, administrator } = await setupOffers();
+  const ref = doc(manager, 'companyOffers/offer-a');
+  await setDoc(ref, offerData());
+  await (await companyBatch(administrator, 'administrator', 'company-a', { allowedDomains: ['new-shop.example.com'] })).commit();
+  await assertFails(updateDoc(ref, { priceUah: 700, version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  await assertFails(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'published', version: 2, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertFails(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'blocked', productUrl: 'https://shop.example.com/changed', version: 2, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertSucceeds(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'blocked', version: 2, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertFails(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'published', version: 3, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertSucceeds(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'published', productUrl: 'https://new-shop.example.com/pla', version: 3, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+});
+
+test('manager role revocation, blocking or unverified token immediately denies offer management', async () => {
+  const { manager, administrator } = await setupOffers();
+  await setDoc(doc(manager, 'companyOffers/offer-a'), offerData('alice', 'company-a', 'offer-a', { status: 'hidden' }));
+  const unverified = user('alice', { email: profile.email, email_verified: false });
+  await assertFails(getDoc(doc(unverified, 'companyOffers/offer-a')));
+  await assertFails(updateDoc(doc(unverified, 'companyOffers/offer-a'), { name: 'Unverified edit', version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  await (await roleBatch(administrator, 'administrator', 'alice', 'user')).commit();
+  await assertFails(getDoc(doc(manager, 'companyOffers/offer-a')));
+  await assertFails(updateDoc(doc(manager, 'companyOffers/offer-a'), { status: 'published', version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+  await (await roleBatch(administrator, 'administrator', 'alice', 'manager', { companyId: 'company-a' })).commit();
+  await (await roleBatch(administrator, 'administrator', 'alice', 'user', { action: 'block', blocked: true })).commit();
+  await assertFails(getDoc(doc(manager, 'companyOffers/offer-a')));
+  await assertFails(updateDoc(doc(manager, 'companyOffers/offer-a'), { name: 'Blocked edit', version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
 });
 
 test('demo persistence is explicit and isolated, failed real reads never use demo data', async () => {

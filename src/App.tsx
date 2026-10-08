@@ -28,6 +28,7 @@ import { AccountPage } from './pages/app/AccountPage.tsx';
 import { OnboardingPage } from './pages/app/OnboardingPage.tsx';
 const CatalogAdminPage = lazy(() => import('./pages/app/CatalogAdminPage.tsx').then((m) => ({ default: m.CatalogAdminPage })));
 const AdministrationPage = lazy(() => import('./pages/app/AdministrationPage.tsx').then((m) => ({ default: m.AdministrationPage })));
+const CompanyOffersPage = lazy(() => import('./pages/app/CompanyOffersPage.tsx').then((m) => ({ default: m.CompanyOffersPage })));
 
 // Fallback pages
 import { NotFoundPage } from './pages/NotFoundPage.tsx';
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="printers" element={<PrintersPage />} />
               <Route path="admin/catalog" element={<CatalogAdminPage />} />
               <Route path="admin/access" element={<AdministrationPage />} />
+              <Route path="company/offers" element={<CompanyOffersPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="account" element={<AccountPage />} />
               <Route path="onboarding" element={<OnboardingPage />} />

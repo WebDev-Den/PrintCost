@@ -1,5 +1,19 @@
 {
-  "indexes": [],
+  "indexes": [
+    { "collectionGroup": "companies", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "name", "order": "ASCENDING" }
+    ] },
+    { "collectionGroup": "companyOffers", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "companyId", "order": "ASCENDING" },
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ] },
+    { "collectionGroup": "companyOffers", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "companyId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ] }
+  ],
   "fieldOverrides": [
     { "collectionGroup": "calculations", "fieldPath": "input", "indexes": [] },
     { "collectionGroup": "calculations", "fieldPath": "result", "indexes": [] },

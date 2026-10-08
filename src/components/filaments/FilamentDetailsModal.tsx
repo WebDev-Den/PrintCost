@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useRef } from 'react';
 import {
   X,
   ExternalLink,
@@ -29,6 +29,7 @@ import { STANDARD_TEMPERATURE_PROFILES } from '../../domain/filamentsDirectory.t
 import { formatUah } from '../../domain/formatters.ts';
 import { Button } from '../common/Button.tsx';
 import { FilamentColorVisual } from './FilamentColorVisual.tsx';
+import { useDialogFocus } from '../common/useDialogFocus.ts';
 
 interface FilamentDetailsModalProps {
   sku: ConcreteFilamentSku | null;
@@ -53,21 +54,8 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
   isAdded,
   onCalculatePrint,
 }) => {
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
-      }
-    };
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-      window.addEventListener('keydown', handleKeyDown);
-    }
-    return () => {
-      document.body.style.overflow = 'unset';
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen, onClose]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, isOpen, onClose);
 
   if (!isOpen || !sku) return null;
 
@@ -85,6 +73,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
 
       {/* Modal Dialog */}
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="filament-modal-title"
@@ -111,7 +100,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
                     </span>
                   </div>
                   <span className="text-[11px] text-emerald-600 dark:text-emerald-400 block font-medium">
-                    Офіційний профіль виробника
+                    {sku.companyId ? `Пропозиція компанії ${sku.companyName || sku.storeName}` : 'Профіль виробника з каталогу'}
                   </span>
                 </div>
               </>
@@ -120,6 +109,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
                 <span className="text-sm font-bold text-neutral-900 dark:text-white">
                   {sku.brand}
                 </span>
+                {sku.companyName && <p className="text-xs text-neutral-500">Продавець: {sku.companyName}</p>}
               </div>
             )}
           </div>
@@ -301,7 +291,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
                 <span>Вартість та економіка матеріалу</span>
               </span>
               <span className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium">
-                Ціна актуальна в каталозі
+                Ціна з каталогу
               </span>
             </div>
 
@@ -380,7 +370,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
                   <span>Камера:</span>
                 </span>
                 <span className="text-xs font-semibold text-neutral-900 dark:text-white block mt-0.5 truncate">
-                  {sku.profileChamber || standardProfile?.chamberRange || 'Кімнатна'}
+                  {sku.profileChamber || standardProfile?.chamberRange || (sku.companyId ? 'Уточніть у виробника' : 'Кімнатна')}
                 </span>
               </div>
 
@@ -390,7 +380,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
                   <span>Обдув деталі (Fan):</span>
                 </span>
                 <span className="text-xs font-semibold text-neutral-900 dark:text-white block mt-0.5 truncate">
-                  {sku.profileFan || standardProfile?.fanSpeed || '100%'}
+                  {sku.profileFan || standardProfile?.fanSpeed || (sku.companyId ? 'Уточніть у виробника' : '100%')}
                 </span>
               </div>
 
@@ -400,7 +390,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
                   <span>Швидкість друку:</span>
                 </span>
                 <span className="text-xs font-semibold text-neutral-900 dark:text-white block mt-0.5 truncate">
-                  {sku.profileSpeed || 'до 200–300 мм/с'}
+                  {sku.profileSpeed || (sku.companyId ? 'Уточніть у виробника' : 'до 200–300 мм/с')}
                 </span>
               </div>
 
@@ -410,7 +400,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
                   <span>Сушіння нитки:</span>
                 </span>
                 <span className="text-xs font-semibold text-neutral-900 dark:text-white block mt-0.5 truncate">
-                  {standardProfile?.dryingTempTime || 'Не вимагає'}
+                  {standardProfile?.dryingTempTime || (sku.companyId ? 'Уточніть у виробника' : 'Не вимагає')}
                 </span>
               </div>
             </div>
@@ -431,10 +421,10 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-neutral-300 flex items-center gap-1.5">
                 <ShoppingCart className="w-4 h-4 text-emerald-400" />
-                <span>1 Пряма силка на товар у продавця</span>
+                <span>Пряме посилання на товар у продавця</span>
               </span>
               <span className="text-[11px] text-emerald-400 font-medium">
-                {sku.isOfficialDistributor ? 'Офіційний дистриб’ютор' : 'Перевірений магазин'}
+                {sku.companyId ? 'Пропозиція компанії' : sku.isOfficialDistributor ? 'Офіційний дистриб’ютор' : 'Магазин каталогу'}
               </span>
             </div>
 

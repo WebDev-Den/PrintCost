@@ -1,5 +1,5 @@
 import {
-  collection, doc, getDocFromServer, getDocsFromServer, limit, orderBy, query, startAfter,
+  collection, doc, documentId, getDocFromServer, getDocsFromServer, limit, orderBy, query, startAfter,
   runTransaction, type DocumentData, type DocumentReference, type QueryDocumentSnapshot, type QueryConstraint, type QuerySnapshot,
 } from 'firebase/firestore';
 import { Decimal } from 'decimal.js';
@@ -160,13 +160,17 @@ function publicRepository<T extends { id: string }>(name: string, key: string, i
     async getAll(): Promise<T[]> {
       if (authService.isDemoSession()) return readDemo(key, [...initial]);
       if (!firestoreDb) return structuredClone([...initial]);
-      const overrides = await getDocsFromServer(query(collection(db(), name), limit(1000)));
-      if (overrides.size === 1000) throw new Error('Каталог досяг ліміту завантаження. Потрібна пагінація каталогу.');
       const items = new Map(initial.map((item) => [item.id, structuredClone(item)]));
-      overrides.forEach((snapshot) => {
-        if (snapshot.data().deleted) items.delete(snapshot.id);
-        else items.set(snapshot.id, { ...snapshot.data(), id: snapshot.id } as T);
-      });
+      let cursor: QueryDocumentSnapshot | null = null;
+      for (;;) {
+        const page: QuerySnapshot<DocumentData> = await getDocsFromServer(query(collection(db(), name), orderBy(documentId()), limit(200), ...(cursor ? [startAfter(cursor)] : [])));
+        page.forEach((snapshot) => {
+          if (snapshot.data().deleted) items.delete(snapshot.id);
+          else items.set(snapshot.id, { ...snapshot.data(), id: snapshot.id } as T);
+        });
+        if (page.size < 200) break;
+        cursor = page.docs.at(-1)!;
+      }
       return [...items.values()];
     },
     async getById(id: string): Promise<T | null> { return (await this.getAll()).find((item) => item.id === id) || null; },

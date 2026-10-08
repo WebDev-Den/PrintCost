@@ -14,6 +14,10 @@ rules_version = '2';
 //   blocked, timestamp createdAt, registryVersion; append-only administrator log.
 // companies/{id}: public id/name/https website/allowedDomains/status/version,
 //   immutable createdBy/createdAt, updatedAt/updatedBy/changeId. No private PII.
+// companyOffers/{id}: one bounded material/color/packaging/shop-price variant;
+//   immutable id/companyId/createdBy/createdAt; exact allowed HTTPS product host,
+//   published/hidden/blocked status, integer version and server updatedAt.
+//   Public visibility requires published status and an active company.
 // filaments, manufacturers, temperatureProfiles: explicitly public catalog;
 //   mutations require the current authorization registry, never custom claims.
 service cloud.firestore {
@@ -160,6 +164,44 @@ service cloud.firestore {
         && audit.targetUid == '' && audit.role == 'user' && audit.companyId == id && audit.blocked == false
         && audit.registryVersion == get(/databases/$(database)/documents/system/authorization).data.version
         && company.updatedAt == request.time && company.changeId == auditId && company.updatedBy == request.auth.uid;
+    }
+    function activeCompany(id) {
+      return exists(/databases/$(database)/documents/companies/$(id))
+        && get(/databases/$(database)/documents/companies/$(id)).data.status == 'active';
+    }
+    function companyManager(id) {
+      return verified() && unblocked()
+        && exists(/databases/$(database)/documents/memberships/$(request.auth.uid))
+        && get(/databases/$(database)/documents/memberships/$(request.auth.uid)).data.active == true
+        && get(/databases/$(database)/documents/memberships/$(request.auth.uid)).data.companyId == id
+        && activeCompany(id);
+    }
+    function offerReader(data) {
+      return admin() || companyManager(data.companyId) || (data.status == 'published' && activeCompany(data.companyId));
+    }
+    function validOffer(data, id) {
+      return data.keys().hasAll(['id', 'companyId', 'createdBy', 'updatedBy', 'name', 'brand', 'type', 'family', 'colorName', 'colorHex', 'colorTone', 'packagingType', 'spoolWeightGrams', 'priceUah', 'diameterMm', 'description', 'productUrl', 'inStock', 'status', 'version', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'companyId', 'createdBy', 'updatedBy', 'name', 'brand', 'type', 'family', 'colorName', 'colorHex', 'colorTone', 'packagingType', 'spoolWeightGrams', 'priceUah', 'diameterMm', 'description', 'productUrl', 'inStock', 'status', 'version', 'createdAt', 'updatedAt'])
+        && data.id == id && uid(data.id) && uid(data.companyId) && uid(data.createdBy) && uid(data.updatedBy)
+        && text(data.name, 200) && data.name.size() > 0 && text(data.brand, 200) && data.brand.size() > 0
+        && text(data.type, 80) && data.type.size() > 0
+        && data.family in ['Стандартні', 'Інженерні', 'Гнучкі', 'Композитні', 'Підтримки']
+        && text(data.colorName, 100) && data.colorName.size() > 0
+        && data.colorHex is string && data.colorHex.matches('^#[0-9a-f]{6}$')
+        && data.colorTone in ['black', 'white', 'grey', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'multicolor', 'special']
+        && data.packagingType in ['spool', 'refill'] && data.spoolWeightGrams is number
+        && data.spoolWeightGrams >= 1 && data.spoolWeightGrams <= 100000
+        && data.priceUah is number && data.priceUah > 0 && data.priceUah <= 10000000
+        && data.priceUah == math.round(data.priceUah * 100) / 100.0
+        && data.diameterMm is number && data.diameterMm >= 0.1 && data.diameterMm <= 10
+        && text(data.description, 10000) && text(data.productUrl, 2000)
+        && data.productUrl.matches('^https://[a-z0-9.-]+([/?#][!-~]*)?$')
+        && exists(/databases/$(database)/documents/companies/$(data.companyId))
+        && data.inStock is bool && data.status in ['published', 'hidden', 'blocked']
+        && data.version is int && data.version >= 1 && data.createdAt is timestamp && data.updatedAt == request.time;
+    }
+    function allowedOfferHost(data) {
+      return data.productUrl.split('[/?#]')[2] in get(/databases/$(database)/documents/companies/$(data.companyId)).data.allowedDomains;
     }
     function money(value) { return value is string && value.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'); }
     function signedMoney(value) { return value is string && value.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?$'); }
@@ -329,6 +371,22 @@ service cloud.firestore {
       allow update: if validCompany(request.resource.data, id) && request.resource.data.id == resource.data.id
         && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.version == resource.data.version + 1 && companyChange(id, request.resource.data.changeId);
+    }
+    match /companyOffers/{id} {
+      allow get: if offerReader(resource.data);
+      allow list: if request.query.limit <= 50 && offerReader(resource.data);
+      allow create: if validOffer(request.resource.data, id) && request.resource.data.version == 1
+        && allowedOfferHost(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && (admin() || (companyManager(request.resource.data.companyId) && request.resource.data.status != 'blocked'));
+      allow update: if validOffer(request.resource.data, id)
+        && request.resource.data.id == resource.data.id && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid && request.resource.data.version == resource.data.version + 1
+        && (allowedOfferHost(request.resource.data)
+          || (admin() && request.resource.data.status == 'blocked' && request.resource.data.productUrl == resource.data.productUrl))
+        && (admin() || (companyManager(resource.data.companyId) && resource.data.status != 'blocked' && request.resource.data.status != 'blocked'));
     }
     match /filaments/{id} {
       allow get: if true;

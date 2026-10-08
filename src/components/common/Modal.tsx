@@ -1,5 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useId, useRef } from 'react';
 import { X } from 'lucide-react';
+import { useDialogFocus } from './useDialogFocus.ts';
 
 interface ModalProps {
   isOpen: boolean;
@@ -20,21 +21,9 @@ export const Modal: React.FC<ModalProps> = ({
   footer,
   maxWidth = 'md',
 }) => {
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
-      }
-    };
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-      window.addEventListener('keydown', handleKeyDown);
-    }
-    return () => {
-      document.body.style.overflow = 'unset';
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen, onClose]);
+  const dialog = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useDialogFocus(dialog, isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -57,15 +46,17 @@ export const Modal: React.FC<ModalProps> = ({
 
       {/* Modal Dialog */}
       <div
+        ref={dialog}
         role="dialog"
+        tabIndex={-1}
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
         className={`relative w-full ${maxWidthClasses[maxWidth]} bg-white dark:bg-neutral-900 rounded-xl shadow-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden z-10 flex flex-col max-h-[90vh]`}
       >
         {/* Header */}
         <div className="px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 flex items-start justify-between">
           <div>
-            <h3 id="modal-title" className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
+            <h3 id={titleId} className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
               {title}
             </h3>
             {description && (

@@ -109,6 +109,7 @@ export const FilamentDirectoryCard: React.FC<FilamentDirectoryCardProps> = ({
           <h3 className="text-sm sm:text-base font-bold text-neutral-900 dark:text-white leading-tight break-words group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
             {item.name}
           </h3>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400">Продавець: {item.companyName || item.storeName}</p>
 
           {/* 3. НАЯВНІСТЬ / ВІДСУТНІСТЬ */}
           <div className="flex items-center gap-2 flex-wrap">

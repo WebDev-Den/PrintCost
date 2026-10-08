@@ -80,10 +80,12 @@ export const AppLayout: React.FC = () => {
     { to: '/filaments', label: 'Каталог пластиків', icon: BookOpen },
     { to: '/app/admin/catalog', label: 'Адмінка каталогу', icon: ShieldCheck },
     { to: '/app/admin/access', label: 'Користувачі та компанії', icon: ShieldCheck },
+    { to: '/app/company/offers', label: 'Пропозиції компанії', icon: Layers },
     { to: '/app/printers', label: 'Принтери', icon: Printer },
     { to: '/app/settings', label: 'Налаштування', icon: Settings },
     { to: '/app/account', label: 'Акаунт', icon: User },
-  ].filter((item) => !item.to.startsWith('/app/admin') || canManageCatalog);
+  ].filter((item) => (!item.to.startsWith('/app/admin') || canManageCatalog)
+    && (item.to !== '/app/company/offers' || (!isDemoSession && (user?.role === 'manager' || user?.role === 'admin'))));
 
   const handleLogout = async () => {
     setLogoutError(null);
@@ -113,6 +115,7 @@ export const AppLayout: React.FC = () => {
   if (isLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження даних" /></div>;
   if (loadError) return <ErrorPage error={new Error(loadError)} resetErrorBoundary={retryLoad} />;
   if (location.pathname.startsWith('/app/admin') && !canManageCatalog) return <Navigate to="/app/dashboard" replace />;
+  if (location.pathname.startsWith('/app/company') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;
 
   return (
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col antialiased">

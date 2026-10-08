@@ -1774,6 +1774,9 @@ export function getFilamentEffectiveTemp(filament: PublicFilamentItem): {
 // КОНКРЕТНА КАРТКА ТОВАРУ (1 КАРТОЧКА = 1 ВАГА, 1 КОЛІР, 1 ВИРОБНИК, 1 ПРОФІЛЬ, 1 СИЛКА)
 // ============================================================================
 export interface ConcreteFilamentSku {
+  offerId?: string;
+  companyId?: string;
+  companyName?: string;
   id: string; // Унікальний ID карточки
   parentFilamentId: string;
   name: string; // e.g. "Plexiwire PLA Глибокий чорний 1.0 кг (З котушкою)"
