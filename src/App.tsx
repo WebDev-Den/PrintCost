@@ -32,6 +32,7 @@ const CompanyOffersPage = lazy(() => import('./pages/app/CompanyOffersPage.tsx')
 const TemplatesPage = lazy(() => import('./pages/app/TemplatesPage.tsx').then((m) => ({ default: m.TemplatesPage })));
 const AnalyticsPage = lazy(() => import('./pages/app/AnalyticsPage.tsx').then((m) => ({ default: m.AnalyticsPage })));
 const PrivacyPage = lazy(() => import('./pages/public/PrivacyPage.tsx').then((m) => ({ default: m.PrivacyPage })));
+const AccountDeletionPage = lazy(() => import('./pages/public/AccountDeletionPage.tsx').then((m) => ({ default: m.AccountDeletionPage })));
 
 // Fallback pages
 import { NotFoundPage } from './pages/NotFoundPage.tsx';
@@ -52,6 +53,7 @@ export default function App() {
             <Route path="/auth/reset-password" element={<ResetPasswordPage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
             <Route path="/auth/check-email" element={<CheckEmailPage />} />
+            <Route path="/auth/delete-account" element={<AccountDeletionPage />} />
 
             {/* Cabinet App Routes */}
             <Route path="/app" element={<AppLayout />}>

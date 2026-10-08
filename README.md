@@ -96,8 +96,8 @@ VITE_USE_FIREBASE_EMULATORS=true
 | --- | --- |
 | Worker name | `kilo-g` |
 | Production branch | `main` |
-| Build command | `npm run build` |
-| Deploy command | `npx wrangler deploy` |
+| Build command | `npm run lint && npm test` |
+| Deploy command | `npm run deploy:worker` |
 | Root directory | Корінь репозиторію |
 | `NODE_VERSION` | `22.23.2` |
 
@@ -113,11 +113,10 @@ VITE_USE_FIREBASE_EMULATORS=true
 
 ```bash
 npx wrangler login
-npm run build
 npm run deploy:worker
 ```
 
-`deploy:worker` виконує `wrangler deploy` із конфігурацією `wrangler.jsonc`. Файл містить цільовий Cloudflare `account_id`; для іншого акаунта його потрібно змінити. Публікуйте production-збірку з конфігурацією `kilo-g`.
+`deploy:worker` спочатку створює свіжу production-збірку, перевіряє відповідність Firebase/Worker, робочий D1 замість placeholder та маршрути API, потім виконує `wrangler deploy`. Файл `wrangler.jsonc` містить цільовий Cloudflare `account_id`; для іншого акаунта його потрібно змінити. Поточні налаштування Workers Builds треба перевірити перед випуском: наявний CLI не має права читати triggers. Процедури резервного копіювання, перенесення ролей, відкату й відновлення описані в [OPERATIONS.md](./OPERATIONS.md).
 
 ## Листи підтвердження та відновлення пароля
 
@@ -176,8 +175,8 @@ Workers Free дозволяє **20 000 статичних файлів на ве
 
 ## Стан перевірки
 
-У гілці `codex/user-platform` пройдені **58 тестів застосунку**, **43 тести Firestore Rules**, **7 перевірок реального локального Worker/D1 runtime**, TypeScript, production build і Wrangler dry run. Браузер перевірив акаунти/ролі, компанії, пропозиції, податки, зіставлення матеріалів, шаблони, незмінну історію понад 200 записів та події каталогу через Worker/D1 до звіту. Детальний статус міститься в [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md).
+У гілці `codex/user-platform` пройдені **62 тести застосунку**, **53 тести Firestore Rules**, **6 перевірок account cleanup реальним Web SDK**, **10 операційних перевірок** і **7 перевірок локального Worker/D1 runtime**, TypeScript, production build і Wrangler dry run. Браузер перевірив акаунти/ролі, компанії, пропозиції, податки, зіставлення матеріалів, шаблони, незмінну історію понад 200 записів, події каталогу через Worker/D1 до звіту, повний приватний експорт і сторінку продовження перерваного очищення. Детальний статус міститься в [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md).
 
 Раніше опублікована версія працює на [web-dev.pp.ua](https://web-dev.pp.ua); GitHub Workers Builds підтвердив автоматичний деплой коміту `988bed2`. Повна платформа цієї гілки ще не опублікована. Права нової платформи зберігаються в реєстрі Firestore; старі custom claims не є джерелом ролей. Перед запуском необхідні робочий D1 замість placeholder у `wrangler.jsonc`, правила й індекси, міграційний експорт, перевірка реальної пошти та вимірювання облікового CPU на Workers Free. Локальна статистична оцінка CPU близька до 10 мс і не є доказом проходження ліміту Cloudflare; тариф не підвищується автоматично.
 
-`npm audit` повідомив про **19 вразливостей у залежностях інструментів розробки та CLI**; серед пакетів, які потрапляють у браузерну збірку, відповідних знахідок не виявлено. Це залишається ризиком середовища збірки й локальних інструментів, а не підтвердженням відсутності інших вразливостей. Оновлення потрібно перевіряти на сумісність перед зміною lockfile.
+Після сумісного оновлення Wrangler і перевизначення старого Node gRPC у Firestore SDK `npm audit --omit=dev` не повідомляє відомих вразливостей. Повний аудит залишає **11 знахідок у залежностях Firebase CLI**; запропонований автоматичний downgrade CLI не застосовано. Це ризик локальних інструментів і середовища збірки, а не підтвердження відсутності інших вразливостей. Node gRPC override можна прибрати, коли Firebase SDK оновить власну залежність на виправлену версію.

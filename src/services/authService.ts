@@ -16,7 +16,7 @@ import {
   verifyPasswordResetCode,
 } from 'firebase/auth';
 import type { User } from 'firebase/auth';
-import { doc, getDoc, runTransaction } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, onSnapshot, runTransaction } from 'firebase/firestore';
 import type { UserProfile } from '../domain/types.ts';
 import { INITIAL_USER_PROFILE } from '../domain/defaultData.ts';
 import { firebaseAuth, firestoreDb } from './firebaseClient.ts';
@@ -58,7 +58,9 @@ function requireAuth() {
 }
 
 async function readProfile(user: User): Promise<UserProfile> {
-  await organizationRepository.ensureIdentity(user);
+  const deletion = await getDocFromServer(doc(firestoreDb!, 'accountDeletion', user.uid));
+  authService.assertSession(user.uid);
+  if (!deletion.exists()) await organizationRepository.ensureIdentity(user);
   authService.assertSession(user.uid);
   const access = await organizationRepository.getAccess(user.uid);
   authService.assertSession(user.uid);
@@ -73,10 +75,11 @@ async function readProfile(user: User): Promise<UserProfile> {
     createdAt: typeof data?.createdAt === 'string' ? data.createdAt : new Date(user.metadata.creationTime || Date.now()).toISOString(),
     isDemoUser: false,
     emailVerified: user.emailVerified,
-    isAdmin: access.role === 'admin',
-    role: access.role,
-    companyId: access.companyId,
-    isBlocked: access.blocked,
+    isAdmin: !deletion.exists() && access.role === 'admin',
+    role: deletion.exists() ? 'user' : access.role,
+    companyId: deletion.exists() ? null : access.companyId,
+    isBlocked: access.blocked || deletion.exists(),
+    deletionPending: deletion.exists(),
   };
 }
 
@@ -123,12 +126,14 @@ export class FirebaseAuthService implements AuthService {
     let latest: UserProfile | null = null;
     let accessIdentity = '';
     let stopAccess: (() => void) | undefined;
+    let stopDeletion: (() => void) | undefined;
     const refresh = async () => {
       const currentRevision = ++revision;
       const identity = this.getSessionIdentity();
       if (identity !== (latest ? latest.isDemoUser ? 'demo' : latest.id : '') || (accessIdentity && accessIdentity !== identity)) {
         latest = null;
         stopAccess?.(); stopAccess = undefined; accessIdentity = '';
+        stopDeletion?.(); stopDeletion = undefined;
         onPending?.();
       }
       try {
@@ -143,7 +148,17 @@ export class FirebaseAuthService implements AuthService {
             if (!active || this.getSessionIdentity() !== user.id || latest?.id !== user.id) return;
             ++revision;
             latest = { ...latest, emailVerified: firebaseAuth?.currentUser?.emailVerified === true,
-              role: access.role, isAdmin: access.role === 'admin', companyId: access.companyId, isBlocked: access.blocked };
+              role: latest.deletionPending ? 'user' : access.role, isAdmin: !latest.deletionPending && access.role === 'admin',
+              companyId: latest.deletionPending ? null : access.companyId, isBlocked: access.blocked || latest.deletionPending };
+            onUser(latest);
+          }, error => {
+            if (active && this.getSessionIdentity() === user.id) { ++revision; latest = null; onError(error); }
+          });
+          stopDeletion?.();
+          stopDeletion = onSnapshot(doc(firestoreDb!, 'accountDeletion', user.id), snapshot => {
+            if (!active || this.getSessionIdentity() !== user.id || latest?.id !== user.id || !snapshot.exists()) return;
+            ++revision;
+            latest = { ...latest, deletionPending: true, isBlocked: true, isAdmin: false, role: 'user', companyId: null };
             onUser(latest);
           }, error => {
             if (active && this.getSessionIdentity() === user.id) { ++revision; latest = null; onError(error); }
@@ -163,6 +178,7 @@ export class FirebaseAuthService implements AuthService {
     return () => {
       active = false;
       stopAccess?.();
+      stopDeletion?.();
       stopAuth?.();
       this.listeners.delete(refresh);
       window.removeEventListener('storage', onStorage);

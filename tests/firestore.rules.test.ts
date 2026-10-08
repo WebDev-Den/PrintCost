@@ -18,6 +18,7 @@ const printer = { ...INITIAL_PRINTERS[0], id: 'printer' };
 const snapshot = JSON.parse(JSON.stringify({ ...getInitialCalculationSnapshots()[0], id: 'calculation', algorithmVersion: CALCULATION_ALGORITHM_VERSION }));
 const user = (id: string, claims: Record<string, unknown> = {}) => environment.authenticatedContext(id, { email: `${id}@example.com`, email_verified: true, ...claims }).firestore();
 const alice = () => user('alice', { email: profile.email });
+const recentUser = (id = 'alice', ageSeconds = 0, claims: Record<string, unknown> = {}) => user(id, { auth_time: Math.floor(Date.now() / 1000) - ageSeconds, ...claims });
 let snapshotCounter = 0;
 function writeNewSnapshot(value: Record<string, unknown>) {
   const id = `new-snapshot-${++snapshotCounter}`;
@@ -85,6 +86,29 @@ function bootstrapBatch(db: TestFirestore, id: string, auditId = nextChange(), o
   if (omit !== 'membership') batch.set(doc(db, `memberships/${id}`), { companyId: null, active: false, version: 1, updatedAt: serverTimestamp(), updatedBy: id, changeId: auditId });
   if (omit !== 'audit') batch.set(doc(db, `accessAudit/${auditId}`), { actorUid: id, targetUid: id, action: 'bootstrap', role: 'admin', companyId: null, blocked: false, createdAt: serverTimestamp(), registryVersion: 1 });
   return batch;
+}
+
+type DeletionOptions = {
+  changeId?: string; omit?: 'marker' | 'registry' | 'access' | 'membership' | 'audit';
+  marker?: Record<string, unknown>; registry?: Record<string, unknown>; access?: Record<string, unknown>;
+  membership?: Record<string, unknown>; audit?: Record<string, unknown>;
+};
+async function deletionBatch(db: TestFirestore, target = 'alice', options: DeletionOptions = {}) {
+  const registryRef = doc(db, 'system/authorization');
+  const memberRef = doc(db, `memberships/${target}`);
+  const [registry, membership] = await Promise.all([getDoc(registryRef), getDoc(memberRef)]);
+  const id = options.changeId ?? crypto.randomUUID();
+  const batch = writeBatch(db);
+  if (options.omit !== 'marker') batch.set(doc(db, `accountDeletion/${target}`), { uid: target, startedAt: serverTimestamp(), changeId: id, ...options.marker });
+  if (options.omit !== 'registry' && (registry.exists() || options.registry)) batch.set(registryRef, {
+    ...(registry.data() ?? { adminUids: ['administrator'], bootstrapUid: 'administrator', initializedAt: historicalTime, version: 0 }),
+    adminUids: registry.data()?.adminUids.filter((uid: string) => uid !== target) ?? ['administrator'],
+    version: (registry.data()?.version ?? 0) + 1, lastChangeId: id, ...options.registry,
+  });
+  if (options.omit !== 'access') batch.set(doc(db, `accountAccess/${target}`), { blocked: true, updatedAt: serverTimestamp(), updatedBy: target, changeId: id, ...options.access });
+  if (options.omit !== 'membership') batch.set(memberRef, { companyId: null, active: false, version: (membership.data()?.version ?? 0) + 1, updatedAt: serverTimestamp(), updatedBy: target, changeId: id, ...options.membership });
+  if (options.omit !== 'audit') batch.set(doc(db, `accessAudit/${id}`), { actorUid: target, targetUid: target, action: 'delete', role: 'user', companyId: null, blocked: true, createdAt: serverTimestamp(), registryVersion: (registry.data()?.version ?? -1) + 1, ...options.audit });
+  return { batch, id };
 }
 
 async function companyBatch(db: TestFirestore, actor: string, id = 'company-a', overrides: Record<string, unknown> = {}, omitAudit = false) {
@@ -912,6 +936,220 @@ test('private history pagination uses deterministic tie-breakers without exposin
   assert.equal(ids.at(-1), 'history-000');
   await seedAuthorization();
   for (const db of [user('bob'), user('administrator')]) await assertFails(getDocs(query(collection(db, 'users/alice/calculations'), orderBy('createdAt', 'desc'), orderBy(documentId(), 'desc'), limit(51))));
+});
+
+test('self deletion atomically records tombstones and permits only owner cleanup', async () => {
+  await seedAuthorization();
+  await seedDirectory('alice');
+  await seedUnblockedAccess();
+  const db = recentUser();
+  const rows: [string, Record<string, unknown>][] = [
+    ['materials/material', material], ['printers/printer', printer], ['calculations/calculation', snapshot],
+    ['templates/template', templateFixture()], ['settings/pricing', settings], ['likes/like', { filamentId: 'like' }],
+  ];
+  await setDoc(doc(db, 'users/alice'), profile);
+  for (const [path, value] of rows) await setDoc(doc(db, `users/alice/${path}`), value);
+  await environment.withSecurityRulesDisabled(async context => { await setDoc(doc(context.firestore(), 'users/alice/settings/legacy'), { oldPreference: 'raw' }); });
+  const { batch, id } = await deletionBatch(db);
+  await assertSucceeds(batch.commit());
+  assert.equal((await getDoc(doc(db, 'accountDeletion/alice'))).data()?.changeId, id);
+  assert.equal((await getDoc(doc(db, 'accountAccess/alice'))).data()?.blocked, true);
+  assert.equal((await getDoc(doc(db, 'memberships/alice'))).data()?.active, false);
+  assert.deepEqual((await getDoc(doc(db, 'system/authorization'))).data()?.adminUids, ['administrator']);
+  assert.equal((await getDoc(doc(user('administrator'), `accessAudit/${id}`))).data()?.action, 'delete');
+  for (const [path] of rows) {
+    await assertSucceeds(getDoc(doc(db, `users/alice/${path}`)));
+    await assertSucceeds(getDocs(query(collection(db, `users/alice/${path.split('/')[0]}`), orderBy(documentId()), limit(100))));
+    await assertFails(updateDoc(doc(db, `users/alice/${path}`), { extra: true }));
+    await assertSucceeds(deleteDoc(doc(db, `users/alice/${path}`)));
+  }
+  await assertSucceeds(getDoc(doc(db, 'users/alice/settings/legacy')));
+  await assertSucceeds(deleteDoc(doc(db, 'users/alice/settings/legacy')));
+  await assertSucceeds(deleteDoc(doc(db, 'users/alice')));
+  await assertSucceeds(deleteDoc(doc(db, 'userDirectory/alice')));
+  await assertFails(setDoc(doc(db, 'users/alice'), profile));
+  await assertFails(setDoc(doc(db, 'users/alice/materials/material'), material));
+  await assertFails(setDoc(doc(db, 'users/alice/settings/pricing'), settings));
+  await assertFails(setDoc(doc(db, 'userDirectory/alice'), { uid: 'alice', email: 'alice@example.com', displayName: 'Alice', verified: true, updatedAt: serverTimestamp() }));
+  for (const path of ['accountDeletion/alice', 'accountAccess/alice', 'memberships/alice', `accessAudit/${id}`, 'system/authorization']) await assertFails(deleteDoc(doc(db, path)));
+  await assertFails(updateDoc(doc(db, 'accountDeletion/alice'), { startedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(db, 'accountDeletion/alice'), { uid: 'alice', startedAt: serverTimestamp(), changeId: crypto.randomUUID() }));
+});
+
+test('blocked and unverified self deletion works without creating a registry or restoring bootstrap', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'accountAccess/alice'), { blocked: true, updatedAt: historicalTime, updatedBy: 'administrator', changeId: 'seed' });
+    await setDoc(doc(context.firestore(), 'users/alice/calculations/legacy'), { title: 'Legacy raw record' });
+  });
+  const db = recentUser('alice', 0, { email_verified: false });
+  await assertFails(getDoc(doc(db, 'users/alice/calculations/legacy')));
+  const { batch, id } = await deletionBatch(db);
+  await assertSucceeds(batch.commit());
+  assert.equal((await getDoc(doc(db, 'system/authorization'))).exists(), false);
+  await assertSucceeds(getDoc(doc(db, 'users/alice/calculations/legacy')));
+  await assertSucceeds(deleteDoc(doc(db, 'users/alice/calculations/legacy')));
+  await assertFails(setDoc(doc(db, 'users/alice/calculations/new'), { ...snapshot, id: 'new' }));
+  await environment.withSecurityRulesDisabled(async context => { assert.equal((await getDoc(doc(context.firestore(), `accessAudit/${id}`))).data()?.registryVersion, 0); });
+  const bootstrap = user('alice', { email: 'web.developer.den@gmail.com' });
+  await assertFails(bootstrapBatch(bootstrap, 'alice').commit());
+});
+
+test('deletion requires a recent trusted auth time, immutable timestamp and exact marker schema', async () => {
+  await seedAuthorization();
+  for (const claims of [{}, { auth_time: null }, { auth_time: true }, { auth_time: '123' }, { auth_time: 0 }, { auth_time: -1 }, { auth_time: Math.floor(Date.now() / 1000) - 301 }, { auth_time: Math.floor(Date.now() / 1000) + 30 }, { auth_time: Math.floor(Date.now() / 1000) + 0.5 }]) {
+    const { batch } = await deletionBatch(user('alice', claims));
+    await assertFails(batch.commit());
+  }
+  for (const marker of [{ uid: 'bob' }, { startedAt: historicalTime }, { startedAt: 'now' }, { changeId: 'not-a-uuid' }, { changeId: 1 }, { changeId: 'x'.repeat(129) }, { email: 'alice@example.com' }, { admin: true }]) {
+    const { batch } = await deletionBatch(recentUser(), 'alice', { marker });
+    await assertFails(batch.commit());
+  }
+  await assertFails(setDoc(doc(recentUser(), 'accountDeletion/bob'), { uid: 'bob', startedAt: serverTimestamp(), changeId: crypto.randomUUID() }));
+  await assertFails(setDoc(doc(environment.unauthenticatedContext().firestore(), 'accountDeletion/alice'), { uid: 'alice', startedAt: serverTimestamp(), changeId: crypto.randomUUID() }));
+  const { batch } = await deletionBatch(recentUser('alice', 299));
+  await assertSucceeds(batch.commit());
+});
+
+test('deletion rejects omitted atomic components, spoofed audit and authority transitions', async () => {
+  await seedAuthorization();
+  await seedUnblockedAccess();
+  for (const omit of ['marker', 'registry', 'access', 'membership', 'audit'] as const) await assertFails((await deletionBatch(recentUser(), 'alice', { omit })).batch.commit());
+  const invalid: DeletionOptions[] = [
+    { access: { blocked: false } }, { access: { updatedBy: 'administrator' } }, { access: { changeId: 'different' } },
+    { membership: { active: true, companyId: 'company-a' } }, { membership: { version: 2 } }, { membership: { updatedBy: 'bob' } },
+    { audit: { actorUid: 'administrator' } }, { audit: { targetUid: 'bob' } }, { audit: { role: 'admin' } }, { audit: { action: 'role' } },
+    { audit: { blocked: false } }, { audit: { companyId: 'company-a' } }, { audit: { registryVersion: 0 } }, { audit: { email: 'alice@example.com' } },
+    { registry: { adminUids: ['alice', 'administrator'] } }, { registry: { adminUids: ['bob'] } }, { registry: { bootstrapUid: 'alice' } },
+    { registry: { initializedAt: serverTimestamp() } }, { registry: { version: 3 } }, { registry: { lastChangeId: 'different' } },
+  ];
+  for (const options of invalid) await assertFails((await deletionBatch(recentUser(), 'alice', options)).batch.commit());
+  const schemas = (id: string): Record<string, Record<string, unknown>> => ({
+    'accountDeletion/alice': { uid: 'alice', startedAt: serverTimestamp(), changeId: id },
+    'system/authorization': { adminUids: ['administrator'], bootstrapUid: 'administrator', initializedAt: historicalTime, version: 2, lastChangeId: id },
+    'accountAccess/alice': { blocked: true, updatedAt: serverTimestamp(), updatedBy: 'alice', changeId: id },
+    'memberships/alice': { companyId: null, active: false, version: 1, updatedAt: serverTimestamp(), updatedBy: 'alice', changeId: id },
+    [`accessAudit/${id}`]: { actorUid: 'alice', targetUid: 'alice', action: 'delete', role: 'user', companyId: null, blocked: true, createdAt: serverTimestamp(), registryVersion: 2 },
+  });
+  for (const [templatePath, data] of Object.entries(schemas('placeholder'))) {
+    for (const field of Object.keys(data)) {
+      const db = recentUser();
+      const attempt = await deletionBatch(db);
+      const path = templatePath.replace('placeholder', attempt.id);
+      const replacement = { ...schemas(attempt.id)[path], unknownReplacement: true };
+      Reflect.deleteProperty(replacement, field);
+      attempt.batch.set(doc(db, path), replacement);
+      await assertFails(attempt.batch.commit());
+    }
+  }
+  const reused = crypto.randomUUID();
+  await environment.withSecurityRulesDisabled(async context => { await setDoc(doc(context.firestore(), `accessAudit/${reused}`), { old: true }); });
+  await assertFails((await deletionBatch(recentUser(), 'alice', { changeId: reused })).batch.commit());
+  assert.equal((await getDoc(doc(recentUser(), 'accountDeletion/alice'))).exists(), false);
+});
+
+test('a registry-free deletion cannot initialize authorization or invent nonzero audit versions', async () => {
+  await assertFails((await deletionBatch(recentUser(), 'alice', { registry: {} })).batch.commit());
+  await assertFails((await deletionBatch(recentUser(), 'alice', { audit: { registryVersion: 1 } })).batch.commit());
+  await assertFails(setDoc(doc(recentUser(), 'accountAccess/alice'), { blocked: true, updatedAt: serverTimestamp(), updatedBy: 'alice', changeId: crypto.randomUUID() }));
+  await assertSucceeds((await deletionBatch(recentUser())).batch.commit());
+  assert.equal((await getDoc(doc(recentUser(), 'system/authorization'))).exists(), false);
+});
+
+test('last administrator deletion and concurrent departures preserve one administrator', async () => {
+  await seedAuthorization(['alice']);
+  await assertFails((await deletionBatch(recentUser())).batch.commit());
+  assert.equal((await getDoc(doc(recentUser(), 'accountDeletion/alice'))).exists(), false);
+  await seedAuthorization(['alice', 'bob']);
+  const aliceDeparture = await deletionBatch(recentUser());
+  const bobDeparture = await deletionBatch(recentUser('bob'), 'bob');
+  const results = await Promise.allSettled([aliceDeparture.batch.commit(), bobDeparture.batch.commit()]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  const registry = (await getDoc(doc(recentUser(), 'system/authorization'))).data()!;
+  assert.equal(registry.adminUids.length, 1);
+  const remaining = registry.adminUids[0];
+  await assertFails((await deletionBatch(recentUser(remaining), remaining)).batch.commit());
+  const removed = remaining === 'alice' ? 'bob' : 'alice';
+  await assertFails(setDoc(doc(recentUser(removed), 'filaments/new'), { ...PUBLIC_FILAMENTS_CATALOG[0], id: 'new' }));
+});
+
+test('deletion markers permanently reject role restoration and preserve company offers and audits', async () => {
+  const { administrator } = await setupOffers();
+  await setDoc(doc(recentUser(), 'companyOffers/offer-a'), offerData());
+  const { batch, id } = await deletionBatch(recentUser());
+  await assertSucceeds(batch.commit());
+  for (const [role, options] of [['user', { action: 'block', blocked: false }], ['admin', {}], ['manager', { companyId: 'company-a' }], ['user', { action: 'block', blocked: true }]] as [Role, RoleOptions][]) {
+    await assertFails((await roleBatch(administrator, 'administrator', 'alice', role, options)).commit());
+  }
+  await assertFails(updateDoc(doc(recentUser(), 'companyOffers/offer-a'), { status: 'hidden', version: 2, updatedAt: serverTimestamp() }));
+  await assertFails(deleteDoc(doc(recentUser(), 'companyOffers/offer-a')));
+  await assertSucceeds(getDoc(doc(administrator, 'companyOffers/offer-a')));
+  await assertSucceeds(getDoc(doc(administrator, `accessAudit/${id}`)));
+  await assertFails(deleteDoc(doc(administrator, 'accountDeletion/alice')));
+  await assertFails(deleteDoc(doc(administrator, 'accountAccess/alice')));
+});
+
+test('a deletion transaction cannot smuggle private or privileged mutations before revocation', async () => {
+  await seedAuthorization(['alice', 'administrator']);
+  await seedUnblockedAccess();
+  const db = recentUser();
+  await setDoc(doc(db, 'users/alice/materials/material'), material);
+  const privateWrite = await deletionBatch(db);
+  privateWrite.batch.update(doc(db, 'users/alice/materials/material'), { name: 'Changed during departure' });
+  await assertFails(privateWrite.batch.commit());
+  const privilegedWrite = await deletionBatch(db);
+  privilegedWrite.batch.set(doc(db, 'filaments/new'), { ...PUBLIC_FILAMENTS_CATALOG[0], id: 'new' });
+  await assertFails(privilegedWrite.batch.commit());
+  assert.equal((await getDoc(doc(db, 'accountDeletion/alice'))).exists(), false);
+  assert.equal((await getDoc(doc(db, 'users/alice/materials/material'))).data()?.name, material.name);
+});
+
+test('pending cleanup is owner-scoped, paged, fresh-authenticated and can resume in batches', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    const batch = writeBatch(context.firestore());
+    for (let i = 0; i < 101; i++) batch.set(doc(context.firestore(), `users/alice/materials/legacy-${i}`), { legacy: i });
+    batch.set(doc(context.firestore(), 'users/alice/settings/old'), { preference: 'raw' });
+    batch.set(doc(context.firestore(), 'users/alice'), profile);
+    await batch.commit();
+  });
+  await assertSucceeds((await deletionBatch(recentUser())).batch.commit());
+  const expired = recentUser('alice', 301);
+  await assertSucceeds(getDocs(query(collection(expired, 'users/alice/materials'), orderBy(documentId()), limit(100))));
+  await assertFails(deleteDoc(doc(expired, 'users/alice/materials/legacy-0')));
+  await assertFails(deleteDoc(doc(expired, 'users/alice')));
+  for (const context of [user('bob'), user('administrator', { admin: true }), environment.unauthenticatedContext().firestore()]) {
+    await assertFails(getDoc(doc(context, 'accountDeletion/alice')));
+    await assertFails(getDoc(doc(context, 'users/alice/materials/legacy-0')));
+    await assertFails(getDocs(query(collection(context, 'users/alice/materials'), limit(100))));
+    await assertFails(deleteDoc(doc(context, 'users/alice/materials/legacy-0')));
+  }
+  const db = recentUser();
+  await assertFails(getDocs(query(collection(db, 'accountDeletion'), limit(100))));
+  await assertFails(getDocs(query(collection(db, 'users/alice/settings'), limit(101))));
+  await assertFails(getDocs(query(collection(db, 'users/alice/templates'), limit(101))));
+  await assertFails(getDocs(query(collection(db, 'users/alice/materials'), limit(201))));
+  await assertFails(getDocs(collection(db, 'users/alice/materials')));
+  await assertFails(getDoc(doc(db, 'users/alice/unknown/secret')));
+  const page = await getDocs(query(collection(db, 'users/alice/materials'), orderBy(documentId()), limit(100)));
+  const cleanup = writeBatch(db);
+  page.docs.forEach(item => cleanup.delete(item.ref));
+  await assertSucceeds(cleanup.commit());
+  const remaining = await getDocs(query(collection(db, 'users/alice/materials'), orderBy(documentId()), limit(100)));
+  assert.equal(remaining.size, 1);
+  await assertSucceeds(deleteDoc(remaining.docs[0].ref));
+  await assertSucceeds(deleteDoc(doc(db, 'users/alice/settings/old')));
+  await assertSucceeds(deleteDoc(doc(db, 'users/alice')));
+  await assertFails(setDoc(doc(db, 'users/alice/materials/new'), { ...material, id: 'new' }));
+});
+
+test('unblocked tax snapshots with 500 rows and full metadata retain expression-budget headroom', async () => {
+  await seedUnblockedAccess();
+  const tax = { ...createTaxPreset('general', true), scenario: 'estimate' as const, customerPriceUah: '1500', netTaxableIncomeUah: '500' };
+  const original = { ...snapshot.input, tax };
+  const result = calculatePrintCost(original);
+  assert.ok(result.tax);
+  const input = { ...original, filaments: Array.from({ length: 500 }, () => snapshot.input.filaments[0]) };
+  const value = { ...snapshot, input, result, status: result.status, clientName: 'C'.repeat(200), notes: 'N'.repeat(10000), sourceCalculationId: 'original', algorithmVersion: CALCULATION_ALGORITHM_VERSION };
+  await assertSucceeds(writeNewSnapshot(value));
 });
 
 test('demo persistence is explicit and isolated, failed real reads never use demo data', async () => {

@@ -14,6 +14,11 @@ rules_version = '2';
 // system/authorization: nonempty unique adminUids (<=32), immutable bootstrapUid
 //   and initializedAt, integer version, fresh lastChangeId.
 // accountAccess/{uid}: blocked, timestamp updatedAt, actor updatedBy, changeId.
+// accountDeletion/{uid}: uid, server startedAt, UUID changeId; immutable self-
+//   deletion marker. Recent sign-in starts an atomic role revocation. The marker,
+//   blocked access, inactive membership and UID-only audit remain as tombstones.
+//   A marked owner may read/export leftovers and recently reauthenticate to
+//   delete private data; no account or company mutations can resume afterward.
 // memberships/{uid}: nullable companyId, active, version, timestamp updatedAt,
 //   actor updatedBy, changeId. All role/block changes atomically update these
 //   two documents, the authorization registry and one immutable accessAudit.
@@ -35,44 +40,50 @@ service cloud.firestore {
       return request.auth != null && (!exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid))
         || get(/databases/$(database)/documents/accountAccess/$(request.auth.uid)).data.blocked == false);
     }
-    function privateOwner(uid) { return owner(uid) && verified() && unblocked(); }
+    function privateOwner(uid) { return owner(uid) && verified() && unblocked() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(uid)); }
+    function recentSignIn() {
+      return request.auth != null && request.auth.token.get('auth_time', null) is int
+        && request.auth.token.auth_time > 0
+        && timestamp.value(request.auth.token.auth_time * 1000) <= request.time
+        && timestamp.value(request.auth.token.auth_time * 1000) >= request.time - duration.value(5, 'm');
+    }
+    function deletingOwner(uid) { return owner(uid) && exists(/databases/$(database)/documents/accountDeletion/$(uid)); }
+    function privateReader(uid) { return privateOwner(uid) || deletingOwner(uid); }
+    function cleanupOwner(uid) { return deletingOwner(uid) && recentSignIn(); }
     function admin() {
       return verified() && unblocked() && exists(/databases/$(database)/documents/system/authorization)
         && request.auth.uid in get(/databases/$(database)/documents/system/authorization).data.adminUids;
     }
     function text(value, max) { return value is string && value.size() <= max; }
-    function uid(value) { return text(value, 128) && value.size() > 0 && value.matches('^[^/]+$'); }
-    function changeId(value) { return text(value, 128) && value.matches('^[A-Za-z0-9_-]+$'); }
+    function uid(value) { return value.matches('^[^/]{1,128}$'); }
+    function changeId(value) { return value.matches('^[A-Za-z0-9_-]{1,128}$'); }
     function validAdminUids(values) {
       // Contents are proven by the singleton bootstrap and exact one-UID transitions.
       return values is list && values.size() > 0 && values.size() <= 32
         && values.toSet().size() == values.size();
     }
     function validRegistry(data) {
-      return data.keys().hasAll(['adminUids', 'bootstrapUid', 'initializedAt', 'version', 'lastChangeId'])
-        && data.keys().hasOnly(['adminUids', 'bootstrapUid', 'initializedAt', 'version', 'lastChangeId'])
+      return data.size() == 5
         && validAdminUids(data.adminUids) && uid(data.bootstrapUid) && data.initializedAt is timestamp
         && data.version is int && data.version >= 1 && changeId(data.lastChangeId);
     }
     function validAccess(data) {
-      return data.keys().hasAll(['blocked', 'updatedAt', 'updatedBy', 'changeId'])
-        && data.keys().hasOnly(['blocked', 'updatedAt', 'updatedBy', 'changeId'])
+      return data.size() == 4
         && data.blocked is bool && data.updatedAt == request.time && uid(data.updatedBy) && changeId(data.changeId);
     }
     function validMembership(data) {
-      return data.keys().hasAll(['companyId', 'active', 'version', 'updatedAt', 'updatedBy', 'changeId'])
-        && data.keys().hasOnly(['companyId', 'active', 'version', 'updatedAt', 'updatedBy', 'changeId'])
+      return data.size() == 6
         && (data.companyId == null || uid(data.companyId)) && data.active is bool
         && data.version is int && data.version >= 1 && data.updatedAt == request.time
         && uid(data.updatedBy) && changeId(data.changeId);
     }
     function validAudit(data) {
-      return data.keys().hasAll(['actorUid', 'targetUid', 'action', 'role', 'companyId', 'blocked', 'createdAt', 'registryVersion'])
-        && data.keys().hasOnly(['actorUid', 'targetUid', 'action', 'role', 'companyId', 'blocked', 'createdAt', 'registryVersion'])
+      return data.size() == 8
         && uid(data.actorUid) && (data.targetUid == '' || uid(data.targetUid))
-        && data.action in ['bootstrap', 'role', 'block', 'company'] && data.role in ['user', 'manager', 'admin']
+        && data.action in ['bootstrap', 'role', 'block', 'company', 'delete'] && data.role in ['user', 'manager', 'admin']
         && (data.companyId == null || uid(data.companyId)) && data.blocked is bool
-        && data.createdAt == request.time && data.registryVersion is int && data.registryVersion >= 1;
+        && data.createdAt == request.time && data.registryVersion is int && data.registryVersion >= 0
+        && (data.action == 'delete' || data.registryVersion >= 1);
     }
     function freshAudit(id, data) {
       return changeId(id) && !exists(/databases/$(database)/documents/accessAudit/$(id))
@@ -137,12 +148,42 @@ service cloud.firestore {
       let audit = getAfter(/databases/$(database)/documents/accessAudit/$(id)).data;
       let access = getAfter(/databases/$(database)/documents/accountAccess/$(target)).data;
       let membership = getAfter(/databases/$(database)/documents/memberships/$(target)).data;
-      return request.auth != null && uid(target) && freshAudit(id, audit) && audit.targetUid == target
+      return request.auth != null && uid(target) && !existsAfter(/databases/$(database)/documents/accountDeletion/$(target))
+        && freshAudit(id, audit) && audit.targetUid == target
         && registry.lastChangeId == id && audit.registryVersion == registry.version
         && access.updatedAt == request.time && access.changeId == id
         && membership.updatedAt == request.time && membership.changeId == id
         && canonicalRole(target, audit, registry, access, membership)
         && (bootstrapTransition(target, audit, registry) || registryTransition(target, audit, registry));
+    }
+    function adminWriter() { return admin() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid)); }
+    function validDeletion(data, target) {
+      return data.keys().hasAll(['uid', 'startedAt', 'changeId']) && data.keys().hasOnly(['uid', 'startedAt', 'changeId'])
+        && data.uid == target && uid(data.uid) && data.startedAt == request.time
+        && data.changeId.matches('^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');
+    }
+    function deletionRegistry(target, id, version) {
+      let previous = get(/databases/$(database)/documents/system/authorization).data;
+      let next = getAfter(/databases/$(database)/documents/system/authorization).data;
+      return next.bootstrapUid == previous.bootstrapUid && next.initializedAt == previous.initializedAt
+        && next.adminUids == previous.adminUids.removeAll([target]) && next.adminUids.size() > 0
+        && next.version == previous.version + 1 && next.version == version && next.lastChangeId == id;
+    }
+    function deletionChange(target, id) {
+      let marker = getAfter(/databases/$(database)/documents/accountDeletion/$(target)).data;
+      let audit = getAfter(/databases/$(database)/documents/accessAudit/$(id)).data;
+      let access = getAfter(/databases/$(database)/documents/accountAccess/$(target)).data;
+      let membership = getAfter(/databases/$(database)/documents/memberships/$(target)).data;
+      return owner(target) && recentSignIn() && !exists(/databases/$(database)/documents/accountDeletion/$(target))
+        && marker.uid == target && marker.startedAt == request.time && marker.changeId == id
+        && freshAudit(id, audit) && audit.action == 'delete' && audit.targetUid == target
+        && audit.role == 'user' && audit.companyId == null && audit.blocked == true
+        && access.blocked == true && access.updatedAt == request.time && access.updatedBy == target && access.changeId == id
+        && membership.active == false && membership.companyId == null && membership.updatedAt == request.time
+        && membership.updatedBy == target && membership.changeId == id && membershipVersion(target, membership)
+        && (exists(/databases/$(database)/documents/system/authorization)
+          ? deletionRegistry(target, id, audit.registryVersion)
+          : (!existsAfter(/databases/$(database)/documents/system/authorization) && audit.registryVersion == 0));
     }
     function domain(value) {
       return text(value, 253) && value.matches('^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z]{2,63}$');
@@ -167,7 +208,7 @@ service cloud.firestore {
     function companyChange(id, auditId) {
       let company = getAfter(/databases/$(database)/documents/companies/$(id)).data;
       let audit = getAfter(/databases/$(database)/documents/accessAudit/$(auditId)).data;
-      return admin() && freshAudit(auditId, audit) && audit.action == 'company'
+      return adminWriter() && freshAudit(auditId, audit) && audit.action == 'company'
         && audit.targetUid == '' && audit.role == 'user' && audit.companyId == id && audit.blocked == false
         && audit.registryVersion == get(/databases/$(database)/documents/system/authorization).data.version
         && company.updatedAt == request.time && company.changeId == auditId && company.updatedBy == request.auth.uid;
@@ -399,78 +440,96 @@ service cloud.firestore {
     }
     match /users/{uid} {
       allow get: if owner(uid);
-      allow create: if owner(uid) && unblocked() && validProfile(request.resource.data, uid);
-      allow update: if owner(uid) && unblocked() && validProfile(request.resource.data, uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'workshopName']);
+      allow create: if owner(uid) && unblocked() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(uid)) && validProfile(request.resource.data, uid);
+      allow update: if owner(uid) && unblocked() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(uid)) && validProfile(request.resource.data, uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'workshopName']);
+      allow delete: if cleanupOwner(uid);
       match /materials/{id} {
-        allow get: if privateOwner(uid);
-        allow list: if privateOwner(uid) && request.query.limit <= 200;
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 200;
         allow create: if privateOwner(uid) && validMaterial(request.resource.data, id);
         allow update: if privateOwner(uid) && immutable() && validMaterial(request.resource.data, id);
-        allow delete: if privateOwner(uid);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
       match /printers/{id} {
-        allow get: if privateOwner(uid);
-        allow list: if privateOwner(uid) && request.query.limit <= 200;
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 200;
         allow create: if privateOwner(uid) && validPrinter(request.resource.data, id);
         allow update: if privateOwner(uid) && immutable() && validPrinter(request.resource.data, id);
-        allow delete: if privateOwner(uid);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
       match /calculations/{id} {
-        allow get: if privateOwner(uid);
-        allow list: if privateOwner(uid) && request.query.limit <= 200;
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 200;
         allow create: if privateOwner(uid) && validCalculationMetadata(request.resource.data) && validCalculation(request.resource.data, id)
           && validInput(request.resource.data.input) && validJob(request.resource.data.input.job) && validResult(request.resource.data.result)
           && (!('tax' in request.resource.data.input) || validTaxSettings(request.resource.data.input.tax))
           && (!('tax' in request.resource.data.result) || validTaxResult(request.resource.data.result.tax));
         allow update: if privateOwner(uid) && validCalculationMetadata(request.resource.data)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'clientName', 'notes']);
-        allow delete: if privateOwner(uid);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
       match /templates/{id} {
-        allow get: if privateOwner(uid);
-        allow list: if privateOwner(uid) && request.query.limit <= 100;
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 100;
         allow create: if privateOwner(uid) && validTemplate(request.resource.data, id) && request.resource.data.version == 1;
         allow update: if privateOwner(uid) && immutable() && validTemplate(request.resource.data, id)
           && request.resource.data.version == resource.data.version + 1;
-        allow delete: if privateOwner(uid);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
       match /settings/pricing {
-        allow read: if privateOwner(uid);
+        allow get: if privateReader(uid);
         allow create, update: if privateOwner(uid) && validSettings(request.resource.data);
       }
+      match /settings/{id} {
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 100;
+        allow delete: if cleanupOwner(uid);
+      }
       match /likes/{id} {
-        allow get: if privateOwner(uid);
-        allow list: if privateOwner(uid) && request.query.limit <= 1000;
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 1000;
         allow create: if privateOwner(uid) && request.resource.data.keys().hasOnly(['filamentId']) && request.resource.data.filamentId == id && text(id, 180);
-        allow delete: if privateOwner(uid);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
     }
     match /userDirectory/{uid} {
       allow get: if owner(uid) || admin();
       allow list: if admin() && request.query.limit <= 100;
-      allow create, update: if owner(uid) && unblocked() && validDirectory(request.resource.data, uid);
+      allow create, update: if owner(uid) && unblocked() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(uid)) && validDirectory(request.resource.data, uid);
+      allow delete: if cleanupOwner(uid);
+    }
+    match /accountDeletion/{uid} {
+      allow get: if owner(uid);
+      allow create: if validDeletion(request.resource.data, uid) && deletionChange(uid, request.resource.data.changeId);
     }
     match /system/authorization {
       allow get: if request.auth != null;
       allow create, update: if validRegistry(request.resource.data)
-        && roleChange(getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.lastChangeId)).data.targetUid, request.resource.data.lastChangeId);
+        && (getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.lastChangeId)).data.action == 'delete'
+          ? deletionChange(getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.lastChangeId)).data.targetUid, request.resource.data.lastChangeId)
+          : roleChange(getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.lastChangeId)).data.targetUid, request.resource.data.lastChangeId));
     }
     match /accountAccess/{uid} {
       allow get: if owner(uid) || admin();
       allow list: if admin() && request.query.limit <= 100;
-      allow create, update: if validAccess(request.resource.data) && roleChange(uid, request.resource.data.changeId);
+      allow create, update: if validAccess(request.resource.data)
+        && (getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.changeId)).data.action == 'delete'
+          ? deletionChange(uid, request.resource.data.changeId) : roleChange(uid, request.resource.data.changeId));
     }
     match /memberships/{uid} {
       allow get: if owner(uid) || admin();
       allow list: if admin() && request.query.limit <= 100;
-      allow create, update: if validMembership(request.resource.data) && roleChange(uid, request.resource.data.changeId);
+      allow create, update: if validMembership(request.resource.data)
+        && (getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.changeId)).data.action == 'delete'
+          ? deletionChange(uid, request.resource.data.changeId) : roleChange(uid, request.resource.data.changeId));
     }
     match /accessAudit/{id} {
       allow get: if admin();
       allow list: if admin() && request.query.limit <= 100;
       allow create: if validAudit(request.resource.data) && freshAudit(id, request.resource.data)
         && ((request.resource.data.action == 'company' && companyChange(request.resource.data.companyId, id))
-          || (request.resource.data.action != 'company' && roleChange(request.resource.data.targetUid, id)));
+          || (request.resource.data.action == 'delete' && deletionChange(request.resource.data.targetUid, id))
+          || (request.resource.data.action in ['bootstrap', 'role', 'block'] && roleChange(request.resource.data.targetUid, id)));
     }
     match /companies/{id} {
       allow get: if true;
@@ -489,32 +548,34 @@ service cloud.firestore {
         && allowedOfferHost(request.resource.data)
         && request.resource.data.createdBy == request.auth.uid && request.resource.data.updatedBy == request.auth.uid
         && request.resource.data.createdAt == request.time
-        && (admin() || (companyManager(request.resource.data.companyId) && request.resource.data.status != 'blocked'));
+        && (adminWriter() || (companyManager(request.resource.data.companyId) && request.resource.data.status != 'blocked'
+          && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid))));
       allow update: if validOffer(request.resource.data, id)
         && request.resource.data.id == resource.data.id && request.resource.data.companyId == resource.data.companyId
         && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.updatedBy == request.auth.uid && request.resource.data.version == resource.data.version + 1
         && (allowedOfferHost(request.resource.data)
-          || (admin() && request.resource.data.status == 'blocked' && request.resource.data.productUrl == resource.data.productUrl))
-        && (admin() || (companyManager(resource.data.companyId) && resource.data.status != 'blocked' && request.resource.data.status != 'blocked'));
+          || (adminWriter() && request.resource.data.status == 'blocked' && request.resource.data.productUrl == resource.data.productUrl))
+        && (adminWriter() || (companyManager(resource.data.companyId) && resource.data.status != 'blocked' && request.resource.data.status != 'blocked'
+          && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid))));
     }
     match /filaments/{id} {
       allow get: if true;
       allow list: if request.query.limit <= 1000;
-      allow create, update: if admin() && validFilament(request.resource.data, id);
-      allow delete: if admin();
+      allow create, update: if adminWriter() && validFilament(request.resource.data, id);
+      allow delete: if adminWriter();
     }
     match /manufacturers/{id} {
       allow get: if true;
       allow list: if request.query.limit <= 1000;
-      allow create, update: if admin() && validManufacturer(request.resource.data, id);
-      allow delete: if admin();
+      allow create, update: if adminWriter() && validManufacturer(request.resource.data, id);
+      allow delete: if adminWriter();
     }
     match /temperatureProfiles/{type} {
       allow get: if true;
       allow list: if request.query.limit <= 200;
-      allow create, update: if admin() && validTemperature(request.resource.data);
-      allow delete: if admin();
+      allow create, update: if adminWriter() && validTemperature(request.resource.data);
+      allow delete: if adminWriter();
     }
   }
 }

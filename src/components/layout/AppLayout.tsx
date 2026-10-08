@@ -106,12 +106,14 @@ export const AppLayout: React.FC = () => {
   if (authLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження акаунту" /></div>;
   if (authError) return <ErrorPage error={new Error(authError)} resetErrorBoundary={() => { void reloadUser(); }} />;
   if (!user) return <Navigate to="/auth/login" state={{ from: location }} replace />;
+  if (!isDemoSession && user.deletionPending) return <Navigate to="/auth/delete-account" replace />;
   if (!isDemoSession && user.isBlocked) return <div className="min-h-screen flex items-center justify-center bg-neutral-100 dark:bg-neutral-950 p-6">
     <div className="max-w-md rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 space-y-4">
       <h1 className="text-lg font-semibold text-neutral-900 dark:text-white">Доступ до акаунта призупинено</h1>
       <p className="text-sm text-neutral-600 dark:text-neutral-400">Адміністратор обмежив доступ для {user.email}. Зверніться до адміністратора системи.</p>
       {logoutError && <p role="alert" className="text-sm text-red-600">{logoutError}</p>}
       <button className="text-sm underline text-emerald-600" onClick={handleLogout}>Вийти з акаунта</button>
+      <NavLink className="block text-sm underline text-red-600" to="/auth/delete-account">Видалити власний акаунт</NavLink>
     </div>
   </div>;
   if (!isDemoSession && !user.emailVerified) return <Navigate to="/auth/check-email" replace />;

@@ -21,6 +21,7 @@ export interface UserProfile {
   role?: import('./organizations.ts').Role;
   companyId?: string | null;
   isBlocked?: boolean;
+  deletionPending?: boolean;
 }
 
 export interface MaterialProfile {

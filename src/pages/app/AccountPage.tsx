@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { User, Building, Mail, Lock, FolderSync, LogOut, CheckCircle } from 'lucide-react';
+import { User, Building, Mail, Lock, FolderSync, LogOut, CheckCircle, Download, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authService, authErrorMessage } from '../../services/authService.ts';
 import { Button } from '../../components/common/Button.tsx';
 import { Input } from '../../components/common/Input.tsx';
 import { Modal } from '../../components/common/Modal.tsx';
 import { organizationRepository } from '../../services/organizationRepository.ts';
+import { accountDataService, downloadAccountExport } from '../../services/accountDataService.ts';
 
 export const AccountPage: React.FC = () => {
   const navigate = useNavigate();
@@ -23,6 +24,20 @@ export const AccountPage: React.FC = () => {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [companyName, setCompanyName] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExport = async () => {
+    if (isExporting || !user || isDemoSession) return;
+    const uid = user.id;
+    setIsExporting(true);
+    setError(null);
+    try {
+      const exported = await accountDataService.exportOwnData(uid);
+      authService.assertSession(uid);
+      downloadAccountExport(exported);
+    } catch (error) { setError(authErrorMessage(error)); }
+    finally { setIsExporting(false); }
+  };
 
   useEffect(() => {
     let active = true;
@@ -106,6 +121,17 @@ export const AccountPage: React.FC = () => {
         <h3 className="flex items-center gap-2 text-sm font-semibold text-neutral-900 dark:text-white"><FolderSync className="w-5 h-5 text-emerald-600" />Імпорт файлів Bambu Studio</h3>
         <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">Збережіть нарізаний файл .gcode.3mf у слайсері й завантажте його в калькуляторі. Автоматичний моніторинг локальної папки в цій версії ще не реалізовано.</p>
         <NavLink to="/app/calculator" className="inline-block"><Button variant="outline" size="sm">Відкрити калькулятор</Button></NavLink>
+      </div>
+
+      <div className="bg-white dark:bg-neutral-900 p-6 rounded-2xl border border-neutral-200 dark:border-neutral-800 space-y-4">
+        <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Ваші дані</h3>
+        <p className="text-xs text-neutral-600 dark:text-neutral-400">JSON-експорт містить профіль, усі приватні матеріали, принтери, розрахунки, шаблони, налаштування, вподобання та власні метадані доступу. Під час експорту не редагуйте дані в інших вкладках.</p>
+        <p className="text-xs text-neutral-600 dark:text-neutral-400">Видалення назавжди прибере ці дані й можливість входу. Опубліковані пропозиції компаній, журнал адміністративних дій і мінімальна позначка видалення залишаться.</p>
+        <div className="flex flex-wrap gap-3">
+          <Button variant="outline" size="sm" leftIcon={<Download className="w-4 h-4" />} onClick={handleExport} isLoading={isExporting} disabled={isDemoSession}>Експортувати всі власні дані</Button>
+          <Button variant="outline" size="sm" leftIcon={<Trash2 className="w-4 h-4 text-red-500" />} onClick={() => navigate('/auth/delete-account')} disabled={isDemoSession || isExporting}>Видалити акаунт</Button>
+        </div>
+        {isDemoSession && <p className="text-xs text-neutral-500">Експорт акаунта й видалення доступні після входу у власний справжній акаунт.</p>}
       </div>
 
       <div className="pt-2 flex justify-end"><Button variant="outline" size="sm" leftIcon={<LogOut className="w-4 h-4 text-red-500" />} onClick={handleLogout}>Вийти з облікового запису</Button></div>

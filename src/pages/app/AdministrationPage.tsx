@@ -9,7 +9,7 @@ import { organizationRepository } from '../../services/organizationRepository.ts
 import { authErrorMessage, authService } from '../../services/authService.ts';
 
 const roleLabels: Record<Role, string> = { user: 'Користувач', manager: 'Менеджер', admin: 'Адміністратор' };
-const actionLabels: Record<AccessAudit['action'], string> = { bootstrap: 'Перший адміністратор', role: 'Зміна ролі', block: 'Зміна блокування', company: 'Зміна компанії' };
+const actionLabels: Record<AccessAudit['action'], string> = { bootstrap: 'Перший адміністратор', role: 'Зміна ролі', block: 'Зміна блокування', company: 'Зміна компанії', delete: 'Видалення акаунта' };
 const selectClass = 'w-full px-3 py-2 text-sm rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white disabled:opacity-50';
 const panelClass = 'p-5 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 space-y-4';
 

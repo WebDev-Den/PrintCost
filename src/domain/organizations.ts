@@ -10,7 +10,7 @@ export interface Company {
   version: number; createdBy: string; createdAt: Timestamp; updatedAt: Timestamp; updatedBy: string; changeId: string;
 }
 export interface AccessAudit {
-  actorUid: string; targetUid: string; action: 'bootstrap' | 'role' | 'block' | 'company';
+  actorUid: string; targetUid: string; action: 'bootstrap' | 'role' | 'block' | 'company' | 'delete';
   role: Role; companyId: string | null; blocked: boolean; createdAt: Timestamp; registryVersion: number;
 }
 export const BOOTSTRAP_EMAIL = 'web.developer.den@gmail.com';

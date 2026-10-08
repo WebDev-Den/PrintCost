@@ -55,6 +55,7 @@ export const CheckEmailPage: React.FC = () => {
             setError(null);
             try { await logout(); navigate('/auth/login'); } catch (error) { setError(authErrorMessage(error)); }
           }} disabled={isLoading}>Вийти та використати інший акаунт</Button>
+          <NavLink to="/auth/delete-account" className="block text-xs underline text-red-600 dark:text-red-400">Видалити власний акаунт</NavLink>
         </div> : <NavLink to="/auth/login" className="block"><Button variant="outline" size="sm" className="w-full">Повернутися до входу</Button></NavLink>}
       </div>
     </div>
