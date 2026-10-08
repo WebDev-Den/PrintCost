@@ -1,19 +1,23 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import test from 'node:test';
+import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { build } from 'esbuild';
 import { Miniflare, Response as RuntimeResponse, convertV4MiniflareOptions } from 'miniflare';
 
 // Explicit integration command: npx tsx --test tests/analyticsRuntime.integration.ts.
-// Requires the existing demo-kilog Auth/Firestore emulators; never clears them.
+// Requires a Firestore emulator; installs real Rules in its own fresh project.
+// Own loopback Auth server and fixture cleanup never touch demo-kilog browser data.
 // The production handler is bundled unchanged. Only outbound transport is replaced:
 // synthetic Google public keys and loopback Firestore. No unsigned-token bypass.
-const PROJECT = 'demo-kilog';
+const PROJECT = `demo-kilog-analytics-runtime-${randomUUID().slice(0, 8)}`;
 const FIRESTORE = 'http://127.0.0.1:8080';
-const AUTH = 'http://127.0.0.1:9099';
 const ORIGIN = 'https://analytics-runtime.invalid';
 const DOCS = `/v1/projects/${PROJECT}/databases/(default)/documents/`;
+const { createApp } = createRequire(import.meta.url)('firebase-tools/lib/emulator/auth/server.js');
 
 function firestoreValue(value: unknown): Record<string, unknown> {
   if (value === null) return { nullValue: null };
@@ -36,15 +40,15 @@ async function localDocument(path: string, value?: Record<string, unknown>): Pro
   return response.json();
 }
 
-async function localUser(): Promise<{ uid: string; payload: Record<string, unknown>; unsignedToken: string }> {
-  const response = await fetch(`${AUTH}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake-api-key`, {
+async function localUser(authOrigin: string): Promise<{ uid: string; payload: Record<string, unknown>; unsignedToken: string }> {
+  const response = await fetch(`${authOrigin}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake-api-key`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: `analytics-runtime-${randomUUID()}@example.invalid`, password: randomUUID(), returnSecureToken: true }),
   });
   assert.ok(response.ok, `Local Auth fixture: HTTP ${response.status}`);
   const result = await response.json() as { localId: string; idToken: string };
   const payload = JSON.parse(Buffer.from(result.idToken.split('.')[1], 'base64url').toString());
-  assert.equal(payload.aud, PROJECT, 'Run emulators with --project demo-kilog.');
+  assert.equal(payload.aud, PROJECT, 'Auth fixture must belong to the isolated test project.');
   return { uid: result.localId, payload, unsignedToken: result.idToken };
 }
 
@@ -60,11 +64,17 @@ function percentile(samples: number[], fraction: number): number {
 }
 
 test('production analytics Worker with local D1 and Firestore authorization', { timeout: 120_000 }, async t => {
-  const registry = await localDocument('system/authorization');
-  const adminUid = registry.fields?.adminUids?.arrayValue?.values?.[0]?.stringValue;
-  assert.ok(adminUid, 'Bootstrap the local administrator before this test; registry is never modified here.');
-  const manager = await localUser();
-  const plainUser = await localUser();
+  const environment = await initializeTestEnvironment({ projectId: PROJECT,
+    firestore: { host: '127.0.0.1', port: 8080, rules: await readFile('firestore.rules', 'utf8') } });
+  t.after(() => environment.cleanup());
+  const authServer = (await createApp(PROJECT)).listen(0, '127.0.0.1');
+  t.after(() => new Promise<void>((resolve, reject) => authServer.close((error?: Error) => error ? reject(error) : resolve())));
+  await once(authServer, 'listening');
+  const authOrigin = `http://127.0.0.1:${authServer.address().port}`;
+  const admin = await localUser(authOrigin);
+  const manager = await localUser(authOrigin);
+  const plainUser = await localUser(authOrigin);
+  const adminUid = admin.uid;
   const prefix = `analytics-runtime-${randomUUID()}`;
   const companyId = `${prefix}-a`;
   const foreignCompanyId = `${prefix}-b`;
@@ -80,6 +90,11 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
   const membership = { companyId, active: true, version: 1, updatedAt: createdAt, updatedBy: adminUid, changeId: randomUUID() };
   let mf: Miniflare | undefined;
   try {
+    assert.equal((await fetch(`${FIRESTORE}${DOCS}system/authorization`, { headers: { Authorization: 'Bearer owner' } })).status, 404,
+      'The isolated project starts without any manually bootstrapped registry.');
+    await seed('system/authorization', { adminUids: [adminUid], bootstrapUid: adminUid, initializedAt: createdAt, version: 1, lastChangeId: randomUUID() });
+    await seed(`accountAccess/${adminUid}`, access);
+    await seed(`memberships/${adminUid}`, { ...membership, companyId: null, active: false });
     await seed(`companies/${companyId}`, company);
     await seed(`companies/${foreignCompanyId}`, { ...company, id: foreignCompanyId });
     await seed(`accountAccess/${manager.uid}`, access);
@@ -123,7 +138,7 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
     }
     const managerToken = signedToken(manager.payload, pair.privateKey);
     const userToken = signedToken(plainUser.payload, pair.privateKey);
-    const adminToken = signedToken(manager.payload, pair.privateKey, { sub: adminUid, user_id: adminUid });
+    const adminToken = signedToken(admin.payload, pair.privateKey);
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
     const report = (token: string, company = companyId, from = today, to = today) => mf!.dispatchFetch(`${ORIGIN}/api/analytics/report?companyId=${encodeURIComponent(company)}&from=${from}&to=${to}`, { headers: { Authorization: `Bearer ${token}` } });
     const post = (events: object[]) => mf!.dispatchFetch(`${ORIGIN}/api/analytics/events`, { method: 'POST', headers: { Origin: ORIGIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ events }) });
@@ -297,10 +312,14 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
   } finally {
     await mf?.dispose();
     for (const path of fixturePaths.reverse()) {
-      await fetch(`${FIRESTORE}${DOCS}${path}`, { method: 'DELETE', headers: { Authorization: 'Bearer owner' } });
+      const response = await fetch(`${FIRESTORE}${DOCS}${path}`, { method: 'DELETE', headers: { Authorization: 'Bearer owner' } });
+      assert.ok(response.ok, `Isolated fixture cleanup ${path}: HTTP ${response.status}`);
     }
-    for (const user of [manager, plainUser]) {
-      await fetch(`${AUTH}/identitytoolkit.googleapis.com/v1/accounts:delete?key=fake-api-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken: user.unsignedToken }) });
+    assert.equal((await fetch(`${FIRESTORE}${DOCS}system/authorization`, { headers: { Authorization: 'Bearer owner' } })).status, 404,
+      'The isolated registry is removed after the runtime checks.');
+    for (const user of [admin, manager, plainUser]) {
+      const response = await fetch(`${authOrigin}/identitytoolkit.googleapis.com/v1/accounts:delete?key=fake-api-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken: user.unsignedToken }) });
+      assert.ok(response.ok, `Isolated Auth fixture cleanup: HTTP ${response.status}`);
     }
   }
 });
