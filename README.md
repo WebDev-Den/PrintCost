@@ -2,17 +2,17 @@
 
 Калькулятор витрат і ціни замовлення, матеріали, принтери, історія розрахунків та публічний каталог філаментів. Застосунок читає підтримувані метадані нарізки локально у браузері.
 
-Поточний стек: React + TypeScript + Vite, **Cloudflare Pages** для сайту, **Firebase Authentication** для акаунтів і **Cloud Firestore Standard** для даних. Окремий REST-сервер, Firebase Storage та Cloud Functions для цього запуску не потрібні. [SERVER_SPECIFICATION.md](./SERVER_SPECIFICATION.md) зберігає попередню архітектуру як історичний документ; актуальні інструкції наведені тут.
+Поточний стек: React + TypeScript + Vite, **Cloudflare Workers Static Assets** для сайту, **Firebase Authentication** для акаунтів і **Cloud Firestore Standard** для даних. Worker має назву **`kilo-g`** та публікує статичну збірку `dist` без серверного JavaScript. Окремий REST-сервер, Firebase Storage та Cloud Functions для цього запуску не потрібні. [SERVER_SPECIFICATION.md](./SERVER_SPECIFICATION.md) зберігає попередню архітектуру як історичний документ; актуальні інструкції наведені тут.
 
 ## Firebase Spark: початкове налаштування
 
 Цільовий Firebase-проєкт — `kilo-g`, тариф **Spark**. 8 жовтня 2026 року створено Web app і безкоштовну Firestore Standard `(default)` у `eur3`, опубліковано правила та індекси, увімкнено Email/Password. Налаштування виконуються в [Firebase Console](https://console.firebase.google.com/project/kilo-g/overview).
 
-1. У **Project settings → General → Your apps** зареєструйте Web app. Firebase Hosting для нього не вмикайте: сайт розміщується на Cloudflare Pages.
+1. У **Project settings → General → Your apps** зареєструйте Web app. Firebase Hosting для нього не вмикайте: сайт розміщується на Cloudflare Workers.
 2. У **Authentication → Sign-in method** увімкніть **Email/Password**. Застосунок використовує пароль, підтвердження адреси та відновлення пароля. Окремий SMTP не потрібен. [Документація Email/Password](https://firebase.google.com/docs/auth/web/password-auth).
 3. Створіть **Firestore Database**, оберіть **Standard**, database ID **`(default)`**, потрібний регіон і **production mode**. Початкові закриті правила замініть правилами з репозиторію через команду нижче. Правила test mode для робочого сайту не використовуйте.
 4. Скопіюйте `apiKey`, `authDomain`, `projectId` та `appId` з конфігурації Web app. Усі чотири значення потрібні для збірки.
-5. У **Authentication → Settings → Authorized domains** додайте точний hostname робочого сайту, наприклад `kilog-printcost.pages.dev`, без `https://`, шляху чи порту. Для локальної роботи з реальним Firebase додайте `localhost` вручну: нові проєкти більше не отримують його автоматично. Якщо тестуєте окремий preview або власний домен, додайте також його hostname. [Дозволені домени Firebase](https://firebase.google.com/docs/auth/web/email-link-auth).
+5. Після деплою в **Authentication → Settings → Authorized domains** додайте точний hostname із URL, який повернув Wrangler або Cloudflare, без `https://`, шляху чи порту. Для локальної роботи з реальним Firebase додайте `localhost` вручну: нові проєкти більше не отримують його автоматично. Якщо тестуєте окремий preview або власний домен, додайте також його hostname. [Дозволені домени Firebase](https://firebase.google.com/docs/auth/web/email-link-auth).
 
 Після встановлення залежностей увійдіть у Firebase CLI й опублікуйте правила та індекси:
 
@@ -84,38 +84,46 @@ VITE_USE_FIREBASE_EMULATORS=true
 
 У першому терміналі запустіть `npm run emulators`, у другому — `npm run dev -- --mode emulator`. Відкрийте `http://localhost:3000`. Акаунти й дані емулятора не є реальними акаунтами `kilo-g`; листи емулятора не надходять у поштову скриньку. Цей режим призначений для локального тестування, а не публікації.
 
-## Cloudflare Pages через GitHub
+## Cloudflare Workers через GitHub
 
-Репозиторій: [WebDev-Den/PrintCost](https://github.com/WebDev-Den/PrintCost). Зміни застосунку, `package-lock.json`, конфігурація Firebase та `.nvmrc` мають бути у гілці, з якої Cloudflare виконує збірку.
+Репозиторій: [WebDev-Den/PrintCost](https://github.com/WebDev-Den/PrintCost). Зміни застосунку, `package-lock.json`, `wrangler.jsonc`, конфігурація Firebase та `.nvmrc` мають бути у гілці `main`, з якої Cloudflare виконує збірку.
 
-1. У Cloudflare відкрийте **Workers & Pages → Create application → Pages → Connect to Git**.
-2. Надайте інтеграції GitHub доступ до `WebDev-Den/PrintCost`. Репозиторій може бути приватним або публічним; робити його публічним для деплою не потрібно. [Git integration](https://developers.cloudflare.com/pages/configuration/git-integration/), [обмеження Pages](https://developers.cloudflare.com/pages/platform/limits/).
-3. Оберіть production-гілку й задайте налаштування:
+1. У Cloudflare відкрийте **Workers & Pages → kilo-g → Settings → Builds → Connect** і підключіть `WebDev-Den/PrintCost`. Для нового Worker використайте **Create application → Import a repository**. [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
+2. Назва Worker у Cloudflare має бути **`kilo-g`**, як поле `name` у `wrangler.jsonc`; невідповідність зупиняє Git-збірку.
+3. Задайте налаштування збірки:
 
 | Поле | Значення |
 | --- | --- |
-| Project name | `kilog-printcost` або доступна назва |
-| Framework preset | React (Vite) |
+| Worker name | `kilo-g` |
+| Production branch | `main` |
 | Build command | `npm run build` |
-| Build output directory | `dist` |
+| Deploy command | `npx wrangler deploy` |
 | Root directory | Корінь репозиторію |
 | `NODE_VERSION` | `22.23.2` |
 
-[Налаштування збірки](https://developers.cloudflare.com/pages/configuration/build-configuration/), [версія Node.js](https://developers.cloudflare.com/pages/configuration/build-image/).
+[Налаштування збірки](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/), [версія Node.js](https://developers.cloudflare.com/workers/ci-cd/builds/build-image/).
 
-4. Додайте `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID` із Web app проєкту `kilo-g` у **production environment variables**. `VITE_USE_FIREBASE_EMULATORS` має бути відсутнім або `false`. Якщо потрібні preview deployments, задайте для них конфігурацію також; їхні дані будуть у тому Firebase-проєкті, який ви вказали.
-5. Запустіть деплой. Після отримання адреси `https://<project>.pages.dev` внесіть її **hostname** у Firebase Authorized domains. Додавання домену не змінює вже зібрані Firebase-змінні.
-6. Перевірте відкриття головної сторінки та прямих адрес `/auth/login`, `/auth/callback`, `/app/calculator`. Pages обслуговує маршрути SPA через `index.html`; у проєкті немає власної верхньорівневої `404.html`. [SPA на Pages](https://developers.cloudflare.com/pages/configuration/serving-pages/).
+4. `.env.production` містить чотири публічні значення Web app проєкту `kilo-g`, тому Git-збірка працює без ручного перенесення конфігурації. Ці значення також доступні у браузерній збірці; адміністративних credentials у файлі немає. Для іншого Firebase-проєкту змініть файл або перевизначте значення у **Settings → Build → Build Variables and Secrets**. Там же можна задати `NODE_VERSION=22.23.2`; `.nvmrc` фіксує цю версію. `VITE_USE_FIREBASE_EMULATORS` має бути відсутнім або `false`. Runtime bindings не налаштовують статичний Vite-клієнт.
+5. Запустіть деплой. Використовуйте точну адресу `workers.dev` із результату деплою; піддомен акаунта не визначається лише назвою Worker. Внесіть її **hostname** у Firebase Authorized domains. Додавання домену не змінює вже зібрані Firebase-змінні.
+6. Перевірте головну сторінку та прямі адреси `/auth/login`, `/auth/callback`, `/app/calculator`. У `wrangler.jsonc` задано `assets.directory: "./dist"` і `not_found_handling: "single-page-application"`, тому маршрути SPA отримують `index.html`. Заголовки з `public/_headers` потрапляють у збірку. [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/).
 
-Після підключення Git зміни production-гілки автоматично запускають нову збірку. Безкоштовний піддомен `pages.dev` достатній; купувати домен не потрібно.
+Після підключення Git зміни `main` автоматично запускають збірку та оновлення Worker. Якщо вмикаєте preview builds, вони також мають отримувати всі чотири Firebase-змінні під час збірки. Дані preview зберігатимуться у вказаному Firebase-проєкті; для листів потрібно дозволити hostname preview у Firebase. Безкоштовної адреси `workers.dev` достатньо для запуску.
 
-Для ручного оновлення вже підготовленого Pages-проєкту доступні `npx wrangler login` і `npm run deploy:pages` після правильної production-збірки. Скрипт очікує назву `kilog-printcost`; якщо назва інша, передайте її безпосередньо `npx wrangler pages deploy dist --project-name <name>`. Не публікуйте локальну збірку для емуляторів.
+Для ручного деплою заповніть `.env.local` реальною Firebase-конфігурацією та виконайте:
+
+```bash
+npx wrangler login
+npm run build
+npm run deploy:worker
+```
+
+`deploy:worker` виконує `wrangler deploy` із конфігурацією `wrangler.jsonc`. Файл містить цільовий Cloudflare `account_id`; для іншого акаунта його потрібно змінити. Публікуйте production-збірку з конфігурацією `kilo-g`.
 
 ## Листи підтвердження та відновлення пароля
 
 Стандартний обробник листів Firebase працює без налаштування власної сторінки: після завершення дії він може повернути користувача у застосунок. Авторизація використовує URL поточного сайту, тому його hostname має бути дозволеним у Firebase.
 
-За бажанням після деплою в **Authentication → Templates** задайте для листів підтвердження та скидання пароля **Action URL** `https://<project>.pages.dev/auth/callback`. Власний маршрут обробляє `mode=verifyEmail` та `mode=resetPassword` із `oobCode`; при скиданні відкриває `/auth/reset-password`. Копіювати або обривати параметри посилання з листа не потрібно. [Власний email handler](https://firebase.google.com/docs/auth/custom-email-handler).
+За бажанням після деплою в **Authentication → Templates** задайте для листів підтвердження та скидання пароля **Action URL**: URL опублікованого Worker із доданим `/auth/callback`. Власний маршрут обробляє `mode=verifyEmail` та `mode=resetPassword` із `oobCode`; при скиданні відкриває `/auth/reset-password`. Копіювати або обривати параметри посилання з листа не потрібно. [Власний email handler](https://firebase.google.com/docs/auth/custom-email-handler).
 
 Публічний запуск потребує окремої перевірки доставлення реальних листів, повторного входу після підтвердження та входу з новим паролем після відновлення.
 
@@ -156,12 +164,16 @@ Firestore надає одну безкоштовну базу на проєкт:
 
 Для листів Firebase Auth на Spark заявлені **1000 підтверджень адреси** й **150 скидань пароля на день**; також діють обмеження проти зловживань. [Квоти Authentication](https://firebase.google.com/docs/auth/limits).
 
-Cloudflare Pages Free має **500 збірок на місяць**; ліміт одного статичного файла сайту — **25 MiB**. Цей ліміт стосується опублікованих assets, а не локального файла нарізки, який аналізує браузер. [Квоти Pages](https://developers.cloudflare.com/pages/platform/limits/).
+Запити до **Workers Static Assets безкоштовні й необмежені**, зберігання assets не має додаткової вартості. Поточна конфігурація публікує лише статичні assets без серверного Worker-скрипта. Якщо додавати серверний код, його виклики підпадатимуть під окремі квоти Workers. [Вартість Static Assets](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/).
+
+Workers Free дозволяє **20 000 статичних файлів на версію**, до **25 MiB на файл**. Ліміт стосується опублікованих assets, а не локального файла нарізки, який аналізує браузер. [Квоти Workers](https://developers.cloudflare.com/workers/platform/limits/). Workers Builds Free надає **3000 хвилин збірки на місяць**, одну одночасну збірку й таймаут **20 хвилин** на збірку. [Квоти Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/limits-and-pricing/).
 
 Перевищення квот Spark може призупинити відповідну операцію або продукт до відновлення квоти. Підключення Cloud Billing переводить проєкт на Blaze з оплатою використання; для бюджету 0 грн залишайтеся на Spark і контролюйте Usage у Firebase Console. [Тарифи Firebase](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans).
 
 ## Стан перевірки
 
-Локально пройдені TypeScript-перевірка, **14 тестів авторизації, розрахунку та аналізатора файлів** і **9 перевірок правил Firestore та API**. Браузерний сценарій із Firebase Emulator перевірив реєстрацію, майстер налаштувань, завантаження G-code через worker, збереження й перезавантаження історії, повторний вхід та ізоляцію двох акаунтів. Пропуск усіх кроків не створює обладнання й матеріалів та не змінює існуючих налаштувань; новий акаунт не отримує вигаданий тариф електроенергії.
+Локально пройдені TypeScript-перевірка та **23 тести**: 14 тестів авторизації, розрахунку й аналізатора файлів та 9 перевірок правил Firestore й API. Браузерний сценарій із Firebase Emulator перевірив реєстрацію, майстер налаштувань, завантаження G-code через worker, збереження й перезавантаження історії, повторний вхід та ізоляцію двох акаунтів. Пропуск усіх кроків не створює обладнання й матеріалів та не змінює існуючих налаштувань; новий акаунт не отримує вигаданий тариф електроенергії. Wrangler dry run перевірив підготовку 12 assets до деплою Worker.
 
-Публічний сайт, доставлення реальних листів і роботу на остаточному hostname потрібно підтвердити після деплою. Адміністративний custom claim ще не призначено реальному користувачу. Збірка й тести самі по собі не підтверджують завершений публічний запуск.
+8 жовтня 2026 року опубліковано [Worker kilo-g](https://kilo-g.web-developer-den.workers.dev). Перевірені прямі маршрути SPA, assets із реальною Firebase-конфігурацією, відповідь публічного каталогу та заборона анонімного читання приватних даних. Firebase дозволяє hostname Worker, Email/Password увімкнений. Доставлення реальних листів і повний сценарій із реальною поштовою скринькою ще не перевірені. Адміністративний custom claim ще не призначено реальному користувачу.
+
+`npm audit` повідомив про **19 вразливостей у залежностях інструментів розробки та CLI**; серед пакетів, які потрапляють у браузерну збірку, відповідних знахідок не виявлено. Це залишається ризиком середовища збірки й локальних інструментів, а не підтвердженням відсутності інших вразливостей. Оновлення потрібно перевіряти на сумісність перед зміною lockfile.

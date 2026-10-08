@@ -10,7 +10,7 @@
     "lint": "tsc --noEmit",
     "test": "tsx --test tests/calculator.test.ts tests/fileAnalysis.test.ts tests/auth.test.ts",
     "test:rules": "firebase emulators:exec --project demo-kilog --only firestore \"tsx --test tests/firestore.rules.test.ts\"",
-    "deploy:pages": "wrangler pages deploy dist --project-name kilog-printcost",
+    "deploy:worker": "wrangler deploy",
     "deploy:firebase": "firebase deploy --only firestore:rules,firestore:indexes",
     "emulators": "firebase emulators:start --project demo-kilog --only auth,firestore"
   },
