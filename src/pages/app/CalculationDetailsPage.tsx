@@ -26,6 +26,7 @@ import { DEFAULT_TAX_SETTINGS, materialPriceForCost, normalizeTaxSettings, type 
 import { formatUah, formatDurationUk, formatWeightUk, formatNumberUk } from '../../domain/formatters.ts';
 import { clearMaterialMapping, getEffectiveMaterialType, isCompatibleMaterial } from '../../domain/materialMatching.ts';
 import { CALCULATION_ALGORITHM_VERSION } from '../../domain/calculator.ts';
+import { getRecalculationTitle } from '../../domain/calculationPersistence.ts';
 
 export const CalculationDetailsPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -130,7 +131,7 @@ export const CalculationDetailsPage: React.FC = () => {
 
       // Save as a NEW separate version
       const newSnapshot = await saveCalculation({
-        title: `${snapshot.title} (оновлені тарифи ${new Date().toLocaleDateString('uk-UA')})`,
+        title: getRecalculationTitle(snapshot.title),
         status: newResult.status,
         input: updatedInput,
         result: newResult,

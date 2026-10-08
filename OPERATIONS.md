@@ -1,6 +1,6 @@
 # Запуск, резервні копії та відновлення KiloG
 
-Робочий Firebase-проєкт — **kilo-g**, база Firestore **(default), Standard**, тариф **Spark**. Сайт і API — Worker **kilo-g** на Cloudflare Free. Зміна тарифу, Cloud Billing, Blaze, paid Workers, керовані backups/PITR або платні сервіси не входять до цього запуску.
+Робочий Firebase-проєкт — **kilo-g**, база Firestore **(default), Standard**, тариф **Spark**. Сайт і API — Worker **kilo-g**, цільовий тариф **Cloudflare Free**; фактичний план акаунта треба підтвердити перед випуском, оскільки API subscriptions повернув 403. Зміна тарифу, Cloud Billing, Blaze, paid Workers, керовані backups/PITR або платні сервіси не входять до цього запуску.
 
 ## Перед випуском
 

@@ -4,6 +4,8 @@ import { api, STORAGE_KEYS } from '../src/services/api.ts';
 import { authService } from '../src/services/authService.ts';
 import { getInitialCalculationSnapshots } from '../src/domain/defaultData.ts';
 import { CALCULATION_ALGORITHM_VERSION } from '../src/domain/calculationTemplates.ts';
+import { getCalculationSaveErrors, getRecalculationTitle } from '../src/domain/calculationPersistence.ts';
+import { calculatePrintCost } from '../src/domain/calculator.ts';
 
 class MemoryStorage implements Storage {
   private data = new Map<string, string>();
@@ -71,6 +73,20 @@ test('private templates enforce versions; history pages beyond 200 and preserves
     assert.equal(Number(duplicated.result.sellingPriceUah), Number(legacy.result.sellingPriceUah));
     assert.equal(Number(duplicated.result.costPriceUah), Number(legacy.result.costPriceUah));
     assert.deepEqual((await api.calculations.getById('history-250'))?.result, legacy.result);
+    const longOriginal = await api.calculations.updateMetadata('history-250', { title: 'Д'.repeat(300) });
+    const recalculatedInput = { ...longOriginal.input, markupPercent: '125' };
+    const recalculatedResult = calculatePrintCost(recalculatedInput);
+    const recalculatedTitle = getRecalculationTitle(longOriginal.title, new Date('2026-10-09T12:00:00Z'));
+    const recalculated = await api.calculations.save({
+      title: recalculatedTitle, input: recalculatedInput, result: recalculatedResult, status: recalculatedResult.status,
+      fileName: longOriginal.fileName, sourceCalculationId: longOriginal.id,
+    });
+    assert.equal(recalculated.title.length, 300);
+    assert.ok(recalculated.title.endsWith(' (оновлені тарифи 09.10.2026)'));
+    assert.notEqual(recalculated.id, longOriginal.id);
+    assert.equal(recalculated.sourceCalculationId, longOriginal.id);
+    assert.deepEqual(await api.calculations.getById(longOriginal.id), longOriginal);
+    assert.equal(getRecalculationTitle('Деталь', new Date('2026-10-09T12:00:00Z')), 'Деталь (оновлені тарифи 09.10.2026)');
     const { id: _id, createdAt: _createdAt, ...input } = legacy;
     assert.equal((await api.calculations.save(input)).algorithmVersion, CALCULATION_ALGORITHM_VERSION);
     await api.materials.update('mat_petg_bambu', { isArchived: true });
@@ -81,6 +97,50 @@ test('private templates enforce versions; history pages beyond 200 and preserves
     await api.materials.update('mat_petg_bambu', { type: 'PETG' });
     await api.printers.delete(input.input.selectedPrinterId!);
     await assert.rejects(api.calculations.save(input), /Принтер видалено/);
+  } finally {
+    if (oldStorage) Object.defineProperty(globalThis, 'localStorage', oldStorage); else Reflect.deleteProperty(globalThis, 'localStorage');
+    if (oldWindow) Object.defineProperty(globalThis, 'window', oldWindow); else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
+test('saving drafts rejects missing printer parameters locally and preserves unknown material prices', async () => {
+  const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const oldWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: new MemoryStorage() });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: new EventTarget() });
+  try {
+    const { id: _id, createdAt: _created, ...snapshot } = structuredClone(getInitialCalculationSnapshots()[0]);
+    snapshot.input.selectedPrinterId = null;
+    snapshot.input.averagePowerWatts = '';
+    snapshot.input.machineHourlyRateUah = '';
+    snapshot.input.electricityTariffUahPerKwh = null;
+    snapshot.result = calculatePrintCost(snapshot.input);
+    snapshot.status = snapshot.result.status;
+    assert.deepEqual(getCalculationSaveErrors(snapshot.input), ['Потужність принтера: введіть невід’ємне число.', 'Машинна ставка: введіть невід’ємне число.']);
+    // Firebase is unconfigured here: a precise parameter error must precede any repository access.
+    await assert.rejects(api.calculations.save(snapshot), /Потужність принтера.*Машинна ставка/);
+    assert.equal(localStorage.getItem(STORAGE_KEYS.CALCULATIONS), null);
+    await authService.enableDemoSession();
+    await assert.rejects(api.calculations.save(snapshot), /Потужність принтера.*Машинна ставка/);
+    assert.equal(localStorage.getItem(STORAGE_KEYS.CALCULATIONS), null);
+
+    snapshot.input.averagePowerWatts = '100,000001';
+    snapshot.input.machineHourlyRateUah = '10';
+    snapshot.input.filaments = snapshot.input.filaments.map(filament => ({ ...filament, mappedMaterialId: null, mappedMaterialName: undefined, pricePerKgUah: null, costUah: null, matchMethod: 'unmatched' }));
+    snapshot.result = calculatePrintCost(snapshot.input);
+    snapshot.status = snapshot.result.status;
+    assert.equal(snapshot.status, 'incomplete');
+    assert.deepEqual(getCalculationSaveErrors(snapshot.input), []);
+    const saved = await api.calculations.save(snapshot);
+    assert.equal(saved.input.averagePowerWatts, '100.000001');
+    assert.equal(saved.input.machineHourlyRateUah, '10');
+    assert.equal(saved.input.electricityTariffUahPerKwh, null);
+    assert.equal(saved.status, 'incomplete');
+    assert.ok(saved.input.filaments.every(filament => filament.pricePerKgUah === null));
+    assert.deepEqual((await api.calculations.getById(saved.id))?.result, saved.result);
+    assert.match(getCalculationSaveErrors({ ...snapshot.input, averagePowerWatts: '100.0000001' }).join(' '), /Потужність принтера.*6 після/);
+    assert.match(getCalculationSaveErrors({ ...snapshot.input, machineHourlyRateUah: '1000000000000' }).join(' '), /Машинна ставка.*12 цифр/);
+    assert.match(getCalculationSaveErrors({ ...snapshot.input, marginPercent: '100' }).join(' '), /менше 100/);
   } finally {
     if (oldStorage) Object.defineProperty(globalThis, 'localStorage', oldStorage); else Reflect.deleteProperty(globalThis, 'localStorage');
     if (oldWindow) Object.defineProperty(globalThis, 'window', oldWindow); else Reflect.deleteProperty(globalThis, 'window');

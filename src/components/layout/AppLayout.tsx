@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Navigate, NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Calculator,
@@ -28,6 +28,7 @@ import { DemoBanner } from '../common/DemoBanner.tsx';
 import { BrandLogo } from '../common/BrandLogo.tsx';
 import { ErrorPage } from '../../pages/ErrorPage.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
+import { useDialogFocus } from '../common/useDialogFocus.ts';
 
 export const AppLayout: React.FC = () => {
   const { user, logout, isLoading: authLoading, isDemoSession, authError, reloadUser } = useAuth();
@@ -38,6 +39,9 @@ export const AppLayout: React.FC = () => {
 
   // Mobile menu drawer state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(mobileMenuRef, mobileMenuOpen, () => setMobileMenuOpen(false));
+  useEffect(() => { setMobileMenuOpen(false); }, [location.pathname, user?.id, user?.isBlocked, user?.deletionPending]);
   const [logoutError, setLogoutError] = useState<string | null>(null);
 
   // Desktop sidebar collapsed state (persistent in localStorage)
@@ -364,7 +368,7 @@ export const AppLayout: React.FC = () => {
             onClick={() => setMobileMenuOpen(false)}
             aria-hidden="true"
           />
-          <div className="relative w-72 bg-white dark:bg-neutral-900 flex-1 flex flex-col max-w-xs shadow-xl z-10 border-r border-neutral-200 dark:border-neutral-800">
+          <div ref={mobileMenuRef} role="dialog" aria-modal="true" aria-label="Навігація кабінету" tabIndex={-1} className="relative w-72 bg-white dark:bg-neutral-900 flex-1 flex flex-col max-w-xs shadow-xl z-10 border-r border-neutral-200 dark:border-neutral-800">
             <div className="h-14 px-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
               <BrandLogo size="sm" />
               <button

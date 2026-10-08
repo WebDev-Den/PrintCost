@@ -6,6 +6,7 @@ import { Decimal } from 'decimal.js';
 import { normalizeDecimalInput } from '../domain/formatters.ts';
 import type { UserProfile, MaterialProfile, PrinterProfile, CalculationSnapshot, PricingSettings, CalculationTemplate } from '../domain/types.ts';
 import { CALCULATION_ALGORITHM_VERSION, validateCalculationTemplate } from '../domain/calculationTemplates.ts';
+import { getCalculationSaveErrors } from '../domain/calculationPersistence.ts';
 import { getEffectiveMaterialType, isCompatibleMaterial } from '../domain/materialMatching.ts';
 import { INITIAL_MATERIALS, INITIAL_PRINTERS, INITIAL_PRICING_SETTINGS, getInitialCalculationSnapshots } from '../domain/defaultData.ts';
 import { PUBLIC_FILAMENTS_CATALOG, MANUFACTURERS_LIST, STANDARD_TEMPERATURE_PROFILES, type PublicFilamentItem, type ManufacturerBrand, type TemperatureProfile } from '../domain/filamentsDirectory.ts';
@@ -470,6 +471,8 @@ export const calculationsApi = {
   },
   async save(snapshot: Omit<CalculationSnapshot, 'id' | 'createdAt'>): Promise<CalculationSnapshot> {
     const identity = sessionIdentity();
+    const saveErrors = getCalculationSaveErrors(snapshot.input);
+    if (saveErrors.length) throw new Error(`Щоб зберегти розрахунок, виправте параметри: ${saveErrors.join(' ')}`);
     snapshot = clean(snapshot);
     validateSnapshot({ ...snapshot, id: 'pending', createdAt: new Date().toISOString() });
     validateCalculationMetadata(snapshot);

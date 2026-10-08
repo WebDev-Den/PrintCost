@@ -222,7 +222,12 @@ export class FirebaseAuthService implements AuthService {
   }
 
   async forgotPassword(email: string): Promise<void> {
-    await sendPasswordResetEmail(requireAuth(), email.trim(), { url: `${window.location.origin}/auth/login` });
+    try {
+      await sendPasswordResetEmail(requireAuth(), email.trim(), { url: `${window.location.origin}/auth/login` });
+    } catch (error) {
+      // Keep the same response when an emulator or older project exposes missing accounts.
+      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'auth/user-not-found') throw error;
+    }
   }
 
   async verifyPasswordResetCode(code: string): Promise<string> {

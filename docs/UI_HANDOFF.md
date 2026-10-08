@@ -1,6 +1,6 @@
 # UI Handoff Specification — KILO·G
 
-Документація для продовження розробки та підключення production-бекенду (Codex / Supabase).
+Історичний опис раннього інтерфейсу. Згадки Supabase, Vercel, OAuth і серверного парсера нижче не описують поточний застосунок. Актуальний стек Cloudflare Worker + Firebase Spark, права, перевірки й запуск описані в [README.md](../README.md), [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) та [OPERATIONS.md](../OPERATIONS.md).
 
 ---
 

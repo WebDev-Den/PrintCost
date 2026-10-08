@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import type { CalculationResult, CalculationInput } from '../../domain/types.ts';
 import { formatUah } from '../../domain/formatters.ts';
+import { getCalculationSaveErrors } from '../../domain/calculationPersistence.ts';
 import { Button } from '../common/Button.tsx';
 import { StatusBadge } from '../common/StatusBadge.tsx';
 import { TaxBreakdown } from './TaxBreakdown.tsx';
@@ -47,6 +48,7 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
   };
 
   const isComplete = result.status === 'complete';
+  const saveErrors = getCalculationSaveErrors(input);
 
   return (
     <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-5 sm:p-6 space-y-5 shadow-sm sticky top-20">
@@ -255,6 +257,10 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
 
       {/* Primary Actions */}
       <div className="space-y-2 pt-1">
+        {input.job.parseStatus === 'success' && saveErrors.length > 0 && <div role="status" className="text-xs text-amber-800 dark:text-amber-300 space-y-1">
+          <p>Щоб зберегти розрахунок, заповніть або виправте параметри:</p>
+          <ul className="list-disc pl-4">{saveErrors.map(error => <li key={error}>{error}</li>)}</ul>
+        </div>}
         <Button
           variant="primary"
           size="md"
@@ -262,7 +268,7 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
           leftIcon={<Save className="w-4 h-4" />}
           onClick={onSave}
           isLoading={isSaving}
-          disabled={input.job.parseStatus !== 'success'}
+          disabled={input.job.parseStatus !== 'success' || saveErrors.length > 0}
         >
           Зберегти розрахунок в історію
         </Button>

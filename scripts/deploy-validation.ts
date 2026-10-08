@@ -12,6 +12,10 @@ export function validateDeployment(config: any, projectId: string): void {
     && database.database_id !== '00000000-0000-0000-0000-000000000000', 'Створіть робочий D1 і замініть placeholder database_id перед публікацією.');
   assert.equal(config.assets?.binding, 'ASSETS', 'Worker потребує статичних assets.');
   assert.ok(Array.isArray(config.assets?.run_worker_first) && config.assets.run_worker_first.includes('/api/*'), 'API має запускатися перед SPA assets.');
+  const rateLimit = config.ratelimits?.find((item: any) => item.name === 'ANALYTICS_RATE_LIMIT');
+  assert.ok(rateLimit && typeof rateLimit.namespace_id === 'string' && /^\d+$/.test(rateLimit.namespace_id)
+    && Number.isSafeInteger(rateLimit.simple?.limit) && rateLimit.simple.limit > 0
+    && [10, 60].includes(rateLimit.simple?.period), 'API потребує ANALYTICS_RATE_LIMIT з числовим namespace_id, додатним цілим limit і period 10 або 60 секунд.');
   assert.ok(!config.limits?.cpu_ms || config.limits.cpu_ms <= 10, 'Ця конфігурація має залишатися в межах Workers Free.');
 }
 
