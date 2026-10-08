@@ -4,7 +4,7 @@ import { Button } from '../common/Button.tsx';
 import { Input } from '../common/Input.tsx';
 import { NumberInput } from '../common/NumberInput.tsx';
 import type { MaterialProfile } from '../../domain/types.ts';
-import { Disc, Calculator, Scale, Coins } from 'lucide-react';
+import { Disc, Scale, Package, Coins, CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
 import { formatUah } from '../../domain/formatters.ts';
 
 interface MaterialModalProps {
@@ -15,11 +15,11 @@ interface MaterialModalProps {
 }
 
 const COMMON_SPOOLS = [
-  { grams: 250, label: '250 г' },
-  { grams: 500, label: '500 г' },
-  { grams: 750, label: '750 г' },
-  { grams: 1000, label: '1 000 г (1 кг)' },
-  { grams: 2500, label: '2.5 кг' },
+  { kg: 0.25, grams: 250, label: '0.25 кг (250г)' },
+  { kg: 0.5, grams: 500, label: '0.5 кг (500г)' },
+  { kg: 0.75, grams: 750, label: '0.75 кг (750г)' },
+  { kg: 1.0, grams: 1000, label: '1.0 кг (1000г)' },
+  { kg: 2.5, grams: 2500, label: '2.5 кг (2500г)' },
 ];
 
 export const MaterialModal: React.FC<MaterialModalProps> = ({
@@ -34,9 +34,14 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   const [brand, setBrand] = useState('Bambu Lab');
   const [colorName, setColorName] = useState('');
   const [colorHex, setColorHex] = useState('#1e293b');
-  const [spoolPriceUah, setSpoolPriceUah] = useState<string>('650');
+
+  // Input parameters: Weight (in kg/grams), Price (per spool), and Quantity in stock
+  const [weightKgInput, setWeightKgInput] = useState<string>('1.0');
   const [spoolWeightGrams, setSpoolWeightGrams] = useState<string>('1000');
-  const [pricePerKgUah, setPricePerKgUah] = useState<string>('650');
+  const [spoolPriceUah, setSpoolPriceUah] = useState<string>('650');
+  const [spoolsInStock, setSpoolsInStock] = useState<number>(1);
+  const [pricePerKgUah, setPricePerKgUah] = useState<string>('650.00');
+
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -48,13 +53,17 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       setBrand(initialMaterial.brand);
       setColorName(initialMaterial.colorName || '');
       setColorHex(initialMaterial.colorHex || '#1e293b');
-      const weight = initialMaterial.spoolWeightGrams || '1000';
+      const weightGrams = initialMaterial.spoolWeightGrams || '1000';
+      const parsedGrams = parseFloat(weightGrams) || 1000;
+      setSpoolWeightGrams(weightGrams);
+      setWeightKgInput((parsedGrams / 1000).toString());
+
       const perKg = initialMaterial.pricePerKgUah ?? '';
       const spoolP = initialMaterial.spoolPriceUah || perKg || '650';
 
-      setSpoolWeightGrams(weight);
       setSpoolPriceUah(spoolP);
       setPricePerKgUah(perKg);
+      setSpoolsInStock(initialMaterial.spoolsInStock ?? 1);
       setNotes(initialMaterial.notes || '');
     } else {
       setName('');
@@ -63,40 +72,59 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       setBrand('Bambu Lab');
       setColorName('');
       setColorHex('#1e293b');
+      setWeightKgInput('1.0');
       setSpoolWeightGrams('1000');
       setSpoolPriceUah('650');
       setPricePerKgUah('650.00');
+      setSpoolsInStock(1);
       setNotes('');
     }
   }, [initialMaterial, isOpen]);
 
-  // Two-way calculation when changing spool price or weight
+  // Recalculate automatic fields when weight in kg changes
+  const handleWeightKgChange = (kgVal: string) => {
+    setWeightKgInput(kgVal);
+    const kg = parseFloat(kgVal);
+    if (!isNaN(kg) && kg > 0) {
+      const grams = Math.round(kg * 1000);
+      setSpoolWeightGrams(String(grams));
+
+      const price = parseFloat(spoolPriceUah);
+      if (!isNaN(price) && price > 0) {
+        setPricePerKgUah((price / kg).toFixed(2));
+      }
+    }
+  };
+
+  // Preset button click (e.g. 1.0 кг, 0.75 кг, etc.)
+  const handleSelectPreset = (kg: number, grams: number) => {
+    setWeightKgInput(String(kg));
+    setSpoolWeightGrams(String(grams));
+    const price = parseFloat(spoolPriceUah);
+    if (!isNaN(price) && price > 0 && kg > 0) {
+      setPricePerKgUah((price / kg).toFixed(2));
+    }
+  };
+
+  // Recalculate automatic fields when spool price changes
   const handleSpoolPriceChange = (val: string) => {
     setSpoolPriceUah(val);
     const p = parseFloat(val);
-    const w = parseFloat(spoolWeightGrams) || 1000;
-    if (!isNaN(p) && w > 0) {
-      setPricePerKgUah(((p / w) * 1000).toFixed(2));
+    const kg = parseFloat(weightKgInput) || (parseFloat(spoolWeightGrams) || 1000) / 1000;
+    if (!isNaN(p) && kg > 0) {
+      setPricePerKgUah((p / kg).toFixed(2));
     } else {
       setPricePerKgUah('');
     }
   };
 
-  const handleSpoolWeightChange = (grams: number) => {
-    const val = String(grams);
-    setSpoolWeightGrams(val);
-    const p = parseFloat(spoolPriceUah);
-    if (!isNaN(p) && grams > 0) {
-      setPricePerKgUah(((p / grams) * 1000).toFixed(2));
-    }
-  };
-
+  // Manual change to price per kg updates spool price
   const handlePricePerKgChange = (val: string) => {
     setPricePerKgUah(val);
     const perKg = parseFloat(val);
-    const w = parseFloat(spoolWeightGrams) || 1000;
-    if (!isNaN(perKg) && w > 0) {
-      setSpoolPriceUah(((perKg * w) / 1000).toFixed(0));
+    const kg = parseFloat(weightKgInput) || (parseFloat(spoolWeightGrams) || 1000) / 1000;
+    if (!isNaN(perKg) && kg > 0) {
+      setSpoolPriceUah((perKg * kg).toFixed(0));
     }
   };
 
@@ -116,6 +144,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
         pricePerKgUah: pricePerKgUah.trim() ? pricePerKgUah.trim() : null,
         spoolWeightGrams: spoolWeightGrams.trim() ? spoolWeightGrams.trim() : '1000',
         spoolPriceUah: spoolPriceUah.trim() ? spoolPriceUah.trim() : undefined,
+        spoolsInStock: Math.max(0, spoolsInStock),
         isArchived: initialMaterial ? initialMaterial.isArchived : false,
         notes: notes.trim() || undefined,
       });
@@ -134,16 +163,32 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
     'Спеціальні',
   ];
 
-  const currentGrams = parseFloat(spoolWeightGrams) || 1000;
+  // Live Auto-Calculations
+  const parsedWeightGrams = parseFloat(spoolWeightGrams) || 1000;
+  const parsedWeightKg = parsedWeightGrams / 1000;
   const currentPrice = parseFloat(spoolPriceUah) || 0;
-  const pricePerGram = currentGrams > 0 ? currentPrice / currentGrams : 0;
+  const pricePerGram = parsedWeightGrams > 0 ? currentPrice / parsedWeightGrams : 0;
+  const computedPricePerKg = parsedWeightKg > 0 ? currentPrice / parsedWeightKg : 0;
+
+  // Auto-calculated availability & inventory totals
+  const totalInStockKg = (spoolsInStock * parsedWeightGrams) / 1000;
+  const totalStockValue = spoolsInStock * currentPrice;
+
+  const stockStatus =
+    spoolsInStock === 0
+      ? { label: 'Немає на складі', color: 'text-neutral-500 bg-neutral-100 dark:bg-neutral-800', icon: XCircle }
+      : totalInStockKg < 0.5
+      ? { label: 'Закінчується', color: 'text-amber-700 bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800', icon: AlertTriangle }
+      : { label: 'В наявності', color: 'text-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800', icon: CheckCircle };
+
+  const StatusIcon = stockStatus.icon;
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={initialMaterial ? 'Редагувати матеріал' : 'Додати новий матеріал'}
-      description="Внесіть параметри котушки та ціну для точного розрахунку собівартості друку за 1 кг."
+      title={initialMaterial ? 'Редагувати матеріал' : 'Додати позицію матеріалу'}
+      description="Введіть вагу в кг та ціну — наявність на складі, вартість за кг, грам та загальний баланс розраховуються автоматично."
       maxWidth="lg"
       footer={
         <>
@@ -157,14 +202,14 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
             isLoading={isSubmitting}
             disabled={!name.trim()}
           >
-            Зберегти матеріал
+            Зберегти позицію
           </Button>
         </>
       }
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
-          label="Назва матеріалу"
+          label="Назва позиції / матеріалу"
           placeholder="напр., Bambu PETG Basic Black"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -233,24 +278,24 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
           </div>
         </div>
 
-        {/* Spool Parameters & Live Calculation Section */}
-        <div className="p-4 bg-emerald-50/60 dark:bg-emerald-950/20 rounded-xl border border-emerald-200 dark:border-emerald-800/80 space-y-3">
+        {/* Input Block: Weight in kg, Price, and In-Stock Count */}
+        <div className="p-4 bg-neutral-50 dark:bg-neutral-900/80 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
-              <Disc className="w-4 h-4 text-emerald-600" />
-              <span>Параметри котушки та ціна закупівлі</span>
+            <span className="text-xs font-bold text-neutral-900 dark:text-white flex items-center gap-1.5">
+              <Scale className="w-4 h-4 text-emerald-600" />
+              <span>Параметри позиції: Вага, Ціна та Наявність</span>
             </span>
-            <span className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
-              Автоматичний розрахунок за 1 кг
+            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+              Введіть вагу і ціну — решта рахується сама
             </span>
           </div>
 
-          {/* Quick presets for Spool Weight */}
+          {/* Quick presets for Spool Weight in kg */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400">
-              <span>Вага котушки нетто (грам):</span>
+              <span>Вага одиниці / котушки (в кг):</span>
               <span className="font-mono font-bold text-neutral-900 dark:text-white">
-                {currentGrams} г
+                {parsedWeightKg} кг ({parsedWeightGrams} г)
               </span>
             </div>
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -258,11 +303,11 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
                 <button
                   key={sp.grams}
                   type="button"
-                  onClick={() => handleSpoolWeightChange(sp.grams)}
+                  onClick={() => handleSelectPreset(sp.kg, sp.grams)}
                   className={`text-xs px-2.5 py-1 rounded-lg font-medium transition-all cursor-pointer ${
-                    currentGrams === sp.grams
+                    parsedWeightGrams === sp.grams
                       ? 'bg-emerald-600 text-white font-bold shadow-2xs'
-                      : 'bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100'
+                      : 'bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-700'
                   }`}
                 >
                   {sp.label}
@@ -271,38 +316,103 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
             <NumberInput
-              label="Ціна котушки"
+              label="Вага в кг"
+              unit="кг"
+              value={weightKgInput}
+              onChange={handleWeightKgChange}
+              placeholder="1.0"
+            />
+
+            <NumberInput
+              label="Ціна одиниці"
               unit="грн"
               value={spoolPriceUah}
               onChange={handleSpoolPriceChange}
               placeholder="650"
             />
 
-            <NumberInput
-              label="Розрахунок за 1 кг"
-              unit="грн/кг"
-              value={pricePerKgUah}
-              onChange={handlePricePerKgChange}
-              placeholder="650.00"
-            />
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                Кількість на складі
+              </label>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setSpoolsInStock((prev) => Math.max(0, prev - 1))}
+                  className="w-8 h-9 flex items-center justify-center rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 font-bold hover:bg-neutral-100"
+                >
+                  -
+                </button>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={spoolsInStock}
+                  onChange={(e) => setSpoolsInStock(Math.max(0, parseInt(e.target.value) || 0))}
+                  className="w-full text-center px-2 py-2 text-sm rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 font-mono font-bold"
+                />
+                <button
+                  type="button"
+                  onClick={() => setSpoolsInStock((prev) => prev + 1)}
+                  className="w-8 h-9 flex items-center justify-center rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 font-bold hover:bg-neutral-100"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Live Auto-Calculated Results: Наявність & Вартість */}
+        <div className="p-4 bg-emerald-50/70 dark:bg-emerald-950/20 rounded-xl border border-emerald-200 dark:border-emerald-800/80 space-y-3">
+          <div className="flex items-center justify-between border-b border-emerald-200/60 dark:border-emerald-800/60 pb-2">
+            <span className="text-xs font-bold text-emerald-950 dark:text-emerald-200 flex items-center gap-1.5">
+              <Coins className="w-4 h-4 text-emerald-600" />
+              <span>Автоматичний розрахунок за наявністю та вартістю:</span>
+            </span>
+            <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md border ${stockStatus.color}`}>
+              <StatusIcon className="w-3.5 h-3.5" />
+              <span>{stockStatus.label}</span>
+            </span>
           </div>
 
-          {/* Live calculated summary box */}
-          <div className="p-2.5 bg-white dark:bg-neutral-900 rounded-lg border border-emerald-200/60 dark:border-emerald-800/60 flex items-center justify-between text-xs">
-            <div className="space-y-0.5">
-              <span className="text-[10px] text-neutral-400 block">Ціна за 1 грам:</span>
-              <span className="font-mono font-bold text-neutral-900 dark:text-white">
-                {pricePerGram.toFixed(3)} грн/г
-              </span>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+            {/* 1. Наявність: вага */}
+            <div className="p-2.5 bg-white dark:bg-neutral-900 rounded-lg border border-emerald-100 dark:border-emerald-900/60 space-y-0.5">
+              <span className="text-[10px] text-neutral-500 block">Залишок на складі:</span>
+              <div className="font-mono font-black text-neutral-900 dark:text-white text-sm">
+                {totalInStockKg.toFixed(2)} кг
+              </div>
+              <span className="text-[10px] text-neutral-400 block">{spoolsInStock} котуш. ({spoolsInStock * parsedWeightGrams} г)</span>
             </div>
 
-            <div className="text-right space-y-0.5">
-              <span className="text-[10px] text-neutral-400 block">Собівартість 1 кг:</span>
-              <span className="font-mono font-black text-emerald-700 dark:text-emerald-300 text-sm">
-                {formatUah(pricePerKgUah)}/кг
-              </span>
+            {/* 2. Вартість: за 1 кг */}
+            <div className="p-2.5 bg-white dark:bg-neutral-900 rounded-lg border border-emerald-100 dark:border-emerald-900/60 space-y-0.5">
+              <span className="text-[10px] text-neutral-500 block">Ціна за 1 кг:</span>
+              <div className="font-mono font-black text-emerald-700 dark:text-emerald-300 text-sm">
+                {computedPricePerKg > 0 ? `${computedPricePerKg.toFixed(2)} грн` : '—'}
+              </div>
+              <span className="text-[10px] text-neutral-400 block">собівартість кг</span>
+            </div>
+
+            {/* 3. Вартість: за 1 грам */}
+            <div className="p-2.5 bg-white dark:bg-neutral-900 rounded-lg border border-emerald-100 dark:border-emerald-900/60 space-y-0.5">
+              <span className="text-[10px] text-neutral-500 block">Ціна за 1 грам:</span>
+              <div className="font-mono font-bold text-neutral-900 dark:text-white text-sm">
+                {pricePerGram > 0 ? `${pricePerGram.toFixed(3)} грн/г` : '—'}
+              </div>
+              <span className="text-[10px] text-neutral-400 block">витрата при друці</span>
+            </div>
+
+            {/* 4. Загальна вартість запасів */}
+            <div className="p-2.5 bg-white dark:bg-neutral-900 rounded-lg border border-emerald-100 dark:border-emerald-900/60 space-y-0.5">
+              <span className="text-[10px] text-neutral-500 block">Вартість запасу:</span>
+              <div className="font-mono font-black text-neutral-900 dark:text-white text-sm">
+                {formatUah(totalStockValue)}
+              </div>
+              <span className="text-[10px] text-neutral-400 block">капітал на складі</span>
             </div>
           </div>
         </div>

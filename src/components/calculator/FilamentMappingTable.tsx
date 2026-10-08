@@ -1,9 +1,7 @@
-import React, { useState } from 'react';
-import { Layers, Bookmark, AlertTriangle, CheckCircle, HelpCircle, Disc, Calculator } from 'lucide-react';
+import React from 'react';
+import { Layers, Bookmark, AlertTriangle, CheckCircle, HelpCircle } from 'lucide-react';
 import type { FilamentUsage, MaterialProfile } from '../../domain/types.ts';
 import { formatUah, formatWeightUk, formatNumberUk } from '../../domain/formatters.ts';
-import { Modal } from '../common/Modal.tsx';
-import { SpoolCalculatorWidget } from './SpoolCalculatorWidget.tsx';
 
 interface FilamentMappingTableProps {
   filaments: FilamentUsage[];
@@ -22,7 +20,6 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
   onSavePreference,
   onAddNewMaterialClick,
 }) => {
-  const [activeSpoolCalcRow, setActiveSpoolCalcRow] = useState<FilamentUsage | null>(null);
   return (
     <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden shadow-2xs">
       <div className="p-4 sm:p-5 border-b border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -35,30 +32,15 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
             Зіставлення шарів нарізки з вашим каталогом котушок. Тип у файлі не визначає бренд або ціну автоматично.
           </p>
         </div>
-
-        <div className="flex items-center gap-2 self-start sm:self-center flex-wrap">
+        {onAddNewMaterialClick && (
           <button
             type="button"
-            onClick={() => {
-              if (filaments.length > 0) setActiveSpoolCalcRow(filaments[0]);
-            }}
-            className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-200 flex items-center gap-1.5 transition-colors"
-            title="Розрахувати ціну за кг з маси та ціни котушки"
+            onClick={onAddNewMaterialClick}
+            className="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
           >
-            <Disc className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Розрахунок з котушок за кг</span>
+            + Додати новий матеріал
           </button>
-
-          {onAddNewMaterialClick && (
-            <button
-              type="button"
-              onClick={onAddNewMaterialClick}
-              className="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
-            >
-              + Додати новий матеріал
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
       <div className="overflow-x-auto">
@@ -132,11 +114,18 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
                         <option value="">— Оберіть матеріал з каталогу —</option>
                         {availableMaterials
                           .filter((m) => !m.isArchived)
-                          .map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name} ({m.type}) — {m.pricePerKgUah ? `${m.pricePerKgUah} грн/кг` : 'Ціна не задана'}
-                            </option>
-                          ))}
+                          .map((m) => {
+                            const count = m.spoolsInStock ?? 0;
+                            const stockLabel =
+                              count === 0
+                                ? ' [Немає на складі]'
+                                : ` [В наявності: ${count} шт]`;
+                            return (
+                              <option key={m.id} value={m.id}>
+                                {m.name} ({m.type}) — {m.pricePerKgUah ? `${m.pricePerKgUah} грн/кг` : 'Ціна не задана'}{stockLabel}
+                              </option>
+                            );
+                          })}
                       </select>
 
                       {/* Matching hint */}
@@ -174,17 +163,9 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
                       )}
                     </td>
 
-                    {/* Price per Kg (Editable quick override + Spool Calc Button) */}
+                    {/* Price per Kg (Editable quick override) */}
                     <td className="py-3 px-3 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => setActiveSpoolCalcRow(f)}
-                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400 cursor-pointer"
-                          title="Розрахувати ціну за кг з маси та вартості котушки"
-                        >
-                          <Disc className="w-3.5 h-3.5" />
-                        </button>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -234,28 +215,6 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
           </tbody>
         </table>
       </div>
-
-      {/* Spool Calculator Modal for Active Filament Row */}
-      {activeSpoolCalcRow && (
-        <Modal
-          isOpen={Boolean(activeSpoolCalcRow)}
-          onClose={() => setActiveSpoolCalcRow(null)}
-          title={`Розрахунок з котушки: ${activeSpoolCalcRow.typeFromFile}`}
-          description="Введіть вагу котушки та ціну в магазині — миттєво підставимо ціну за 1 кг у розрахунок."
-          maxWidth="2xl"
-        >
-          <SpoolCalculatorWidget
-            initialType={activeSpoolCalcRow.typeFromFile}
-            initialPriceUah={activeSpoolCalcRow.pricePerKgUah ? parseFloat(activeSpoolCalcRow.pricePerKgUah) : 650}
-            targetPrintWeightGrams={parseFloat(activeSpoolCalcRow.weightGrams) || 0}
-            onApplyToRate={(rate) => {
-              onPriceOverride(activeSpoolCalcRow.key, rate.toFixed(2));
-              setActiveSpoolCalcRow(null);
-            }}
-            onClose={() => setActiveSpoolCalcRow(null)}
-          />
-        </Modal>
-      )}
     </div>
   );
 };

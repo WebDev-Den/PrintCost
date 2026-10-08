@@ -37,7 +37,6 @@ import {
 import { catalogAdminRepository } from '../../services/catalogAdminRepository.ts';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import { formatUah } from '../../domain/formatters.ts';
-import { SpoolCalculatorWidget } from '../../components/calculator/SpoolCalculatorWidget.tsx';
 import { FilamentDirectoryCard } from '../../components/filaments/FilamentDirectoryCard.tsx';
 
 export const FilamentsDirectoryPage: React.FC = () => {
@@ -61,7 +60,6 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'catalog' | 'manufacturers' | 'temperatures'>('catalog');
   const [addedMaterialId, setAddedMaterialId] = useState<string | null>(null);
-  const [showSpoolCalcBanner, setShowSpoolCalcBanner] = useState(false);
 
   // Refresh data on mount
   useEffect(() => {
@@ -316,46 +314,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
         {/* TAB 1: FILAMENTS CATALOG */}
         {activeTab === 'catalog' && (
           <section className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-            {/* Interactive Spool Calculator Tool Banner */}
-            <div className="bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4 sm:p-5 shadow-2xs space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                    <Disc className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-bold text-neutral-900 dark:text-white flex items-center gap-1.5">
-                      <span>Калькулятор котушок та перерахунку за кг</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-300 font-semibold">
-                        Швидкий розрахунок
-                      </span>
-                    </h3>
-                    <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                      Введіть масу котушки (250г, 500г, 750г, 1000г, 2500г) та ціну — сервіс миттєво обчислить собівартість за 1 кг та за 1 грам.
-                    </p>
-                  </div>
-                </div>
 
-                <Button
-                  variant={showSpoolCalcBanner ? 'outline' : 'primary'}
-                  size="sm"
-                  onClick={() => setShowSpoolCalcBanner(!showSpoolCalcBanner)}
-                  className="self-start sm:self-auto shrink-0"
-                >
-                  {showSpoolCalcBanner ? 'Згорнути калькулятор' : 'Розрахувати котушку та ціну за кг'}
-                </Button>
-              </div>
-
-              {showSpoolCalcBanner && (
-                <div className="pt-3 border-t border-neutral-100 dark:border-neutral-800">
-                  <SpoolCalculatorWidget
-                    title="Розрахунок вартості котушок і ціни за 1 кг"
-                    description="Вкажіть параметри закупівлі котушок або партії пластику для точного розрахунку."
-                    onApplyToRate={() => navigate('/app/calculator')}
-                  />
-                </div>
-              )}
-            </div>
 
             {/* Filter Toolbar Card */}
             <div className="bg-white dark:bg-neutral-900 p-4 sm:p-5 rounded-2xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">

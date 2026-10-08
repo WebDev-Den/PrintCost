@@ -29,6 +29,7 @@ export interface MaterialProfile {
   pricePerKgUah: string | null; // e.g. "650.00" or null if unconfigured
   spoolWeightGrams?: string; // e.g. "1000"
   spoolPriceUah?: string; // e.g. "650"
+  spoolsInStock?: number; // e.g. 1, 2, 3 котушки на складі
   isArchived: boolean;
   createdAt: string;
   notes?: string;

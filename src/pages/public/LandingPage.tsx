@@ -14,7 +14,6 @@ import { PublicNavbar } from '../../components/layout/PublicNavbar.tsx';
 import { Footer } from '../../components/layout/Footer.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
-import { SpoolCalculatorWidget } from '../../components/calculator/SpoolCalculatorWidget.tsx';
 
 export const LandingPage: React.FC = () => {
   const navigate = useNavigate();
@@ -175,46 +174,7 @@ export const LandingPage: React.FC = () => {
           </div>
         </section>
 
-        {/* Section: Calculation FDM & Spool Calculator */}
-        <section id="calculation" className="py-16 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto space-y-8">
-          <div className="text-center space-y-2 max-w-2xl mx-auto">
-            <div className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
-              <Calculator className="w-3.5 h-3.5" />
-              <span>Розрахунок FDM 3D-друку</span>
-            </div>
-            <h2 className="text-2xl sm:text-3xl font-bold text-neutral-900 dark:text-white">
-              Розрахунок котушок, ціни за кг та повної собівартості друку
-            </h2>
-            <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400">
-              Введіть масу котушки та ціну в магазині — сервіс миттєво обчислить собівартість 1 кг, 1 грама та довжину нитки, а завантажений файл .gcode.3mf порахує точну ціну замовлення.
-            </p>
-          </div>
 
-          <div className="max-w-4xl mx-auto">
-            <SpoolCalculatorWidget
-              title="Інтерактивний розрахунок котушок та собівартості за 1 кг"
-              description="Швидкий інструмент перерахунку маси котушки (250г, 500г, 750г, 1000г, 2500г) та вартості в точну ціну за кілограм для замовлень."
-              initialWeightGrams={1000}
-              initialPriceUah={650}
-              initialCount={1}
-              initialType="PETG"
-              onApplyToRate={() => handleOpenCalculator()}
-            />
-          </div>
-
-          <div className="text-center pt-2">
-            <Button
-              variant="primary"
-              size="lg"
-              leftIcon={<Calculator className="w-5 h-5" />}
-              rightIcon={<ArrowRight className="w-4 h-4" />}
-              onClick={handleOpenCalculator}
-              className="font-bold shadow-md"
-            >
-              Відкрити повний калькулятор .gcode.3mf
-            </Button>
-          </div>
-        </section>
         <section className="py-14 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
           <div className="p-8 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xs">
             <div className="space-y-2 max-w-xl">

@@ -38,6 +38,26 @@ export const DashboardPage: React.FC = () => {
         ).toFixed(2)
       : null;
 
+  // Compute warehouse weight and inventory value
+  const warehouseTotals = React.useMemo(() => {
+    let totalGrams = 0;
+    let totalValue = 0;
+    materials.forEach((m) => {
+      if (m.isArchived) return;
+      const count = m.spoolsInStock ?? 1;
+      const grams = parseFloat(m.spoolWeightGrams || '1000') || 1000;
+      const price = parseFloat(m.spoolPriceUah || m.pricePerKgUah || '0') || 0;
+      if (count > 0) {
+        totalGrams += count * grams;
+        totalValue += count * price;
+      }
+    });
+    return {
+      totalKg: (totalGrams / 1000).toFixed(1),
+      totalValue,
+    };
+  }, [materials]);
+
   // Check incomplete setup items
   const missingElectricity = !settings.electricityTariffUahPerKwh || parseFloat(settings.electricityTariffUahPerKwh) <= 0;
   const unpricedMaterialsCount = materials.filter((m) => !m.isArchived && (!m.pricePerKgUah || parseFloat(m.pricePerKgUah) <= 0)).length;
@@ -121,14 +141,14 @@ export const DashboardPage: React.FC = () => {
 
         <div className="p-4 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800">
           <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs">
-            <span>Матеріали на складі</span>
-            <Layers className="w-4 h-4 text-blue-600" />
+            <span>Запас філаменту</span>
+            <Layers className="w-4 h-4 text-emerald-600" />
           </div>
           <p className="text-2xl font-bold font-mono tabular-nums text-neutral-900 dark:text-white mt-2">
-            {activeMaterialsCount}
+            {warehouseTotals.totalKg} кг
           </p>
           <p className="text-[11px] text-neutral-500 mt-0.5">
-            налаштованих профілів
+            {activeMaterialsCount} позицій · {formatUah(warehouseTotals.totalValue)}
           </p>
         </div>
 

@@ -20,7 +20,6 @@ import { PricingSummaryCard } from '../../components/calculator/PricingSummaryCa
 import { ClientQuoteModal } from '../../components/calculator/ClientQuoteModal.tsx';
 import { MaterialModal } from '../../components/materials/MaterialModal.tsx';
 import { CostBreakdownChart } from '../../components/calculator/CostBreakdownChart.tsx';
-import { SpoolCalculatorWidget } from '../../components/calculator/SpoolCalculatorWidget.tsx';
 import {
   Calculator as CalcIcon,
   PieChart as ChartIcon,
@@ -29,8 +28,6 @@ import {
   BookOpen,
   ArrowRight,
   CheckCircle,
-  Disc,
-  X,
 } from 'lucide-react';
 
 export const CalculatorPage: React.FC = () => {
@@ -58,7 +55,6 @@ export const CalculatorPage: React.FC = () => {
   // Modals
   const [isClientQuoteOpen, setIsClientQuoteOpen] = useState(false);
   const [isNewMaterialModalOpen, setIsNewMaterialModalOpen] = useState(false);
-  const [isSpoolCalcModalOpen, setIsSpoolCalcModalOpen] = useState(false);
 
   // Preselected filament from catalog
   const [preselectedFilament, setPreselectedFilament] = useState<{
@@ -162,7 +158,7 @@ export const CalculatorPage: React.FC = () => {
             price = preselectedInfo.pricePerKgUah;
             mappedName = preselectedInfo.name;
             if (preselectedInfo.colorHex) colorHex = preselectedInfo.colorHex;
-            matchMethod = 'exact_sku';
+            matchMethod = 'exact_preset';
           }
 
           let cost: string | null = null;
@@ -453,16 +449,6 @@ export const CalculatorPage: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setIsSpoolCalcModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-xs font-semibold text-emerald-800 dark:text-emerald-200 transition-colors cursor-pointer"
-            title="Швидкий розрахунок котушки (грам/ціна) та ціни за 1 кг"
-          >
-            <Disc className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Розрахунок котушок (кг)</span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => navigate('/filaments')}
             className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-200 transition-colors"
             title="Перейти у відкритий каталог пластиків KILO·G"
@@ -475,47 +461,31 @@ export const CalculatorPage: React.FC = () => {
 
       {/* Preselected Filament from Catalog Banner */}
       {preselectedFilament && (
-        <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs flex items-center justify-between gap-3 shadow-2xs">
-          <div className="flex items-center gap-2.5 flex-wrap">
+        <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs flex items-center justify-between gap-3 shadow-2xs">
+          <div className="flex items-center gap-2.5">
             <span
               className="w-4 h-4 rounded-full border border-neutral-300 dark:border-neutral-600 shrink-0 shadow-2xs"
               style={{ backgroundColor: preselectedFilament.colorHex || '#1e293b' }}
             />
             <div className="text-emerald-950 dark:text-emerald-100 font-medium">
-              <span>Активний філамент з каталогу: </span>
+              <span>Вибраний матеріал з каталогу: </span>
               <strong className="font-bold text-emerald-900 dark:text-emerald-200">{preselectedFilament.name}</strong>
-              {preselectedFilament.spoolWeightGrams && (
-                <span className="text-emerald-800 dark:text-emerald-300 ml-1.5">
-                  • Котушка {preselectedFilament.spoolWeightGrams} г ({preselectedFilament.spoolPriceUah} грн)
-                </span>
-              )}
-              <span className="text-emerald-700 dark:text-emerald-200 ml-1.5 font-bold">
-                • Розрахунок за кг: {preselectedFilament.pricePerKgUah} грн/кг
-              </span>
+              <span className="text-emerald-700 dark:text-emerald-300 ml-1.5 font-semibold">({preselectedFilament.type})</span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setIsSpoolCalcModalOpen(true)}
-              className="text-xs px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-200 font-semibold cursor-pointer"
-            >
-              Перерахувати котушку
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                sessionStorage.removeItem('kilog_preselect_material');
-                setPreselectedFilament(null);
-                if (currentJob) handleJobLoaded(currentJob);
-              }}
-              className="text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 underline cursor-pointer"
-              title="Очистити вибір та повернути стандартний збіг матеріалів"
-            >
-              Очистити
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              sessionStorage.removeItem('kilog_preselect_material');
+              setPreselectedFilament(null);
+              if (currentJob) handleJobLoaded(currentJob);
+            }}
+            className="text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 underline cursor-pointer"
+            title="Очистити вибір та повернути стандартний збіг матеріалів"
+          >
+            Очистити
+          </button>
         </div>
       )}
 
@@ -636,6 +606,8 @@ export const CalculatorPage: React.FC = () => {
           await addMaterial(newMat);
         }}
       />
+
+
     </div>
   );
 };

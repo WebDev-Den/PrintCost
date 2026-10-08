@@ -11,7 +11,9 @@ import {
   AlertCircle,
   CheckCircle,
   BookOpen,
-  Disc,
+  Scale,
+  Coins,
+  Package,
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import type { MaterialProfile } from '../../domain/types.ts';
@@ -20,7 +22,6 @@ import { Input } from '../../components/common/Input.tsx';
 import { MaterialModal } from '../../components/materials/MaterialModal.tsx';
 import { Modal } from '../../components/common/Modal.tsx';
 import { formatUah } from '../../domain/formatters.ts';
-import { SpoolCalculatorWidget } from '../../components/calculator/SpoolCalculatorWidget.tsx';
 
 export const MaterialsPage: React.FC = () => {
   const navigate = useNavigate();
@@ -39,13 +40,38 @@ export const MaterialsPage: React.FC = () => {
 
   // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isSpoolCalcModalOpen, setIsSpoolCalcModalOpen] = useState(false);
   const [editingMaterial, setEditingMaterial] = useState<MaterialProfile | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const families = useMemo(() => {
     const list = new Set(materials.map((m) => m.family || 'Стандартні'));
     return Array.from(list);
+  }, [materials]);
+
+  // Overall Inventory Stats (Auto-calculated)
+  const inventoryStats = useMemo(() => {
+    let totalGrams = 0;
+    let totalValueUah = 0;
+    let inStockItemsCount = 0;
+
+    materials.forEach((m) => {
+      if (m.isArchived) return;
+      const count = m.spoolsInStock ?? 1;
+      const spoolGrams = parseFloat(m.spoolWeightGrams || '1000') || 1000;
+      const spoolPrice = parseFloat(m.spoolPriceUah || m.pricePerKgUah || '0') || 0;
+
+      if (count > 0) {
+        totalGrams += count * spoolGrams;
+        totalValueUah += count * spoolPrice;
+        inStockItemsCount += 1;
+      }
+    });
+
+    return {
+      totalWeightKg: (totalGrams / 1000).toFixed(2),
+      totalValueUah,
+      inStockItemsCount,
+    };
   }, [materials]);
 
   const filteredMaterials = useMemo(() => {
@@ -91,27 +117,18 @@ export const MaterialsPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-white">
-            Каталог матеріалів майстерні
+            Склад та матеріали майстерні
           </h2>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-            Профілі пластиків, закупівельні ціни за кг та колірна палітра для розрахунку собівартості
+            Введіть вагу в кг та ціну — наявність, вартість за кг, грам та сума розраховуються автоматично
           </p>
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            leftIcon={<Disc className="w-4 h-4 text-emerald-600" />}
-            onClick={() => setIsSpoolCalcModalOpen(true)}
-            title="Розрахувати собівартість за 1 кг з котушки"
-          >
-            Розрахувати котушку
-          </Button>
-
           <Button
             variant="outline"
             size="sm"
@@ -128,8 +145,50 @@ export const MaterialsPage: React.FC = () => {
             leftIcon={<Plus className="w-4 h-4" />}
             onClick={handleOpenAdd}
           >
-            Додати матеріал
+            Додати позицію
           </Button>
+        </div>
+      </div>
+
+      {/* Auto-Calculated Inventory Stats Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="p-4 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 shadow-2xs">
+          <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs">
+            <span>Загальна вага на складі</span>
+            <Scale className="w-4 h-4 text-emerald-600" />
+          </div>
+          <p className="text-2xl font-bold font-mono tabular-nums text-neutral-900 dark:text-white mt-1.5">
+            {inventoryStats.totalWeightKg} кг
+          </p>
+          <p className="text-[11px] text-neutral-500 mt-0.5">
+            сумарний запас філаменту
+          </p>
+        </div>
+
+        <div className="p-4 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 shadow-2xs">
+          <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs">
+            <span>Вартість матеріалів складу</span>
+            <Coins className="w-4 h-4 text-emerald-600" />
+          </div>
+          <p className="text-2xl font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 mt-1.5">
+            {formatUah(inventoryStats.totalValueUah)}
+          </p>
+          <p className="text-[11px] text-neutral-500 mt-0.5">
+            капітал у запасах котушок
+          </p>
+        </div>
+
+        <div className="p-4 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 shadow-2xs">
+          <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs">
+            <span>Позицій в наявності</span>
+            <Package className="w-4 h-4 text-blue-600" />
+          </div>
+          <p className="text-2xl font-bold font-mono tabular-nums text-neutral-900 dark:text-white mt-1.5">
+            {inventoryStats.inStockItemsCount}
+          </p>
+          <p className="text-[11px] text-neutral-500 mt-0.5">
+            готових для друку матеріалів
+          </p>
         </div>
       </div>
 
@@ -172,32 +231,38 @@ export const MaterialsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Materials Table */}
+      {/* Materials Table with Auto-Calculated Availability & Cost */}
       <div className="bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden shadow-2xs">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-neutral-50 dark:bg-neutral-800/60 text-neutral-600 dark:text-neutral-400 uppercase font-semibold border-b border-neutral-200 dark:border-neutral-800">
               <tr>
                 <th className="py-2.5 px-4">Колір</th>
-                <th className="py-2.5 px-4">Назва матеріалу</th>
-                <th className="py-2.5 px-4">Тип</th>
-                <th className="py-2.5 px-4">Сімейство</th>
-                <th className="py-2.5 px-4">Бренд</th>
-                <th className="py-2.5 px-4 text-right">Котушка</th>
-                <th className="py-2.5 px-4 text-right">Ціна за 1 кг</th>
-                <th className="py-2.5 px-4 text-right min-w-[140px]">Дії</th>
+                <th className="py-2.5 px-4">Матеріал / Позиція</th>
+                <th className="py-2.5 px-4">Тип / Бренд</th>
+                <th className="py-2.5 px-4 text-right">Одиниця (вага / ціна)</th>
+                <th className="py-2.5 px-4 text-center">Наявність на складі</th>
+                <th className="py-2.5 px-4 text-right">Вартість (собівартість)</th>
+                <th className="py-2.5 px-4 text-right min-w-[130px]">Дії</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
               {filteredMaterials.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-neutral-500">
+                  <td colSpan={7} className="py-12 text-center text-neutral-500">
                     Не знайдено матеріалів у вибраній категорії
                   </td>
                 </tr>
               ) : (
                 filteredMaterials.map((m) => {
                   const hasPrice = m.pricePerKgUah !== null && m.pricePerKgUah !== '';
+                  const spoolWeightGrams = parseFloat(m.spoolWeightGrams || '1000') || 1000;
+                  const spoolWeightKg = spoolWeightGrams / 1000;
+                  const spoolPrice = parseFloat(m.spoolPriceUah || m.pricePerKgUah || '0') || 0;
+                  const inStockCount = m.spoolsInStock ?? 1;
+                  const totalKg = (inStockCount * spoolWeightGrams) / 1000;
+                  const totalValue = inStockCount * spoolPrice;
+                  const pricePerGram = spoolWeightGrams > 0 ? spoolPrice / spoolWeightGrams : 0;
 
                   return (
                     <tr
@@ -228,47 +293,93 @@ export const MaterialsPage: React.FC = () => {
                         )}
                       </td>
 
-                      {/* Type */}
-                      <td className="py-3 px-4 font-mono font-medium">
-                        <span className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">
-                          {m.type}
-                        </span>
-                      </td>
-
-                      {/* Family */}
-                      <td className="py-3 px-4 text-neutral-600 dark:text-neutral-400">
-                        {m.family || 'Стандартні'}
-                      </td>
-
-                      {/* Brand */}
-                      <td className="py-3 px-4 text-neutral-600 dark:text-neutral-400">
-                        {m.brand}
-                      </td>
-
-                      {/* Spool / Price */}
-                      <td className="py-3 px-4 text-right font-mono tabular-nums whitespace-nowrap">
-                        <div className="font-medium text-neutral-800 dark:text-neutral-200">
-                          {m.spoolWeightGrams ? `${m.spoolWeightGrams} г` : '1 000 г'}
+                      {/* Type & Brand */}
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-1.5">
+                          <span className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 font-mono font-bold text-neutral-800 dark:text-neutral-200">
+                            {m.type}
+                          </span>
+                          <span className="text-neutral-600 dark:text-neutral-400 text-[11px]">
+                            {m.brand}
+                          </span>
                         </div>
-                        {m.spoolPriceUah && (
-                          <div className="text-[10px] text-neutral-400">
-                            {m.spoolPriceUah} грн
-                          </div>
-                        )}
+                        <div className="text-[10px] text-neutral-400 mt-0.5">
+                          {m.family || 'Стандартні'}
+                        </div>
                       </td>
 
-                      {/* Price per Kg (Shows "Не задано" if missing) */}
+                      {/* Unit Parameters: Weight in kg & Price */}
+                      <td className="py-3 px-4 text-right font-mono tabular-nums whitespace-nowrap">
+                        <div className="font-semibold text-neutral-900 dark:text-white">
+                          {spoolWeightKg} кг ({spoolWeightGrams} г)
+                        </div>
+                        <div className="text-[11px] text-neutral-500">
+                          {formatUah(spoolPrice)}
+                        </div>
+                      </td>
+
+                      {/* Availability (Calculated automatically) */}
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                        <div className="inline-flex flex-col items-center gap-1">
+                          {inStockCount === 0 ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-neutral-100 dark:bg-neutral-800 text-neutral-500">
+                              Немає на складі
+                            </span>
+                          ) : totalKg < 0.5 ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                              Закінчується ({totalKg.toFixed(2)} кг)
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
+                              В наявності ({totalKg.toFixed(2)} кг)
+                            </span>
+                          )}
+                          <div className="flex items-center gap-1 text-[10px] text-neutral-500 dark:text-neutral-400 font-mono">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateMaterial(m.id, {
+                                  ...m,
+                                  spoolsInStock: Math.max(0, inStockCount - 1),
+                                })
+                              }
+                              title="Зменшити залишок на 1 котушку"
+                              className="w-4 h-4 rounded flex items-center justify-center bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 font-bold"
+                            >
+                              -
+                            </button>
+                            <span className="font-semibold">{inStockCount} котуш.</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateMaterial(m.id, {
+                                  ...m,
+                                  spoolsInStock: inStockCount + 1,
+                                })
+                              }
+                              title="Додати 1 котушку на склад"
+                              className="w-4 h-4 rounded flex items-center justify-center bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 font-bold"
+                            >
+                              +
+                            </button>
+                            <span>· {inStockCount * spoolWeightGrams} г</span>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Cost & Price (Calculated automatically) */}
                       <td className="py-3 px-4 text-right font-mono tabular-nums whitespace-nowrap">
                         {hasPrice ? (
                           <>
-                            <span className="font-semibold text-emerald-700 dark:text-emerald-400">
+                            <div className="font-bold text-emerald-700 dark:text-emerald-400">
                               {formatUah(m.pricePerKgUah)}/кг
-                            </span>
-                            {m.pricePerKgUah && (
-                              <div className="text-[10px] text-neutral-400">
-                                {(parseFloat(m.pricePerKgUah) / 1000).toFixed(2)} грн/г
-                              </div>
-                            )}
+                            </div>
+                            <div className="text-[10px] text-neutral-500">
+                              {pricePerGram > 0 ? `${pricePerGram.toFixed(3)} грн/г` : '—'}
+                            </div>
+                            <div className="text-[10px] text-neutral-400">
+                              Запас: {formatUah(totalValue)}
+                            </div>
                           </>
                         ) : (
                           <span className="text-amber-600 dark:text-amber-400 text-[11px] font-medium flex items-center justify-end gap-1">
@@ -285,7 +396,7 @@ export const MaterialsPage: React.FC = () => {
                             type="button"
                             onClick={() => handleOpenEdit(m)}
                             title="Редагувати"
-                            className="p-1.5 text-neutral-500 hover:text-neutral-900 dark:hover:text-white rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                            className="p-1.5 text-neutral-500 hover:text-neutral-900 dark:hover:text-white rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
                           >
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
@@ -293,7 +404,7 @@ export const MaterialsPage: React.FC = () => {
                             type="button"
                             onClick={() => duplicateMaterial(m.id)}
                             title="Дублювати"
-                            className="p-1.5 text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                            className="p-1.5 text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
                           >
                             <Copy className="w-3.5 h-3.5" />
                           </button>
@@ -301,7 +412,7 @@ export const MaterialsPage: React.FC = () => {
                             type="button"
                             onClick={() => archiveMaterial(m.id)}
                             title={m.isArchived ? 'Відновити з архіву' : 'Архівувати'}
-                            className="p-1.5 text-neutral-500 hover:text-amber-600 dark:hover:text-amber-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                            className="p-1.5 text-neutral-500 hover:text-amber-600 dark:hover:text-amber-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
                           >
                             <Archive className="w-3.5 h-3.5" />
                           </button>
@@ -309,7 +420,7 @@ export const MaterialsPage: React.FC = () => {
                             type="button"
                             onClick={() => setDeletingId(m.id)}
                             title="Видалити"
-                            className="p-1.5 text-neutral-500 hover:text-red-600 dark:hover:text-red-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                            className="p-1.5 text-neutral-500 hover:text-red-600 dark:hover:text-red-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -349,29 +460,10 @@ export const MaterialsPage: React.FC = () => {
           </>
         }
       >
-        <p className="text-xs text-neutral-600 dark:text-neutral-400">
-          Ви дійсно бажаєте безповоротно видалити цей матеріал?
+        <p className="text-xs text-neutral-500">
+          Ви впевнені, що хочете видалити цей матеріал? Дія незворотна для майбутніх розрахунків.
         </p>
       </Modal>
-
-      {/* Spool & Per-Kg Calculator Modal */}
-      {isSpoolCalcModalOpen && (
-        <Modal
-          isOpen={isSpoolCalcModalOpen}
-          onClose={() => setIsSpoolCalcModalOpen(false)}
-          title="Розрахунок вартості котушок та ціни за 1 кг"
-          description="Введіть вагу котушки та ціну в магазині — отримайте точний розрахунок собівартості за 1 кг та за 1 грам."
-          maxWidth="2xl"
-        >
-          <SpoolCalculatorWidget
-            onApplyToRate={() => {
-              setIsSpoolCalcModalOpen(false);
-              handleOpenAdd();
-            }}
-            onClose={() => setIsSpoolCalcModalOpen(false)}
-          />
-        </Modal>
-      )}
     </div>
   );
 };
