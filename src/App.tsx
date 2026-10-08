@@ -30,6 +30,8 @@ const CatalogAdminPage = lazy(() => import('./pages/app/CatalogAdminPage.tsx').t
 const AdministrationPage = lazy(() => import('./pages/app/AdministrationPage.tsx').then((m) => ({ default: m.AdministrationPage })));
 const CompanyOffersPage = lazy(() => import('./pages/app/CompanyOffersPage.tsx').then((m) => ({ default: m.CompanyOffersPage })));
 const TemplatesPage = lazy(() => import('./pages/app/TemplatesPage.tsx').then((m) => ({ default: m.TemplatesPage })));
+const AnalyticsPage = lazy(() => import('./pages/app/AnalyticsPage.tsx').then((m) => ({ default: m.AnalyticsPage })));
+const PrivacyPage = lazy(() => import('./pages/public/PrivacyPage.tsx').then((m) => ({ default: m.PrivacyPage })));
 
 // Fallback pages
 import { NotFoundPage } from './pages/NotFoundPage.tsx';
@@ -43,6 +45,7 @@ export default function App() {
             {/* Public Routes */}
             <Route path="/" element={<LandingPage />} />
             <Route path="/filaments" element={<FilamentsDirectoryPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/auth/login" element={<LoginPage />} />
             <Route path="/auth/register" element={<RegisterPage />} />
             <Route path="/auth/forgot-password" element={<ForgotPasswordPage />} />
@@ -56,6 +59,7 @@ export default function App() {
               <Route path="dashboard" element={<DashboardPage />} />
               <Route path="calculator" element={<CalculatorPage />} />
               <Route path="templates" element={<TemplatesPage />} />
+              <Route path="analytics" element={<AnalyticsPage />} />
               <Route path="calculations" element={<CalculationsHistoryPage />} />
               <Route path="calculations/:id" element={<CalculationDetailsPage />} />
               <Route path="materials" element={<MaterialsPage />} />

@@ -14,7 +14,10 @@ export const Footer: React.FC = () => {
           <span>·</span>
           <span>Кожен грам на своєму місці — кабінет FDM/FFF розрахунку</span>
         </div>
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center justify-center gap-6">
+          <NavLink to="/privacy" className="hover:text-neutral-800 dark:hover:text-neutral-200">
+            Дані та приватність
+          </NavLink>
           <NavLink to="/filaments" className="hover:text-neutral-800 dark:hover:text-neutral-200">
             Каталог пластиків
           </NavLink>

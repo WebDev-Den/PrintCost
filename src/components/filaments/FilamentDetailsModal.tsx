@@ -41,6 +41,7 @@ interface FilamentDetailsModalProps {
   onAddToWorkshop: (sku: ConcreteFilamentSku) => void;
   isAdded: boolean;
   onCalculatePrint: (sku: ConcreteFilamentSku) => void;
+  onSellerClick?: (sku: ConcreteFilamentSku) => void;
 }
 
 export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
@@ -53,6 +54,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
   onAddToWorkshop,
   isAdded,
   onCalculatePrint,
+  onSellerClick,
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocus(dialogRef, isOpen, onClose);
@@ -440,6 +442,7 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
 
               <a
                 href={sku.storeUrl}
+                onClick={() => onSellerClick?.(sku)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs flex items-center justify-center gap-2 transition-colors shrink-0 shadow-sm"

@@ -56,12 +56,17 @@ import type { Company } from '../../domain/organizations.ts';
 import type { CompanyOffer } from '../../domain/companyOffers.ts';
 import { toConcreteCompanyOffer } from '../../domain/companyOffers.ts';
 import { companyOfferRepository } from '../../services/companyOfferRepository.ts';
+import { analyticsMaterialCategory, analyticsOptedOut, analyticsService, type AnalyticsDimensions } from '../../services/analyticsService.ts';
 
 export const FilamentsDirectoryPage: React.FC = () => {
   const navigate = useNavigate();
   const { addMaterial } = useAppData();
   const { user, isDemoSession } = useAuth();
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [analyticsDisabled, setAnalyticsDisabled] = useState(analyticsOptedOut);
+  const analyticsDimensions = (sku: ConcreteFilamentSku): AnalyticsDimensions => ({ offerId: sku.offerId || sku.id,
+    materialType: analyticsMaterialCategory(sku.type), packaging: sku.packagingType, stock: sku.inStock ? 'in_stock' : 'out_of_stock' });
+  useEffect(() => { analyticsService.reset(); analyticsService.beginPage(); }, [user?.id, isDemoSession]);
 
   // Load dynamic data from catalog repository (allowing admin updates to reflect here)
   const [filaments, setFilaments] = useState<PublicFilamentItem[]>([]);
@@ -83,6 +88,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
 
   const handleOpenDetails = (sku: ConcreteFilamentSku) => {
+    analyticsService.track('details', analyticsDimensions(sku));
     setSelectedSkuForModal(sku);
     setIsDetailsModalOpen(true);
   };
@@ -340,6 +346,28 @@ export const FilamentsDirectoryPage: React.FC = () => {
     selectedSeller,
   ]);
 
+  const previousAnalyticsFilters = useRef({ search: '', filters: '' });
+  const pendingAnalyticsFilters = useRef({ search: false, filter: false });
+  useEffect(() => {
+    const filters = JSON.stringify([selectedType, selectedManufacturer, selectedColorTone, packagingFilter, stockFilter, likesOnlyFilter, selectedSeller, sortBy]);
+    const previous = previousAnalyticsFilters.current;
+    if (searchQuery.trim() !== previous.search) pendingAnalyticsFilters.current.search = true;
+    if (previous.filters && filters !== previous.filters) pendingAnalyticsFilters.current.filter = true;
+    previousAnalyticsFilters.current = { search: searchQuery.trim(), filters };
+    if (activeTab !== 'catalog' || analyticsDisabled || isDemoSession || !concreteSkus.length) { pendingAnalyticsFilters.current = { search: false, filter: false }; return; }
+    const timer = setTimeout(() => {
+      const pending = pendingAnalyticsFilters.current;
+      if (!pending.search && !pending.filter) return;
+      const dimensions: AnalyticsDimensions = { materialType: analyticsMaterialCategory(selectedType), packaging: packagingFilter,
+        stock: stockFilter, hasSearch: Boolean(searchQuery.trim()), resultCount: Math.min(100000, filteredSkus.length) };
+      if (pending.search) analyticsService.track('search', dimensions);
+      if (pending.filter) analyticsService.track('filter', dimensions);
+      if (!filteredSkus.length) analyticsService.track('no_results', dimensions);
+      pendingAnalyticsFilters.current = { search: false, filter: false };
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [searchQuery, selectedType, selectedManufacturer, selectedColorTone, packagingFilter, stockFilter, likesOnlyFilter, selectedSeller, sortBy, filteredSkus.length, concreteSkus.length, activeTab, analyticsDisabled, isDemoSession]);
+
   const allowPrivateAction = () => {
     if (!user) { navigate('/auth/login'); return false; }
     if (!isDemoSession && user.isBlocked) { navigate('/app'); return false; }
@@ -364,6 +392,8 @@ export const FilamentsDirectoryPage: React.FC = () => {
       isArchived: false,
       notes: `Виробник: ${sku.brand}. Колір: ${sku.colorName}. Вага: ${sku.weightKgDisplay}. Сопло: ${sku.profileNozzle}, Стіл: ${sku.profileBed}. Магазин: ${sku.storeName}. Посилання: ${sku.storeUrl}. Додано з каталогу KILO·G.`,
     });
+
+    analyticsService.track('add_material', analyticsDimensions(sku));
 
     setAddedMaterialId(sku.id);
     setTimeout(() => setAddedMaterialId(null), 2500);
@@ -396,6 +426,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
       <main className="flex-1">
         {!firebaseConfigured && !isDemoSession && <p role="status" className="max-w-6xl mx-auto p-4 text-sm text-amber-700">Каталог використовує початкові дані. Для акаунтів і синхронізації потрібне налаштування Firebase.</p>}
         {catalogError && <p role="alert" className="max-w-6xl mx-auto p-4 text-sm text-red-700">{catalogError}</p>}
+        <div className="max-w-6xl mx-auto px-4 py-3 text-xs text-neutral-500 space-y-1"><label className="flex items-center gap-2"><input type="checkbox" checked={!analyticsDisabled} onChange={event => { const disabled = !event.target.checked; setAnalyticsDisabled(disabled); analyticsService.setOptedOut(disabled); }} />Дозволити знеособлену аналітику каталогу</label><p>Рахуємо перегляди, переходи, фільтри й додавання матеріалів без тексту пошуку та особистих даних. Вибір зберігається лише у цьому браузері. У демо аналітика вимкнена. <NavLink to="/privacy" className="underline hover:text-primary-600">Дані та приватність</NavLink>.</p></div>
         {/* Header Hero Section */}
         <section className="bg-white dark:bg-neutral-900/60 border-b border-neutral-200 dark:border-neutral-800 py-10 px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto space-y-4">
@@ -903,6 +934,8 @@ export const FilamentsDirectoryPage: React.FC = () => {
                     onCalculatePrint={handleCalculatePrint}
                     onSelectType={(t) => setSelectedType(t)}
                     onOpenDetails={handleOpenDetails}
+                    onImpression={analyticsDisabled || isDemoSession ? undefined : sku => analyticsService.impression(sku.offerId || sku.id, analyticsDimensions(sku))}
+                    onSellerClick={sku => analyticsService.track('seller_click', analyticsDimensions(sku))}
                   />
                 ))
               )}
@@ -1090,6 +1123,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
       {/* POPUP: Detailed Product Information Modal */}
       <FilamentDetailsModal
+        onSellerClick={sku => analyticsService.track('seller_click', analyticsDimensions(sku))}
         isOpen={isDetailsModalOpen}
         onClose={handleCloseDetails}
         sku={selectedSkuForModal}

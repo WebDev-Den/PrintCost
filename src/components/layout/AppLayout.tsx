@@ -20,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  BarChart3,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useAppData } from '../../context/AppDataContext.tsx';
@@ -82,11 +83,12 @@ export const AppLayout: React.FC = () => {
     { to: '/app/admin/catalog', label: 'Адмінка каталогу', icon: ShieldCheck },
     { to: '/app/admin/access', label: 'Користувачі та компанії', icon: ShieldCheck },
     { to: '/app/company/offers', label: 'Пропозиції компанії', icon: Layers },
+    { to: '/app/analytics', label: 'Аналітика каталогу', icon: BarChart3 },
     { to: '/app/printers', label: 'Принтери', icon: Printer },
     { to: '/app/settings', label: 'Налаштування', icon: Settings },
     { to: '/app/account', label: 'Акаунт', icon: User },
   ].filter((item) => (!item.to.startsWith('/app/admin') || canManageCatalog)
-    && (item.to !== '/app/company/offers' || (!isDemoSession && (user?.role === 'manager' || user?.role === 'admin'))));
+    && (!['/app/company/offers', '/app/analytics'].includes(item.to) || (!isDemoSession && (user?.role === 'manager' || user?.role === 'admin'))));
 
   const handleLogout = async () => {
     setLogoutError(null);
@@ -117,6 +119,7 @@ export const AppLayout: React.FC = () => {
   if (loadError) return <ErrorPage error={new Error(loadError)} resetErrorBoundary={retryLoad} />;
   if (location.pathname.startsWith('/app/admin') && !canManageCatalog) return <Navigate to="/app/dashboard" replace />;
   if (location.pathname.startsWith('/app/company') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;
+  if (location.pathname.startsWith('/app/analytics') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;
 
   return (
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col antialiased">

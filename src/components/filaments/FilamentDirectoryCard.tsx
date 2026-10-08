@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   Heart,
   Scale,
@@ -10,6 +10,7 @@ import {
   Eye,
   Plus,
   Check,
+  ExternalLink,
 } from 'lucide-react';
 import type {
   ConcreteFilamentSku,
@@ -18,6 +19,7 @@ import type {
 import { formatUah } from '../../domain/formatters.ts';
 import { Button } from '../common/Button.tsx';
 import { FilamentColorVisual } from './FilamentColorVisual.tsx';
+import { createImpressionGate } from '../../services/analyticsService.ts';
 
 export interface FilamentDirectoryCardProps {
   item: ConcreteFilamentSku;
@@ -29,6 +31,8 @@ export interface FilamentDirectoryCardProps {
   onCalculatePrint: (item: ConcreteFilamentSku) => void;
   onSelectType: (type: string) => void;
   onOpenDetails: (item: ConcreteFilamentSku) => void;
+  onImpression?: (item: ConcreteFilamentSku) => void;
+  onSellerClick?: (item: ConcreteFilamentSku) => void;
 }
 
 export const FilamentDirectoryCard: React.FC<FilamentDirectoryCardProps> = ({
@@ -40,11 +44,29 @@ export const FilamentDirectoryCard: React.FC<FilamentDirectoryCardProps> = ({
   isAdded,
   onSelectType,
   onOpenDetails,
+  onImpression,
+  onSellerClick,
 }) => {
   const isRefill = item.packagingType === 'refill';
+  const cardRef = useRef<HTMLDivElement>(null);
+  const impressionCallback = useRef(onImpression);
+  impressionCallback.current = onImpression;
+  const canObserve = Boolean(onImpression);
+  useEffect(() => {
+    if (!canObserve || !cardRef.current || typeof IntersectionObserver === 'undefined') return;
+    const gate = createImpressionGate(() => { impressionCallback.current?.(item); observer.disconnect(); }, { visible: () => document.visibilityState === 'visible' });
+    const observer = new IntersectionObserver(entries => {
+      const entry = entries.at(-1);
+      if (entry) gate.intersection(entry.intersectionRatio, entry.isIntersecting);
+    }, { threshold: [0, 0.5] });
+    observer.observe(cardRef.current);
+    document.addEventListener('visibilitychange', gate.pageVisibilityChanged);
+    return () => { observer.disconnect(); gate.dispose(); document.removeEventListener('visibilitychange', gate.pageVisibilityChanged); };
+  }, [item.id, canObserve]);
 
   return (
     <div
+      ref={cardRef}
       onClick={() => onOpenDetails(item)}
       className="bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4 sm:p-5 flex flex-col justify-between shadow-2xs hover:shadow-md hover:border-emerald-300 dark:hover:border-emerald-700/70 transition-all cursor-pointer relative group"
     >
@@ -230,6 +252,8 @@ export const FilamentDirectoryCard: React.FC<FilamentDirectoryCardProps> = ({
           )}
         </Button>
       </div>
+
+      <a href={item.storeUrl} target="_blank" rel="noopener noreferrer" onClick={event => { event.stopPropagation(); onSellerClick?.(item); }} className="mt-3 inline-flex items-center justify-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 underline"><span>Перейти до продавця</span><ExternalLink className="w-3 h-3" /></a>
     </div>
   );
 };
