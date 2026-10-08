@@ -89,7 +89,7 @@ export const JobOverviewCard: React.FC<JobOverviewCardProps> = ({
             <span>Формат</span>
           </div>
           <p className="text-sm font-semibold text-neutral-900 dark:text-white mt-1 truncate">
-            Bambu 3MF
+            {job.fileName.toLowerCase().endsWith('.gcode') ? 'G-code' : '3MF'}
           </p>
         </div>
       </div>

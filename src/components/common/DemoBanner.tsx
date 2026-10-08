@@ -1,19 +1,21 @@
 import React, { useState } from 'react';
-import { Info, X, Database } from 'lucide-react';
+import { X, Database } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext.tsx';
 
 export const DemoBanner: React.FC = () => {
   const [isDismissed, setIsDismissed] = useState(false);
+  const { isDemoSession } = useAuth();
 
-  if (isDismissed) return null;
+  if (isDismissed || !isDemoSession) return null;
 
   return (
     <div className="bg-amber-500/10 border-b border-amber-500/20 text-amber-900 dark:text-amber-200 px-4 py-2 text-xs flex items-center justify-between">
       <div className="flex items-center gap-2">
         <Database className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
         <div>
-          <span className="font-semibold">Демонстраційний режим frontend:</span>{' '}
+          <span className="font-semibold">Демо-режим:</span>{' '}
           <span>
-            Дані зберігаються локально в браузері (localStorage). Production-сервер з Supabase Auth, PostgreSQL та парсером .gcode.3mf буде підключено на наступному етапі (Codex).
+            Дані цього прикладу зберігаються лише в цьому браузері. Для роботи зі своїми даними увійдіть у власний акаунт.
           </span>
         </div>
       </div>

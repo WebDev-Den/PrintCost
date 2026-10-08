@@ -16,6 +16,8 @@ export interface UserProfile {
   workshopName: string;
   createdAt: string;
   isDemoUser: boolean;
+  emailVerified?: boolean;
+  isAdmin?: boolean;
 }
 
 export interface MaterialProfile {

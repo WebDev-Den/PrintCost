@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   User,
@@ -18,13 +18,20 @@ import { Button } from '../../components/common/Button.tsx';
 import { Input } from '../../components/common/Input.tsx';
 import { NumberInput } from '../../components/common/NumberInput.tsx';
 import type { PricingMode, RoundingMode } from '../../domain/types.ts';
+import { authErrorMessage } from '../../services/authService.ts';
 
 export const OnboardingPage: React.FC = () => {
   const navigate = useNavigate();
   const { user, updateUser } = useAuth();
-  const { updateSettings, addPrinter, addMaterial } = useAppData();
+  const { materials, printers, updateSettings, addPrinter, addMaterial, updatePrinter, updateMaterial } = useAppData();
 
   const [currentStep, setCurrentStep] = useState(1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const busy = useRef(false);
+  const skippedSteps = useRef(new Set<number>());
+  const createdPrinterId = useRef<string | null>(null);
+  const createdMaterialIds = useRef(new Map<string, string>());
 
   // Step 1: User & Workshop
   const [fullName, setFullName] = useState(user?.fullName || '');
@@ -66,6 +73,7 @@ export const OnboardingPage: React.FC = () => {
   ];
 
   const handleNext = () => {
+    skippedSteps.current.delete(currentStep);
     if (currentStep < 5) {
       setCurrentStep((s) => s + 1);
     } else {
@@ -74,6 +82,7 @@ export const OnboardingPage: React.FC = () => {
   };
 
   const handleSkip = () => {
+    skippedSteps.current.add(currentStep);
     if (currentStep < 5) {
       setCurrentStep((s) => s + 1);
     } else {
@@ -82,66 +91,95 @@ export const OnboardingPage: React.FC = () => {
   };
 
   const handleComplete = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setIsSubmitting(true);
+    setError(null);
+    try {
     // 1. Profile
-    if (fullName.trim() || workshopName.trim()) {
-      updateUser({
+    if (!skippedSteps.current.has(1) && (fullName.trim() || workshopName.trim())) {
+      await updateUser({
         fullName: fullName.trim() || user?.fullName || 'Оператор',
         workshopName: workshopName.trim() || user?.workshopName || '',
       });
     }
 
-    // 2. Settings: do NOT convert skipped fields into zeros, keep undefined or null
-    await updateSettings({
-      electricityTariffUahPerKwh: electricityTariff.trim() ? electricityTariff.trim() : null,
-      pricingMode,
-      defaultMarkupPercent: markupPercent.trim() || '100',
-      defaultMarginPercent: marginPercent.trim() || '50',
-      minOrderPriceUah: minOrder.trim() || '200',
-      roundingMode: rounding,
-    });
+    const settingsUpdates = {
+      ...(!skippedSteps.current.has(2) ? { electricityTariffUahPerKwh: electricityTariff.trim() || null } : {}),
+      ...(!skippedSteps.current.has(5) ? {
+        pricingMode,
+        defaultMarkupPercent: markupPercent.trim() || '100',
+        defaultMarginPercent: marginPercent.trim() || '50',
+        minOrderPriceUah: minOrder.trim() || '200',
+        roundingMode: rounding,
+      } : {}),
+    };
+    if (Object.keys(settingsUpdates).length) await updateSettings(settingsUpdates);
 
     // 3. Printer (if name provided)
-    if (printerName.trim()) {
-      await addPrinter({
+    if (!skippedSteps.current.has(3) && printerName.trim()) {
+      const data = {
         name: printerName.trim(),
         modelId: printerModelId.trim() || undefined,
         averagePowerWatts: printerPower.trim() || '100',
-        costCalculationMode: 'manual_rate',
+        costCalculationMode: 'manual_rate' as const,
         machineHourlyRateUah: printerHourlyRate.trim() || '10.00',
         isDefault: true,
-      });
+      };
+      if (createdPrinterId.current) await updatePrinter(createdPrinterId.current, data);
+      else if (!printers.some(printer => printer.name === data.name && printer.modelId === data.modelId)) {
+        createdPrinterId.current = (await addPrinter(data)).id;
+      }
     }
 
     // 4. Core Materials
-    for (const [type, price] of Object.entries(matPrices)) {
+    for (const [type, price] of skippedSteps.current.has(4) ? [] : Object.entries(matPrices)) {
       if (price.trim()) {
-        await addMaterial({
+        const data = {
           name: `${type} базовий`,
           type,
           family: type === 'TPU' ? 'Гнучкі' : type === 'ABS' || type === 'ASA' ? 'Інженерні' : 'Стандартні',
           brand: 'Основний постачальник',
           pricePerKgUah: price.trim(),
           isArchived: false,
-        });
+        };
+        const createdId = createdMaterialIds.current.get(type);
+        if (createdId) await updateMaterial(createdId, data);
+        else if (!materials.some(material => material.name === data.name && material.type === data.type && material.brand === data.brand)) {
+          createdMaterialIds.current.set(type, (await addMaterial(data)).id);
+        }
       }
     }
 
-    if (customMatType.trim() && customMatPrice.trim()) {
-      await addMaterial({
+    if (!skippedSteps.current.has(4) && customMatType.trim() && customMatPrice.trim()) {
+      const data = {
         name: `${customMatType.trim().toUpperCase()} котушка`,
         type: customMatType.trim().toUpperCase(),
         family: 'Спеціальні',
         brand: 'Власний бренд',
         pricePerKgUah: customMatPrice.trim(),
         isArchived: false,
-      });
+      };
+      const key = 'custom';
+      const createdId = createdMaterialIds.current.get(key);
+      if (createdId) await updateMaterial(createdId, data);
+      else if (!materials.some(material => material.name === data.name && material.type === data.type && material.brand === data.brand)) {
+        createdMaterialIds.current.set(key, (await addMaterial(data)).id);
+      }
     }
 
     navigate('/app/dashboard');
+    } catch (error) {
+      setError(authErrorMessage(error));
+    } finally {
+      busy.current = false;
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="max-w-2xl mx-auto py-6 space-y-8">
+      {error && <p role="alert" className="p-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/40 rounded-lg">{error} Збережені позиції залишилися у вашому акаунті; можна повторити завершення.</p>}
       {/* Step Indicators */}
       <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-4">
         {steps.map((st) => {
@@ -397,7 +435,7 @@ export const OnboardingPage: React.FC = () => {
         <div className="flex items-start gap-2 p-3 bg-neutral-50 dark:bg-neutral-800/40 rounded-lg text-[11px] text-neutral-500">
           <AlertCircle className="w-3.5 h-3.5 text-neutral-400 shrink-0 mt-0.5" />
           <p>
-            Ви можете пропустити будь-який крок. Пропущені значення залишаться незаповненими (а не нульовими). Для остаточного розрахунку собівартості їх можна буде ввести пізніше або вимкнути відповідну статтю витрат.
+            Ви можете пропустити будь-який крок. Пропуск зберігає поточний профіль, тариф і правила ціноутворення; принтери й матеріали з пропущених кроків не додаються. У новому акаунті тариф залишиться незаповненим. Дані можна заповнити пізніше в налаштуваннях майстерні.
           </p>
         </div>
 
@@ -409,7 +447,8 @@ export const OnboardingPage: React.FC = () => {
                 variant="outline"
                 size="sm"
                 leftIcon={<ArrowLeft className="w-3.5 h-3.5" />}
-                onClick={() => setCurrentStep((s) => s - 1)}
+              onClick={() => setCurrentStep((s) => s - 1)}
+              disabled={isSubmitting}
               >
                 Назад
               </Button>
@@ -422,6 +461,7 @@ export const OnboardingPage: React.FC = () => {
               size="sm"
               leftIcon={<SkipForward className="w-3.5 h-3.5" />}
               onClick={handleSkip}
+              disabled={isSubmitting}
             >
               Пропустити крок
             </Button>
@@ -430,6 +470,7 @@ export const OnboardingPage: React.FC = () => {
               size="sm"
               rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
               onClick={handleNext}
+              isLoading={isSubmitting}
             >
               {currentStep === 5 ? 'Завершити налаштування' : 'Далі'}
             </Button>

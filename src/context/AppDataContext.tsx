@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import type {
   MaterialProfile,
   PrinterProfile,
@@ -9,6 +9,9 @@ import { materialRepository } from '../services/materialRepository.ts';
 import { printerRepository } from '../services/printerRepository.ts';
 import { settingsRepository } from '../services/settingsRepository.ts';
 import { calculationRepository } from '../services/calculationRepository.ts';
+import { INITIAL_PRICING_SETTINGS } from '../domain/defaultData.ts';
+import { useAuth } from './AuthContext.tsx';
+import { authService } from '../services/authService.ts';
 
 interface AppDataContextType {
   materials: MaterialProfile[];
@@ -16,6 +19,10 @@ interface AppDataContextType {
   settings: PricingSettings;
   calculations: CalculationSnapshot[];
   isLoading: boolean;
+  loadError: string | null;
+  actionError: string | null;
+  clearActionError: () => void;
+  retryLoad: () => void;
   theme: 'light' | 'dark' | 'system';
   setTheme: (t: 'light' | 'dark' | 'system') => void;
   // Material actions
@@ -49,11 +56,22 @@ interface AppDataContextType {
 const AppDataContext = createContext<AppDataContextType | undefined>(undefined);
 
 export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  return <SessionDataProvider>{children}</SessionDataProvider>;
+};
+
+const SessionDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isLoading: authLoading, isDemoSession } = useAuth();
+  const sessionKey = isDemoSession ? 'demo' : user?.id || 'guest';
+  const sessionRef = useRef(sessionKey);
+  sessionRef.current = sessionKey;
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [materials, setMaterials] = useState<MaterialProfile[]>([]);
   const [printers, setPrinters] = useState<PrinterProfile[]>([]);
-  const [settings, setSettings] = useState<PricingSettings>({} as PricingSettings);
+  const [settings, setSettings] = useState<PricingSettings>(INITIAL_PRICING_SETTINGS);
   const [calculations, setCalculations] = useState<CalculationSnapshot[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [theme, setThemeState] = useState<'light' | 'dark' | 'system'>(() => {
     try {
       const stored = localStorage.getItem('kilog_theme') as 'light' | 'dark' | 'system';
@@ -63,6 +81,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   });
 
   const refreshAll = useCallback(async () => {
+    if (authLoading || sessionRef.current !== sessionKey) return;
+    setMaterials([]); setPrinters([]); setCalculations([]); setSettings(INITIAL_PRICING_SETTINGS);
+    setLoadError(null); setActionError(null);
+    if (!user) { setLoadedFor(sessionKey); setIsLoading(false); return; }
+    setIsLoading(true);
     try {
       const [mats, prns, setts, calcs] = await Promise.all([
         materialRepository.getAll(),
@@ -70,6 +93,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         settingsRepository.getSettings(),
         calculationRepository.getAll(),
       ]);
+      if (sessionRef.current !== sessionKey) return;
       setMaterials(mats);
       setPrinters(prns);
       setSettings(setts);
@@ -90,15 +114,34 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         } catch {}
       }
     } catch (err) {
-      console.error('Failed to load application data', err);
+      if (sessionRef.current === sessionKey) setLoadError(err instanceof Error ? err.message : 'Не вдалося завантажити дані. Перевірте з’єднання.');
     } finally {
-      setIsLoading(false);
+      if (sessionRef.current === sessionKey) { setLoadedFor(sessionKey); setIsLoading(false); }
     }
-  }, []);
+  }, [authLoading, sessionKey]);
 
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
+
+  const assertSession = () => {
+    const current = authService.getSessionIdentity() || 'guest';
+    if (sessionRef.current !== sessionKey || current !== sessionKey) throw new Error('Акаунт змінився. Повторіть дію у поточному акаунті.');
+  };
+  const checked = async <T,>(promise: Promise<T>): Promise<T> => {
+    const result = await promise;
+    assertSession();
+    return result;
+  };
+  const perform = async <T,>(operation: () => Promise<T>): Promise<T> => {
+    assertSession();
+    setActionError(null);
+    try { return await checked(operation()); }
+    catch (err) {
+      if (sessionRef.current === sessionKey) setActionError(err instanceof Error ? err.message : 'Не вдалося зберегти зміни. Спробуйте ще раз.');
+      throw err;
+    }
+  };
 
   // Apply dark mode class to documentElement (html) & body
   useEffect(() => {
@@ -155,52 +198,57 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       document.body.classList.remove('dark');
     }
 
+    if (!user) return;
     try {
-      const updated = await settingsRepository.updateSettings({ theme: newTheme });
+      assertSession();
+      const updated = await checked(settingsRepository.updateSettings({ theme: newTheme }));
       setSettings(updated);
-    } catch {
-      // Ignore API errors when unauthenticated/offline
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Тему змінено лише в цьому браузері. Не вдалося зберегти її в акаунті.');
     }
   };
 
   const addMaterial = async (m: Omit<MaterialProfile, 'id' | 'createdAt'>) => {
-    const res = await materialRepository.create(m);
+    const res = await checked(materialRepository.create(m));
     setMaterials((prev) => [res, ...prev]);
     return res;
   };
 
   const updateMaterial = async (id: string, updates: Partial<MaterialProfile>) => {
-    const res = await materialRepository.update(id, updates);
+    const res = await checked(materialRepository.update(id, updates));
     setMaterials((prev) => prev.map((m) => (m.id === id ? res : m)));
     return res;
   };
 
   const duplicateMaterial = async (id: string) => {
-    const res = await materialRepository.duplicate(id);
+    const res = await checked(materialRepository.duplicate(id));
     setMaterials((prev) => [res, ...prev]);
     return res;
   };
 
   const archiveMaterial = async (id: string) => {
-    await materialRepository.archive(id);
+    await checked(materialRepository.archive(id));
     setMaterials((prev) =>
       prev.map((m) => (m.id === id ? { ...m, isArchived: !m.isArchived } : m))
     );
   };
 
   const deleteMaterial = async (id: string) => {
-    await materialRepository.delete(id);
+    await checked(materialRepository.delete(id));
     setMaterials((prev) => prev.filter((m) => m.id !== id));
   };
 
   const addPrinter = async (p: Omit<PrinterProfile, 'id' | 'createdAt'>) => {
-    const res = await printerRepository.create(p);
+    const res = await checked(printerRepository.create(p));
     setPrinters((prev) => (p.isDefault ? prev.map((x) => ({ ...x, isDefault: false })).concat(res) : [...prev, res]));
+    if (res.isDefault) setSettings((prev) => ({ ...prev, defaultPrinterId: res.id }));
     return res;
   };
 
   const updatePrinter = async (id: string, updates: Partial<PrinterProfile>) => {
-    const res = await printerRepository.update(id, updates);
+    const res = await checked(printerRepository.update(id, updates));
+    if (res.isDefault) setSettings((prev) => ({ ...prev, defaultPrinterId: res.id }));
+    else setSettings((prev) => prev.defaultPrinterId === id ? { ...prev, defaultPrinterId: null } : prev);
     setPrinters((prev) => {
       let updatedList = prev.map((p) => (p.id === id ? res : p));
       if (updates.isDefault) {
@@ -212,18 +260,21 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const deletePrinter = async (id: string) => {
-    await printerRepository.delete(id);
+    await checked(printerRepository.delete(id));
     setPrinters((prev) => prev.filter((p) => p.id !== id));
+    setSettings((prev) => prev.defaultPrinterId === id ? { ...prev, defaultPrinterId: null } : prev);
   };
 
   const setDefaultPrinter = async (id: string) => {
-    await printerRepository.setDefault(id);
+    await checked(printerRepository.setDefault(id));
     setPrinters((prev) => prev.map((p) => ({ ...p, isDefault: p.id === id })));
+    setSettings((prev) => ({ ...prev, defaultPrinterId: id }));
   };
 
   const updateSettings = async (updates: Partial<PricingSettings>) => {
-    const res = await settingsRepository.updateSettings(updates);
+    const res = await checked(settingsRepository.updateSettings(updates));
     setSettings(res);
+    setPrinters((prev) => prev.map((p) => ({ ...p, isDefault: p.id === res.defaultPrinterId })));
     return res;
   };
 
@@ -232,29 +283,31 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const importSettings = async (json: string) => {
-    const res = await settingsRepository.importConfigJson(json);
+    const res = await checked(settingsRepository.importConfigJson(json));
     setSettings(res);
+    setPrinters((prev) => prev.map((p) => ({ ...p, isDefault: p.id === res.defaultPrinterId })));
   };
 
   const resetSettings = async () => {
-    const res = await settingsRepository.resetToDefaults();
+    const res = await checked(settingsRepository.resetToDefaults());
     setSettings(res);
+    setPrinters((prev) => prev.map((p) => ({ ...p, isDefault: p.id === res.defaultPrinterId })));
   };
 
   const saveCalculation = async (calc: Omit<CalculationSnapshot, 'id' | 'createdAt'>) => {
-    const res = await calculationRepository.save(calc);
-    setCalculations((prev) => [res, ...prev]);
+    const res = await checked(calculationRepository.save(calc));
+    setCalculations((prev) => [res, ...prev].slice(0, 200));
     return res;
   };
 
   const duplicateCalculation = async (id: string) => {
-    const res = await calculationRepository.duplicate(id);
-    setCalculations((prev) => [res, ...prev]);
+    const res = await checked(calculationRepository.duplicate(id));
+    setCalculations((prev) => [res, ...prev].slice(0, 200));
     return res;
   };
 
   const deleteCalculation = async (id: string) => {
-    await calculationRepository.delete(id);
+    await checked(calculationRepository.delete(id));
     setCalculations((prev) => prev.filter((c) => c.id !== id));
   };
 
@@ -304,27 +357,31 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         printers,
         settings,
         calculations,
-        isLoading,
+        isLoading: isLoading || authLoading || loadedFor !== sessionKey,
+        loadError,
+        actionError,
+        clearActionError: () => setActionError(null),
+        retryLoad: () => { void refreshAll(); },
         theme,
         setTheme,
-        addMaterial,
-        updateMaterial,
-        duplicateMaterial,
-        archiveMaterial,
-        deleteMaterial,
-        addPrinter,
-        updatePrinter,
-        deletePrinter,
-        setDefaultPrinter,
-        updateSettings,
-        exportSettings,
-        importSettings,
-        resetSettings,
-        saveCalculation,
-        duplicateCalculation,
-        deleteCalculation,
+        addMaterial: (m) => perform(() => addMaterial(m)),
+        updateMaterial: (id, updates) => perform(() => updateMaterial(id, updates)),
+        duplicateMaterial: (id) => perform(() => duplicateMaterial(id)),
+        archiveMaterial: (id) => perform(() => archiveMaterial(id)),
+        deleteMaterial: (id) => perform(() => deleteMaterial(id)),
+        addPrinter: (p) => perform(() => addPrinter(p)),
+        updatePrinter: (id, updates) => perform(() => updatePrinter(id, updates)),
+        deletePrinter: (id) => perform(() => deletePrinter(id)),
+        setDefaultPrinter: (id) => perform(() => setDefaultPrinter(id)),
+        updateSettings: (updates) => perform(() => updateSettings(updates)),
+        exportSettings: () => perform(exportSettings),
+        importSettings: (json) => perform(() => importSettings(json)),
+        resetSettings: () => perform(resetSettings),
+        saveCalculation: (calc) => perform(() => saveCalculation(calc)),
+        duplicateCalculation: (id) => perform(() => duplicateCalculation(id)),
+        deleteCalculation: (id) => perform(() => deleteCalculation(id)),
         findBestMaterialMatch,
-        saveFilamentMapping,
+        saveFilamentMapping: (type, id) => perform(() => saveFilamentMapping(type, id)),
       }}
     >
       {children}

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { UploadCloud, Sparkles, CheckCircle, AlertTriangle, Layers, Cpu } from 'lucide-react';
+import { UploadCloud, Sparkles, CheckCircle, AlertTriangle, Cpu } from 'lucide-react';
 import { Button } from '../common/Button.tsx';
 import type { ParsedJob } from '../../domain/types.ts';
 import { fileAnalysisService } from '../../services/fileAnalysisService.ts';
@@ -47,16 +47,20 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
   };
 
   const handleFileProcess = async (file: File) => {
+    if (isLoading) return;
     setIsLoading(true);
     setErrorMessage(null);
+    onJobLoaded({ fileName: file.name, fileSizeBytes: file.size, slicerSource: '', plates: [], totalPredictionSeconds: 0, totalWeightGrams: 0, warnings: [], parseStatus: 'reading' });
     try {
       const parsed = await fileAnalysisService.analyzeUploadedFile(file);
       if (parsed.parseStatus !== 'success' && parsed.errorMessage) {
         setErrorMessage(parsed.errorMessage);
       }
       onJobLoaded(parsed);
-    } catch {
-      setErrorMessage('Не вдалося прочитати файл. Спробуйте інший .gcode.3mf або .gcode.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Не вдалося прочитати файл. Спробуйте інший .gcode.3mf або .gcode.';
+      setErrorMessage(message);
+      onJobLoaded({ fileName: file.name, fileSizeBytes: file.size, slicerSource: 'Невідомо', plates: [], totalPredictionSeconds: 0, totalWeightGrams: 0, warnings: [], parseStatus: 'error', errorMessage: message });
     } finally {
       setIsLoading(false);
     }
@@ -80,7 +84,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
         }}
         onDragLeave={() => setIsDragOver(false)}
         onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => { if (!isLoading) fileInputRef.current?.click(); }}
         className={`border-2 border-dashed rounded-2xl p-6 sm:p-7 text-center cursor-pointer transition-all ${
           isDragOver
             ? 'border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/30 shadow-md'
@@ -93,11 +97,13 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           ref={fileInputRef}
           type="file"
           accept=".3mf,.gcode"
+          disabled={isLoading}
           className="hidden"
           onChange={(e) => {
             if (e.target.files && e.target.files[0]) {
               handleFileProcess(e.target.files[0]);
             }
+            e.target.value = '';
           }}
         />
 
@@ -125,7 +131,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
                 : 'Перетягніть .gcode.3mf або виберіть файл нарізки'}
             </p>
             <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-lg mx-auto leading-relaxed">
-              Підтримка будь-яких нарізок <strong className="text-neutral-800 dark:text-neutral-200">.gcode.3mf</strong> та <strong className="text-neutral-800 dark:text-neutral-200">.gcode</strong> (Bambu Studio, OrcaSlicer, PrusaSlicer, Creality Print, Elegoo). Обробка миттєва, конфіденційна та виконується повністю у вашому браузері.
+              Нарізані <strong className="text-neutral-800 dark:text-neutral-200">.3mf / .gcode.3mf</strong> Bambu Studio та OrcaSlicer, текстовий <strong className="text-neutral-800 dark:text-neutral-200">.gcode</strong> з часом і витратами філаменту (PrusaSlicer, OrcaSlicer, Bambu Studio). До 50 МБ. Файл обробляється у браузері. Проєкти без нарізки та binary .bgcode не підтримуються.
             </p>
           </div>
 
@@ -137,7 +143,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
               onClick={() => fileInputRef.current?.click()}
               disabled={isLoading}
             >
-              Вибрати файл .3mf
+              Вибрати файл
             </Button>
             <Button
               type="button"
@@ -168,12 +174,13 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 px-1 gap-2">
         <span className="flex items-center gap-1.5">
           <Cpu className="w-3.5 h-3.5 text-neutral-400" />
-          <span>Тестові сценарії слайсерів:</span>
+          <span>Демонстраційні сценарії:</span>
         </span>
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => handleSelectPreset('multi_plate')}
+            disabled={isLoading}
             className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer text-xs"
           >
             2 пластини
@@ -182,6 +189,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           <button
             type="button"
             onClick={() => handleSelectPreset('unknown_material')}
+            disabled={isLoading}
             className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer text-xs"
           >
             Невідомий філамент
@@ -190,6 +198,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           <button
             type="button"
             onClick={() => handleSelectPreset('no_slicing')}
+            disabled={isLoading}
             className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer text-xs"
           >
             Без нарізки
@@ -198,6 +207,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           <button
             type="button"
             onClick={() => handleSelectPreset('corrupted')}
+            disabled={isLoading}
             className="hover:text-emerald-600 dark:hover:text-emerald-400 underline cursor-pointer text-xs"
           >
             Пошкоджений

@@ -1,870 +1,488 @@
-import type {
-  UserProfile,
-  MaterialProfile,
-  PrinterProfile,
-  CalculationSnapshot,
-  PricingSettings,
-  ParsedJob,
-} from '../domain/types.ts';
 import {
-  INITIAL_USER_PROFILE,
-  INITIAL_MATERIALS,
-  INITIAL_PRINTERS,
-  INITIAL_PRICING_SETTINGS,
-  getInitialCalculationSnapshots,
-  DEMO_JOB_SECTION_9,
-} from '../domain/defaultData.ts';
-import {
-  PUBLIC_FILAMENTS_CATALOG,
-  MANUFACTURERS_LIST,
-  STANDARD_TEMPERATURE_PROFILES,
-  PublicFilamentItem,
-  ManufacturerBrand,
-  TemperatureProfile,
-} from '../domain/filamentsDirectory.ts';
+  collection, doc, getDocFromServer, getDocsFromServer, limit, orderBy, query, startAfter,
+  runTransaction, type DocumentData, type DocumentReference, type QueryDocumentSnapshot, type QueryConstraint, type QuerySnapshot,
+} from 'firebase/firestore';
+import { Decimal } from 'decimal.js';
+import { normalizeDecimalInput } from '../domain/formatters.ts';
+import type { UserProfile, MaterialProfile, PrinterProfile, CalculationSnapshot, PricingSettings } from '../domain/types.ts';
+import { INITIAL_MATERIALS, INITIAL_PRINTERS, INITIAL_PRICING_SETTINGS, getInitialCalculationSnapshots } from '../domain/defaultData.ts';
+import { PUBLIC_FILAMENTS_CATALOG, MANUFACTURERS_LIST, STANDARD_TEMPERATURE_PROFILES, type PublicFilamentItem, type ManufacturerBrand, type TemperatureProfile } from '../domain/filamentsDirectory.ts';
+import { firebaseAuth, firestoreDb } from './firebaseClient.ts';
+import { authService } from './authService.ts';
+import { fileAnalysisService } from './fileAnalysisService.ts';
 
-/**
- * Global Configuration for API Client
- */
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) || '/api';
+export interface ApiResponse<T = unknown> { success: boolean; data?: T; error?: string; statusCode?: number }
 
-export interface ApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
-  statusCode?: number;
-}
-
-/**
- * Storage Keys for Client Persistence & Offline Fallback
- */
 export const STORAGE_KEYS = {
-  AUTH_USER: 'printcost_auth_user',
-  AUTH_TOKEN: 'printcost_auth_token',
-  IS_DEMO: 'printcost_is_demo_mode',
-  MATERIALS: 'printcost_materials',
-  PRINTERS: 'printcost_printers',
-  CALCULATIONS: 'printcost_saved_calculations',
-  SETTINGS: 'printcost_pricing_settings',
-  PROFILE: 'printcost_user_profile',
-  CATALOG_FILAMENTS: 'kilog_catalog_filaments_v4',
-  CATALOG_MANUFACTURERS: 'kilog_catalog_manufacturers_v4',
-  CATALOG_TEMPERATURES: 'kilog_catalog_temperatures_v4',
-  CATALOG_LIKES: 'kilog_catalog_likes_v1',
-  SIDEBAR_COLLAPSED: 'kilog_sidebar_collapsed_v1',
-  FILTERS_HIDDEN: 'kilog_filters_hidden_v1',
+  MATERIALS: 'kilog_demo_materials', PRINTERS: 'kilog_demo_printers', CALCULATIONS: 'kilog_demo_calculations',
+  SETTINGS: 'kilog_demo_settings', PROFILE: 'kilog_demo_profile', CATALOG_FILAMENTS: 'kilog_demo_filaments',
+  CATALOG_MANUFACTURERS: 'kilog_demo_manufacturers', CATALOG_TEMPERATURES: 'kilog_demo_temperatures', CATALOG_LIKES: 'kilog_demo_likes',
+  SIDEBAR_COLLAPSED: 'kilog_sidebar_collapsed_v1', FILTERS_HIDDEN: 'kilog_filters_hidden_v1',
 } as const;
 
-/**
- * Core HTTP Request Wrapper
- * Handles headers, authorization, timeouts, JSON parsing, and unified error handling.
- */
-async function request<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<{ data: T | null; error: Error | null; isServerAvailable: boolean }> {
-  const url = `${API_BASE_URL.replace(/\/$/, '')}/${endpoint.replace(/^\//, '')}`;
-  const token = localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+function readDemo<T>(key: string, initial: T): T {
+  const stored = localStorage.getItem(key);
+  return stored ? JSON.parse(stored) as T : structuredClone(initial);
+}
+function writeDemo(key: string, value: unknown) { localStorage.setItem(key, JSON.stringify(value)); }
+function db() {
+  if (!firestoreDb) throw new Error('Firebase не налаштовано. Увійдіть у демо або налаштуйте проєкт.');
+  return firestoreDb;
+}
+function userPath() {
+  if (!firebaseAuth?.currentUser) throw new Error('Увійдіть в акаунт, щоб зберігати дані.');
+  return `users/${firebaseAuth.currentUser.uid}`;
+}
+function sessionIdentity() { return authService.isDemoSession() ? 'demo' : firebaseAuth?.currentUser?.uid || ''; }
+function requireSameSession(identity: string) {
+  if (sessionIdentity() !== identity) throw new Error('Акаунт змінився під час операції. Повторіть дію.');
+}
+function validId(id: string) {
+  if (!id || id.length > 180 || id.includes('/') || id === '.' || id === '..') throw new Error('Некоректний ідентифікатор запису.');
+  return id;
+}
+function clean<T>(value: T): T {
+  const json = JSON.stringify(value, (key, item) => {
+    const numeric = /(?:Uah(?:PerKwh)?|Percent(?:Actual)?)$/.test(key) || ['averagePowerWatts', 'spoolWeightGrams', 'lifespanHours', 'weightGrams', 'lengthMeters', 'totalWeightGrams', 'totalEnergyKwh'].includes(key);
+    if (!numeric || typeof item !== 'string') return item;
+    const normalized = normalizeDecimalInput(item);
+    if (normalized === '') return normalized;
+    const signed = ['profitUah', 'marginPercent', 'markupPercentActual'].includes(key);
+    if (!(signed ? /^-?(?:\d+(?:\.\d*)?|\.\d+)$/ : /^(?:\d+(?:\.\d*)?|\.\d+)$/).test(normalized)) throw new Error('Введіть коректне десяткове число.');
+    const canonical = new Decimal(normalized).toFixed();
+    if (!/^-?\d{1,12}(?:\.\d{1,6})?$/.test(canonical)) throw new Error('Число може містити до 12 цифр перед крапкою та до 6 після неї.');
+    return canonical;
+  });
+  if (new TextEncoder().encode(json).length > 700_000) throw new Error('Розрахунок завеликий для збереження (максимум 700 КБ).');
+  return JSON.parse(json) as T;
+}
+async function write(ref: DocumentReference, value: DocumentData | null) {
+  // Transactions fail offline; success means the server has accepted the write.
+  await runTransaction(db(), async (transaction) => {
+    await transaction.get(ref);
+    if (value === null) transaction.delete(ref);
+    else transaction.set(ref, clean(value));
+  });
+}
+const money = /^\d{1,12}(?:\.\d{1,6})?$/;
+function validateSnapshot(snapshot: CalculationSnapshot) {
+  const job = snapshot?.input?.job;
+  const fail = (): never => { throw new Error('Некоректні дані збереженого розрахунку.'); };
+  if (!job || !Array.isArray(job.plates) || !Array.isArray(snapshot.input.filaments)) fail();
+  if (job.plates.length > 100 || snapshot.input.filaments.length > 500) fail();
+  for (const plate of job.plates) {
+    if (!plate || !Number.isSafeInteger(plate.plateIndex) || typeof plate.plateName !== 'string' || typeof plate.selected !== 'boolean' || !Number.isSafeInteger(plate.repeatsCount) || plate.repeatsCount < 1 || !Number.isFinite(plate.predictionSeconds) || plate.predictionSeconds < 0 || !Number.isFinite(plate.totalWeightGrams) || plate.totalWeightGrams < 0 || !Array.isArray(plate.filaments)) fail();
+    for (const filament of plate.filaments) {
+      if (!filament || !Number.isSafeInteger(filament.trayId) || typeof filament.type !== 'string' || typeof filament.colorHex !== 'string' || !Number.isFinite(filament.weightGrams) || filament.weightGrams < 0) fail();
+    }
+  }
+  for (const filament of snapshot.input.filaments) {
+    if (!filament || !Number.isSafeInteger(filament.plateIndex) || !Number.isSafeInteger(filament.trayId) || typeof filament.key !== 'string' || typeof filament.plateName !== 'string' || typeof filament.typeFromFile !== 'string' || typeof filament.colorHex !== 'string' || typeof filament.weightGrams !== 'string' || !money.test(filament.weightGrams) || !['exact_preset', 'type_match', 'manual', 'unmatched'].includes(filament.matchMethod)) fail();
+    for (const key of ['pricePerKgUah', 'costUah', 'lengthMeters'] as const) {
+      if (filament[key] !== null && (typeof filament[key] !== 'string' || !money.test(filament[key]!))) fail();
+    }
+    if (filament.mappedMaterialId !== null && typeof filament.mappedMaterialId !== 'string') fail();
+    if (filament.mappedMaterialName !== undefined && typeof filament.mappedMaterialName !== 'string') fail();
+  }
+}
+function validateSettings(settings: PricingSettings) {
+  const allowed = [...Object.keys(INITIAL_PRICING_SETTINGS), 'folderAutoImportPath'];
+  if (Object.keys(settings).some((key) => !allowed.includes(key))) throw new Error('Невідомі поля налаштувань.');
+  const numeric = ['defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah'] as const;
+  if (numeric.some((key) => typeof settings[key] !== 'string' || !money.test(settings[key])) || (settings.electricityTariffUahPerKwh !== null && !money.test(settings.electricityTariffUahPerKwh))) throw new Error('Тарифи мають бути невід’ємними числами.');
+  if (!['markup', 'target_margin'].includes(settings.pricingMode) || !['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100'].includes(settings.roundingMode) || !['light', 'dark', 'system'].includes(settings.theme)) throw new Error('Некоректний режим налаштувань.');
+  if (Number(settings.defaultMarginPercent) >= 100 || typeof settings.timezone !== 'string' || settings.timezone.length > 100 || (settings.defaultPrinterId !== null && typeof settings.defaultPrinterId !== 'string') || !settings.filamentMappingPresets || typeof settings.filamentMappingPresets !== 'object' || Array.isArray(settings.filamentMappingPresets) || Object.values(settings.filamentMappingPresets).some((id) => typeof id !== 'string' || id.length > 180)) throw new Error('Некоректні налаштування майстерні.');
+}
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    ...(options.headers as Record<string, string>),
+function privateRepository<T extends { id: string; createdAt: string }>(name: string, key: string, initial: () => T[]) {
+  function itemsRef() { return collection(db(), `${userPath()}/${name}`); }
+  return {
+    async getAll(): Promise<T[]> {
+      if (authService.isDemoSession()) return readDemo(key, initial());
+      // shortcut: only the latest 200 calculations are loaded, add history pagination before this is insufficient.
+      const scope = itemsRef();
+      const items: T[] = [];
+      let cursor: QueryDocumentSnapshot | null = null;
+      for (;;) {
+        const constraints: QueryConstraint[] = [orderBy('createdAt', 'desc'), limit(200), ...(cursor ? [startAfter(cursor)] : [])];
+        const result: QuerySnapshot<DocumentData> = await getDocsFromServer(query(scope, ...constraints));
+        const page = result.docs.map((snapshot) => ({ ...snapshot.data(), id: snapshot.id }) as T);
+        if (name === 'calculations') page.forEach((item) => validateSnapshot(item as unknown as CalculationSnapshot));
+        items.push(...page);
+        if (name === 'calculations' || result.size < 200) return items;
+        cursor = result.docs.at(-1)!;
+      }
+    },
+    async getById(id: string): Promise<T | null> {
+      validId(id);
+      if (authService.isDemoSession()) return (await this.getAll()).find((item) => item.id === id) || null;
+      const result = await getDocFromServer(doc(itemsRef(), id));
+      const value = result.exists() ? { ...result.data(), id: result.id } as T : null;
+      if (value && name === 'calculations') validateSnapshot(value as unknown as CalculationSnapshot);
+      return value;
+    },
+    async create(input: Omit<T, 'id' | 'createdAt'>): Promise<T> {
+      const value = clean({ ...input, id: crypto.randomUUID(), createdAt: new Date().toISOString() }) as T;
+      if (name === 'calculations') validateSnapshot(value as unknown as CalculationSnapshot);
+      if (authService.isDemoSession()) { writeDemo(key, [value, ...await this.getAll()]); return value; }
+      await write(doc(itemsRef(), value.id), value);
+      return value;
+    },
+    async update(id: string, updates: Partial<T>): Promise<T> {
+      validId(id);
+      if (authService.isDemoSession()) {
+        const items = await this.getAll();
+        const original = items.find((item) => item.id === id);
+        if (!original) throw new Error('Запис не знайдено.');
+        const updated = clean({ ...original, ...updates, id, createdAt: original.createdAt }) as T;
+        writeDemo(key, items.map((item) => item.id === id ? updated : item));
+        return updated;
+      }
+      const ref = doc(itemsRef(), id);
+      return runTransaction(db(), async (transaction) => {
+        const original = await transaction.get(ref);
+        if (!original.exists()) throw new Error('Запис не знайдено.');
+        const updated = clean({ ...original.data(), ...updates, id, createdAt: original.data().createdAt }) as T;
+        transaction.set(ref, updated);
+        return updated;
+      });
+    },
+    async delete(id: string): Promise<void> {
+      validId(id);
+      if (authService.isDemoSession()) writeDemo(key, (await this.getAll()).filter((item) => item.id !== id));
+      else await write(doc(itemsRef(), id), null);
+    },
   };
-
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-  try {
-    const res = await fetch(url, {
-      ...options,
-      headers,
-      signal: options.signal || controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => 'Network error');
-      return {
-        data: null,
-        error: new Error(`HTTP ${res.status}: ${errText}`),
-        isServerAvailable: true,
-      };
-    }
-
-    const json = (await res.json().catch(() => null)) as T;
-    return { data: json, error: null, isServerAvailable: true };
-  } catch (err: any) {
-    clearTimeout(timeoutId);
-    // Server is unreachable, network error, or 404 in client-only SPA
-    return { data: null, error: err, isServerAvailable: false };
-  }
 }
 
-/**
- * Helper to safely read from LocalStorage
- */
-function readStorage<T>(key: string, defaultValue: T): T {
-  try {
-    const item = localStorage.getItem(key);
-    if (!item) return defaultValue;
-    return JSON.parse(item) as T;
-  } catch {
-    return defaultValue;
-  }
+function publicRepository<T extends { id: string }>(name: string, key: string, initial: readonly T[]) {
+  return {
+    async getAll(): Promise<T[]> {
+      if (authService.isDemoSession()) return readDemo(key, [...initial]);
+      if (!firestoreDb) return structuredClone([...initial]);
+      const overrides = await getDocsFromServer(query(collection(db(), name), limit(1000)));
+      if (overrides.size === 1000) throw new Error('Каталог досяг ліміту завантаження. Потрібна пагінація каталогу.');
+      const items = new Map(initial.map((item) => [item.id, structuredClone(item)]));
+      overrides.forEach((snapshot) => {
+        if (snapshot.data().deleted) items.delete(snapshot.id);
+        else items.set(snapshot.id, { ...snapshot.data(), id: snapshot.id } as T);
+      });
+      return [...items.values()];
+    },
+    async getById(id: string): Promise<T | null> { return (await this.getAll()).find((item) => item.id === id) || null; },
+    async create(input: Omit<T, 'id'>): Promise<T> {
+      const value = clean({ ...input, id: crypto.randomUUID() }) as T;
+      if (authService.isDemoSession()) writeDemo(key, [value, ...await this.getAll()]);
+      else await write(doc(db(), name, value.id), value);
+      return value;
+    },
+    async update(id: string, updates: Partial<T>): Promise<T> {
+      validId(id);
+      const original = await this.getById(id);
+      if (!original) throw new Error('Запис не знайдено.');
+      const value = clean({ ...original, ...updates, id }) as T;
+      if (authService.isDemoSession()) writeDemo(key, (await this.getAll()).map((item) => item.id === id ? value : item));
+      else await write(doc(db(), name, id), value);
+      return value;
+    },
+    async delete(id: string): Promise<void> {
+      validId(id);
+      if (authService.isDemoSession()) writeDemo(key, (await this.getAll()).filter((item) => item.id !== id));
+      else await write(doc(db(), name, id), { id, deleted: true });
+    },
+    async replace(items: T[]): Promise<void> {
+      if (authService.isDemoSession()) { writeDemo(key, items); return; }
+      const existing = await this.getAll();
+      const values = new Map(items.map((item) => [validId(item.id), clean(item)]));
+      const changes = items.filter((item) => JSON.stringify(existing.find((old) => old.id === item.id)) !== JSON.stringify(item));
+      const deleted = existing.filter((item) => !values.has(item.id));
+      if (changes.length + deleted.length > 450) throw new Error('За один раз можна змінити до 450 позицій каталогу.');
+      await runTransaction(db(), async (transaction) => {
+        const refs = [...changes, ...deleted].map((item) => doc(db(), name, item.id));
+        await Promise.all(refs.map((ref) => transaction.get(ref)));
+        changes.forEach((item) => transaction.set(doc(db(), name, item.id), clean(item)));
+        deleted.forEach((item) => transaction.set(doc(db(), name, item.id), { id: item.id, deleted: true }));
+      });
+    },
+    async reset(): Promise<void> {
+      if (authService.isDemoSession()) { localStorage.removeItem(key); return; }
+      const overrides = await getDocsFromServer(query(collection(db(), name), limit(451)));
+      if (overrides.size > 450) throw new Error('Забагато змін для одночасного скидання.');
+      await runTransaction(db(), async (transaction) => {
+        await Promise.all(overrides.docs.map((snapshot) => transaction.get(snapshot.ref)));
+        overrides.forEach((snapshot) => transaction.delete(snapshot.ref));
+      });
+    },
+  };
 }
 
-/**
- * Helper to safely write to LocalStorage
- */
-function writeStorage<T>(key: string, value: T): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (err) {
-    console.warn(`[API Client] Failed writing to storage (${key}):`, err);
-  }
-}
-
-// ============================================================================
-// 1. AUTH API MODULE
-// ============================================================================
-export const authApi = {
-  async getCurrentUser(): Promise<UserProfile | null> {
-    const { data, isServerAvailable } = await request<UserProfile>('auth/me');
-    if (isServerAvailable && data) return data;
-    return readStorage<UserProfile | null>(STORAGE_KEYS.AUTH_USER, INITIAL_USER_PROFILE);
-  },
-
-  async login(email: string, _password: string): Promise<UserProfile> {
-    const { data, isServerAvailable } = await request<UserProfile>('auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password: _password }),
-    });
-
-    if (isServerAvailable && data) {
-      writeStorage(STORAGE_KEYS.AUTH_USER, data);
-      localStorage.setItem(STORAGE_KEYS.IS_DEMO, 'false');
-      return data;
-    }
-
-    const fallbackUser: UserProfile = {
-      ...INITIAL_USER_PROFILE,
-      id: 'usr_' + Math.random().toString(36).substring(2, 9),
-      email: email.trim().toLowerCase(),
-      isDemoUser: false,
-    };
-    writeStorage(STORAGE_KEYS.AUTH_USER, fallbackUser);
-    localStorage.setItem(STORAGE_KEYS.IS_DEMO, 'false');
-    return fallbackUser;
-  },
-
-  async register(email: string, _password: string): Promise<UserProfile> {
-    const { data, isServerAvailable } = await request<UserProfile>('auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ email, password: _password }),
-    });
-
-    if (isServerAvailable && data) {
-      writeStorage(STORAGE_KEYS.AUTH_USER, data);
-      localStorage.setItem(STORAGE_KEYS.IS_DEMO, 'false');
-      return data;
-    }
-
-    const fallbackUser: UserProfile = {
-      id: 'usr_' + Math.random().toString(36).substring(2, 9),
-      email: email.trim().toLowerCase(),
-      fullName: email.split('@')[0],
-      workshopName: 'Моя 3D Майстерня',
-      createdAt: new Date().toISOString(),
-      isDemoUser: false,
-    };
-    writeStorage(STORAGE_KEYS.AUTH_USER, fallbackUser);
-    localStorage.setItem(STORAGE_KEYS.IS_DEMO, 'false');
-    return fallbackUser;
-  },
-
-  async logout(): Promise<void> {
-    await request('auth/logout', { method: 'POST' }).catch(() => {});
-    localStorage.removeItem(STORAGE_KEYS.AUTH_USER);
-    localStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
-    localStorage.setItem(STORAGE_KEYS.IS_DEMO, 'false');
-  },
-
-  async forgotPassword(email: string): Promise<void> {
-    await request('auth/forgot-password', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-    });
-  },
-
-  async resetPassword(password: string): Promise<void> {
-    await request('auth/reset-password', {
-      method: 'POST',
-      body: JSON.stringify({ password }),
-    });
-  },
-
-  isDemoSession(): boolean {
-    return localStorage.getItem(STORAGE_KEYS.IS_DEMO) === 'true';
-  },
-
-  async enableDemoSession(): Promise<UserProfile> {
-    writeStorage(STORAGE_KEYS.AUTH_USER, INITIAL_USER_PROFILE);
-    localStorage.setItem(STORAGE_KEYS.IS_DEMO, 'true');
-    return INITIAL_USER_PROFILE;
-  },
-};
-
-// ============================================================================
-// 2. FILAMENTS CATALOG API MODULE
-// ============================================================================
+const filamentCatalog = publicRepository<PublicFilamentItem>('filaments', STORAGE_KEYS.CATALOG_FILAMENTS, PUBLIC_FILAMENTS_CATALOG);
 export const filamentsApi = {
-  async getAll(): Promise<PublicFilamentItem[]> {
-    const { data, isServerAvailable } = await request<PublicFilamentItem[]>('filaments');
-    if (isServerAvailable && Array.isArray(data)) {
-      writeStorage(STORAGE_KEYS.CATALOG_FILAMENTS, data);
-      return data;
-    }
-    return readStorage<PublicFilamentItem[]>(STORAGE_KEYS.CATALOG_FILAMENTS, [...PUBLIC_FILAMENTS_CATALOG]);
-  },
-
-  async getById(id: string): Promise<PublicFilamentItem | null> {
-    const { data, isServerAvailable } = await request<PublicFilamentItem>(`filaments/${id}`);
-    if (isServerAvailable && data) return data;
-    const list = await this.getAll();
-    return list.find((item) => item.id === id) || null;
-  },
-
-  async create(item: Omit<PublicFilamentItem, 'id'>): Promise<PublicFilamentItem> {
-    const { data, isServerAvailable } = await request<PublicFilamentItem>('filaments', {
-      method: 'POST',
-      body: JSON.stringify(item),
-    });
-
-    if (isServerAvailable && data) {
-      const all = await this.getAll();
-      writeStorage(STORAGE_KEYS.CATALOG_FILAMENTS, [data, ...all]);
-      return data;
-    }
-
-    const list = await this.getAll();
-    const id = `fil-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    const newItem: PublicFilamentItem = { ...item, id };
-    const updated = [newItem, ...list];
-    writeStorage(STORAGE_KEYS.CATALOG_FILAMENTS, updated);
-    return newItem;
-  },
-
+  ...filamentCatalog,
   async update(id: string, updates: Partial<PublicFilamentItem>): Promise<PublicFilamentItem> {
-    const { data, isServerAvailable } = await request<PublicFilamentItem>(`filaments/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(updates),
+    if (updates.inStock === undefined) return filamentCatalog.update(id, updates);
+    const original = await filamentCatalog.getById(id);
+    if (!original) throw new Error('Філамент не знайдено.');
+    return filamentCatalog.update(id, {
+      ...updates,
+      stores: (updates.stores || original.stores).map((store) => ({ ...store, inStock: updates.inStock! })),
+      popularColors: (updates.popularColors || original.popularColors).map((color) => ({ ...color, ...(color.stores ? { stores: color.stores.map((store) => ({ ...store, inStock: updates.inStock! })) } : {}) })),
     });
-
-    if (isServerAvailable && data) {
-      const list = await this.getAll();
-      const updated = list.map((f) => (f.id === id ? data : f));
-      writeStorage(STORAGE_KEYS.CATALOG_FILAMENTS, updated);
-      return data;
-    }
-
-    const list = await this.getAll();
-    const index = list.findIndex((f) => f.id === id);
-    if (index === -1) throw new Error('Філамент не знайдено');
-    const updatedItem = { ...list[index], ...updates };
-    list[index] = updatedItem;
-    writeStorage(STORAGE_KEYS.CATALOG_FILAMENTS, list);
-    return updatedItem;
   },
-
-  async delete(id: string): Promise<void> {
-    await request(`filaments/${id}`, { method: 'DELETE' });
-    const list = await this.getAll();
-    const filtered = list.filter((f) => f.id !== id);
-    writeStorage(STORAGE_KEYS.CATALOG_FILAMENTS, filtered);
-  },
-
   async getLikedIds(): Promise<string[]> {
-    const { data, isServerAvailable } = await request<string[]>('filaments/likes');
-    if (isServerAvailable && Array.isArray(data)) {
-      writeStorage(STORAGE_KEYS.CATALOG_LIKES, data);
-      return data;
-    }
-    return readStorage<string[]>(STORAGE_KEYS.CATALOG_LIKES, []);
+    if (authService.isDemoSession()) return readDemo(STORAGE_KEYS.CATALOG_LIKES, []);
+    if (!firebaseAuth?.currentUser) return [];
+    const likes = await getDocsFromServer(query(collection(db(), `${userPath()}/likes`), limit(1000)));
+    return likes.docs.map((snapshot) => snapshot.id);
   },
-
   async toggleLike(id: string): Promise<string[]> {
-    const current = await this.getLikedIds();
-    const exists = current.includes(id);
-    const updated = exists ? current.filter((x) => x !== id) : [...current, id];
-
-    await request(`filaments/${id}/like`, {
-      method: 'POST',
-      body: JSON.stringify({ liked: !exists }),
-    }).catch(() => {});
-
-    writeStorage(STORAGE_KEYS.CATALOG_LIKES, updated);
-    return updated;
+    validId(id);
+    if (authService.isDemoSession()) {
+      const ids = await this.getLikedIds();
+      const updated = ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id];
+      writeDemo(STORAGE_KEYS.CATALOG_LIKES, updated);
+      return updated;
+    }
+    const ref = doc(db(), `${userPath()}/likes`, id);
+    await runTransaction(db(), async (transaction) => {
+      const current = await transaction.get(ref);
+      if (current.exists()) transaction.delete(ref);
+      else transaction.set(ref, { filamentId: id });
+    });
+    return this.getLikedIds();
   },
 };
-
-// ============================================================================
-// 3. MANUFACTURERS API MODULE
-// ============================================================================
-export const manufacturersApi = {
-  async getAll(): Promise<ManufacturerBrand[]> {
-    const { data, isServerAvailable } = await request<ManufacturerBrand[]>('manufacturers');
-    if (isServerAvailable && Array.isArray(data)) {
-      writeStorage(STORAGE_KEYS.CATALOG_MANUFACTURERS, data);
-      return data;
-    }
-    return readStorage<ManufacturerBrand[]>(STORAGE_KEYS.CATALOG_MANUFACTURERS, [...MANUFACTURERS_LIST]);
-  },
-
-  async getById(id: string): Promise<ManufacturerBrand | null> {
-    const list = await this.getAll();
-    return list.find((m) => m.id === id) || null;
-  },
-
-  async create(mfg: Omit<ManufacturerBrand, 'id'>): Promise<ManufacturerBrand> {
-    const { data, isServerAvailable } = await request<ManufacturerBrand>('manufacturers', {
-      method: 'POST',
-      body: JSON.stringify(mfg),
-    });
-
-    if (isServerAvailable && data) {
-      const list = await this.getAll();
-      writeStorage(STORAGE_KEYS.CATALOG_MANUFACTURERS, [data, ...list]);
-      return data;
-    }
-
-    const list = await this.getAll();
-    const id = `mfg-${mfg.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now()}`;
-    const newMfg: ManufacturerBrand = { ...mfg, id };
-    const updated = [newMfg, ...list];
-    writeStorage(STORAGE_KEYS.CATALOG_MANUFACTURERS, updated);
-    return newMfg;
-  },
-
-  async update(id: string, updates: Partial<ManufacturerBrand>): Promise<ManufacturerBrand> {
-    const { data, isServerAvailable } = await request<ManufacturerBrand>(`manufacturers/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(updates),
-    });
-
-    if (isServerAvailable && data) {
-      const list = await this.getAll();
-      const updated = list.map((m) => (m.id === id ? data : m));
-      writeStorage(STORAGE_KEYS.CATALOG_MANUFACTURERS, updated);
-      return data;
-    }
-
-    const list = await this.getAll();
-    const idx = list.findIndex((m) => m.id === id);
-    if (idx === -1) throw new Error('Виробника не знайдено');
-    const updatedMfg = { ...list[idx], ...updates };
-    list[idx] = updatedMfg;
-    writeStorage(STORAGE_KEYS.CATALOG_MANUFACTURERS, list);
-    return updatedMfg;
-  },
-
-  async delete(id: string): Promise<void> {
-    await request(`manufacturers/${id}`, { method: 'DELETE' });
-    const list = await this.getAll();
-    writeStorage(STORAGE_KEYS.CATALOG_MANUFACTURERS, list.filter((m) => m.id !== id));
-  },
-};
-
-// ============================================================================
-// 4. TEMPERATURE PROFILES API MODULE
-// ============================================================================
+export const manufacturersApi = publicRepository<ManufacturerBrand>('manufacturers', STORAGE_KEYS.CATALOG_MANUFACTURERS, MANUFACTURERS_LIST);
 export const temperatureProfilesApi = {
   async getAll(): Promise<Record<string, TemperatureProfile>> {
-    const { data, isServerAvailable } = await request<Record<string, TemperatureProfile>>('temperatures');
-    if (isServerAvailable && data) {
-      writeStorage(STORAGE_KEYS.CATALOG_TEMPERATURES, data);
-      return data;
-    }
-    return readStorage<Record<string, TemperatureProfile>>(
-      STORAGE_KEYS.CATALOG_TEMPERATURES,
-      STANDARD_TEMPERATURE_PROFILES
-    );
+    if (authService.isDemoSession()) return readDemo(STORAGE_KEYS.CATALOG_TEMPERATURES, STANDARD_TEMPERATURE_PROFILES);
+    if (!firestoreDb) return structuredClone(STANDARD_TEMPERATURE_PROFILES);
+    const overrides = await getDocsFromServer(query(collection(db(), 'temperatureProfiles'), limit(200)));
+    if (overrides.size === 200) throw new Error('Перевищено ліміт температурних профілів.');
+    const profiles = structuredClone(STANDARD_TEMPERATURE_PROFILES);
+    overrides.forEach((snapshot) => { if (snapshot.data().deleted) delete profiles[snapshot.id]; else profiles[snapshot.id] = snapshot.data() as TemperatureProfile; });
+    return profiles;
   },
-
   async update(type: string, profile: TemperatureProfile): Promise<Record<string, TemperatureProfile>> {
-    const current = await this.getAll();
-    const updated = { ...current, [type]: profile };
-    await request(`temperatures/${type}`, {
-      method: 'PUT',
-      body: JSON.stringify(profile),
-    }).catch(() => {});
-    writeStorage(STORAGE_KEYS.CATALOG_TEMPERATURES, updated);
+    validId(type);
+    const updated = { ...await this.getAll(), [type]: clean(profile) };
+    if (authService.isDemoSession()) writeDemo(STORAGE_KEYS.CATALOG_TEMPERATURES, updated);
+    else await write(doc(db(), 'temperatureProfiles', type), clean(profile));
     return updated;
   },
-
+  async delete(type: string): Promise<void> {
+    validId(type);
+    if (authService.isDemoSession()) { const profiles = await this.getAll(); delete profiles[type]; writeDemo(STORAGE_KEYS.CATALOG_TEMPERATURES, profiles); }
+    else await write(doc(db(), 'temperatureProfiles', type), { deleted: true });
+  },
   async reset(): Promise<Record<string, TemperatureProfile>> {
-    writeStorage(STORAGE_KEYS.CATALOG_TEMPERATURES, STANDARD_TEMPERATURE_PROFILES);
-    return STANDARD_TEMPERATURE_PROFILES;
-  },
-};
-
-// ============================================================================
-// 5. USER MATERIALS API MODULE
-// ============================================================================
-export const materialsApi = {
-  async getAll(): Promise<MaterialProfile[]> {
-    const { data, isServerAvailable } = await request<MaterialProfile[]>('materials');
-    if (isServerAvailable && Array.isArray(data)) {
-      writeStorage(STORAGE_KEYS.MATERIALS, data);
-      return data;
-    }
-    return readStorage<MaterialProfile[]>(STORAGE_KEYS.MATERIALS, INITIAL_MATERIALS);
-  },
-
-  async getById(id: string): Promise<MaterialProfile | null> {
-    const list = await this.getAll();
-    return list.find((m) => m.id === id) || null;
-  },
-
-  async create(material: Omit<MaterialProfile, 'id' | 'createdAt'>): Promise<MaterialProfile> {
-    const { data, isServerAvailable } = await request<MaterialProfile>('materials', {
-      method: 'POST',
-      body: JSON.stringify(material),
-    });
-
-    if (isServerAvailable && data) {
-      const list = await this.getAll();
-      writeStorage(STORAGE_KEYS.MATERIALS, [data, ...list]);
-      return data;
-    }
-
-    const list = await this.getAll();
-    const newMat: MaterialProfile = {
-      ...material,
-      id: 'mat_' + Math.random().toString(36).substring(2, 9),
-      createdAt: new Date().toISOString(),
-    };
-    list.unshift(newMat);
-    writeStorage(STORAGE_KEYS.MATERIALS, list);
-    return newMat;
-  },
-
-  async update(id: string, updates: Partial<MaterialProfile>): Promise<MaterialProfile> {
-    const { data, isServerAvailable } = await request<MaterialProfile>(`materials/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(updates),
-    });
-
-    if (isServerAvailable && data) {
-      const list = await this.getAll();
-      writeStorage(
-        STORAGE_KEYS.MATERIALS,
-        list.map((m) => (m.id === id ? data : m))
-      );
-      return data;
-    }
-
-    const list = await this.getAll();
-    const index = list.findIndex((m) => m.id === id);
-    if (index === -1) throw new Error('Матеріал не знайдено');
-    const updated = { ...list[index], ...updates };
-    list[index] = updated;
-    writeStorage(STORAGE_KEYS.MATERIALS, list);
-    return updated;
-  },
-
-  async duplicate(id: string): Promise<MaterialProfile> {
-    const list = await this.getAll();
-    const original = list.find((m) => m.id === id);
-    if (!original) throw new Error('Матеріал не знайдено');
-    const copy: MaterialProfile = {
-      ...original,
-      id: 'mat_' + Math.random().toString(36).substring(2, 9),
-      name: `${original.name} (копія)`,
-      createdAt: new Date().toISOString(),
-    };
-    list.unshift(copy);
-    writeStorage(STORAGE_KEYS.MATERIALS, list);
-    return copy;
-  },
-
-  async archive(id: string): Promise<void> {
-    await this.update(id, { isArchived: true });
-  },
-
-  async delete(id: string): Promise<void> {
-    await request(`materials/${id}`, { method: 'DELETE' }).catch(() => {});
-    const list = await this.getAll();
-    writeStorage(
-      STORAGE_KEYS.MATERIALS,
-      list.filter((m) => m.id !== id)
-    );
-  },
-};
-
-// ============================================================================
-// 6. PRINTERS API MODULE
-// ============================================================================
-export const printersApi = {
-  async getAll(): Promise<PrinterProfile[]> {
-    const { data, isServerAvailable } = await request<PrinterProfile[]>('printers');
-    if (isServerAvailable && Array.isArray(data)) {
-      writeStorage(STORAGE_KEYS.PRINTERS, data);
-      return data;
-    }
-    return readStorage<PrinterProfile[]>(STORAGE_KEYS.PRINTERS, INITIAL_PRINTERS);
-  },
-
-  async getById(id: string): Promise<PrinterProfile | null> {
-    const list = await this.getAll();
-    return list.find((p) => p.id === id) || null;
-  },
-
-  async create(printer: Omit<PrinterProfile, 'id' | 'createdAt'>): Promise<PrinterProfile> {
-    const { data, isServerAvailable } = await request<PrinterProfile>('printers', {
-      method: 'POST',
-      body: JSON.stringify(printer),
-    });
-
-    if (isServerAvailable && data) {
-      const list = await this.getAll();
-      writeStorage(STORAGE_KEYS.PRINTERS, [...list, data]);
-      return data;
-    }
-
-    const list = await this.getAll();
-    if (printer.isDefault) {
-      list.forEach((p) => (p.isDefault = false));
-    }
-    const newPrinter: PrinterProfile = {
-      ...printer,
-      id: 'prn_' + Math.random().toString(36).substring(2, 9),
-      createdAt: new Date().toISOString(),
-    };
-    list.push(newPrinter);
-    writeStorage(STORAGE_KEYS.PRINTERS, list);
-    return newPrinter;
-  },
-
-  async update(id: string, updates: Partial<PrinterProfile>): Promise<PrinterProfile> {
-    const { data, isServerAvailable } = await request<PrinterProfile>(`printers/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(updates),
-    });
-
-    if (isServerAvailable && data) {
-      const list = await this.getAll();
-      writeStorage(
-        STORAGE_KEYS.PRINTERS,
-        list.map((p) => (p.id === id ? data : p))
-      );
-      return data;
-    }
-
-    const list = await this.getAll();
-    const index = list.findIndex((p) => p.id === id);
-    if (index === -1) throw new Error('Принтер не знайдено');
-
-    if (updates.isDefault) {
-      list.forEach((p) => {
-        if (p.id !== id) p.isDefault = false;
+    if (authService.isDemoSession()) localStorage.removeItem(STORAGE_KEYS.CATALOG_TEMPERATURES);
+    else {
+      const snapshots = await getDocsFromServer(query(collection(db(), 'temperatureProfiles'), limit(200)));
+      await runTransaction(db(), async (transaction) => {
+        await Promise.all(snapshots.docs.map((snapshot) => transaction.get(snapshot.ref)));
+        snapshots.forEach((snapshot) => transaction.delete(snapshot.ref));
       });
     }
-
-    const updated = { ...list[index], ...updates };
-    list[index] = updated;
-    writeStorage(STORAGE_KEYS.PRINTERS, list);
-    return updated;
-  },
-
-  async delete(id: string): Promise<void> {
-    await request(`printers/${id}`, { method: 'DELETE' }).catch(() => {});
-    const list = await this.getAll();
-    writeStorage(
-      STORAGE_KEYS.PRINTERS,
-      list.filter((p) => p.id !== id)
-    );
-  },
-
-  async setDefault(id: string): Promise<void> {
-    await this.update(id, { isDefault: true });
+    return structuredClone(STANDARD_TEMPERATURE_PROFILES);
   },
 };
 
-// ============================================================================
-// 7. CALCULATIONS API MODULE
-// ============================================================================
-export const calculationsApi = {
-  async getAll(): Promise<CalculationSnapshot[]> {
-    const { data, isServerAvailable } = await request<CalculationSnapshot[]>('calculations');
-    if (isServerAvailable && Array.isArray(data)) {
-      writeStorage(STORAGE_KEYS.CALCULATIONS, data);
-      return data;
+export const catalogApi = {
+  async reset(): Promise<void> {
+    if (authService.isDemoSession()) {
+      [STORAGE_KEYS.CATALOG_FILAMENTS, STORAGE_KEYS.CATALOG_MANUFACTURERS, STORAGE_KEYS.CATALOG_TEMPERATURES].forEach((key) => localStorage.removeItem(key));
+      return;
     }
-    return readStorage<CalculationSnapshot[]>(
-      STORAGE_KEYS.CALCULATIONS,
-      getInitialCalculationSnapshots()
-    );
-  },
-
-  async getById(id: string): Promise<CalculationSnapshot | null> {
-    const { data, isServerAvailable } = await request<CalculationSnapshot>(`calculations/${id}`);
-    if (isServerAvailable && data) return data;
-    const list = await this.getAll();
-    return list.find((c) => c.id === id) || null;
-  },
-
-  async save(snapshot: Omit<CalculationSnapshot, 'id' | 'createdAt'>): Promise<CalculationSnapshot> {
-    const { data, isServerAvailable } = await request<CalculationSnapshot>('calculations', {
-      method: 'POST',
-      body: JSON.stringify(snapshot),
+    const groups = await Promise.all(['filaments', 'manufacturers', 'temperatureProfiles'].map((name) => getDocsFromServer(query(collection(db(), name), limit(name === 'temperatureProfiles' ? 200 : 1000)))));
+    const refs = groups.flatMap((group) => group.docs.map((snapshot) => snapshot.ref));
+    if (refs.length > 450) throw new Error('Забагато змін для одночасного скидання каталогу.');
+    await runTransaction(db(), async (transaction) => {
+      await Promise.all(refs.map((ref) => transaction.get(ref)));
+      refs.forEach((ref) => transaction.delete(ref));
     });
-
-    if (isServerAvailable && data) {
-      const list = await this.getAll();
-      writeStorage(STORAGE_KEYS.CALCULATIONS, [data, ...list]);
-      return data;
+  },
+  async renamePlasticType(original: string, name: string, family: PublicFilamentItem['family'], density: number, notes: string): Promise<void> {
+    validId(original); validId(name);
+    const [filaments, temperatures] = await Promise.all([filamentsApi.getAll(), temperatureProfilesApi.getAll()]);
+    if (original !== name && temperatures[name]) throw new Error('Тип з такою назвою вже існує.');
+    const changed = filaments.filter((item) => item.type.toUpperCase() === original.toUpperCase());
+    const profile = temperatures[original] ? { ...temperatures[original], plasticType: name, notes: notes || temperatures[original].notes } : null;
+    if (authService.isDemoSession()) {
+      writeDemo(STORAGE_KEYS.CATALOG_FILAMENTS, filaments.map((item) => changed.some((old) => old.id === item.id) ? { ...item, type: name, family, densityGPerCm3: density } : item));
+      if (profile) { delete temperatures[original]; temperatures[name] = profile; writeDemo(STORAGE_KEYS.CATALOG_TEMPERATURES, temperatures); }
+      return;
     }
-
-    const list = await this.getAll();
-    const newSnapshot: CalculationSnapshot = {
-      ...snapshot,
-      id: 'calc_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6),
-      createdAt: new Date().toISOString(),
-    };
-    list.unshift(newSnapshot);
-    writeStorage(STORAGE_KEYS.CALCULATIONS, list);
-    return newSnapshot;
-  },
-
-  async duplicate(id: string): Promise<CalculationSnapshot> {
-    const list = await this.getAll();
-    const original = list.find((c) => c.id === id);
-    if (!original) throw new Error('Розрахунок не знайдено');
-
-    const copy: CalculationSnapshot = {
-      ...original,
-      id: 'calc_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6),
-      title: `${original.title} (копія)`,
-      createdAt: new Date().toISOString(),
-    };
-    list.splice(list.indexOf(original) + 1, 0, copy);
-    writeStorage(STORAGE_KEYS.CALCULATIONS, list);
-    return copy;
-  },
-
-  async delete(id: string): Promise<void> {
-    await request(`calculations/${id}`, { method: 'DELETE' }).catch(() => {});
-    const list = await this.getAll();
-    writeStorage(
-      STORAGE_KEYS.CALCULATIONS,
-      list.filter((c) => c.id !== id)
-    );
-  },
-};
-
-// ============================================================================
-// 8. FILE ANALYSIS / 3MF PARSER API MODULE
-// ============================================================================
-export const fileAnalysisApi = {
-  async getDemoJob(): Promise<ParsedJob> {
-    const { data, isServerAvailable } = await request<ParsedJob>('analysis/demo');
-    if (isServerAvailable && data) return data;
-    return JSON.parse(JSON.stringify(DEMO_JOB_SECTION_9));
-  },
-
-  async loadPresetJob(presetKey: string): Promise<ParsedJob> {
-    const { data, isServerAvailable } = await request<ParsedJob>(`analysis/preset/${presetKey}`);
-    if (isServerAvailable && data) return data;
-    return JSON.parse(JSON.stringify(DEMO_JOB_SECTION_9));
-  },
-
-  async analyzeUploadedFile(file: File): Promise<ParsedJob> {
-    const formData = new FormData();
-    formData.append('file', file);
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/analysis/upload`, {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal,
+    if (changed.length > 448) throw new Error('За один раз можна перейменувати тип у 448 позиціях.');
+    const refs = changed.map((item) => doc(db(), 'filaments', item.id));
+    const oldRef = doc(db(), 'temperatureProfiles', original);
+    const newRef = doc(db(), 'temperatureProfiles', name);
+    await runTransaction(db(), async (transaction) => {
+      const stored = await Promise.all(refs.map((ref) => transaction.get(ref)));
+      const [oldProfile, newProfile] = await Promise.all([transaction.get(oldRef), transaction.get(newRef)]);
+      if (original !== name && newProfile.exists() && !newProfile.data().deleted) throw new Error('Тип з такою назвою вже існує.');
+      changed.forEach((item, index) => {
+        const current: DocumentData = stored[index].exists() ? stored[index].data()! : item;
+        if (!current.deleted) transaction.set(refs[index], clean({ ...current, id: item.id, type: name, family, densityGPerCm3: density }));
       });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        const parsed = await res.json();
-        return parsed as ParsedJob;
+      if (profile) {
+        const current = oldProfile.exists() && !oldProfile.data().deleted ? oldProfile.data() as TemperatureProfile : profile;
+        transaction.set(newRef, { ...current, plasticType: name, notes: notes || current.notes });
+        if (original !== name) transaction.set(oldRef, { deleted: true });
       }
-    } catch {
-      clearTimeout(timeoutId);
-    }
-
-    // Client fallback simulation
-    const fileName = file.name;
-    const is3mf = fileName.toLowerCase().endsWith('.3mf') || fileName.toLowerCase().includes('.gcode.3mf');
-
-    if (file.size > 50 * 1024 * 1024) {
-      return {
-        fileName,
-        fileSizeBytes: file.size,
-        slicerSource: 'Невідомо',
-        plates: [],
-        totalPredictionSeconds: 0,
-        totalWeightGrams: 0,
-        warnings: [],
-        parseStatus: 'file_limit_exceeded',
-        errorMessage: 'Розмір файлу перевищує ліміт (максимум 50 МБ).',
-      };
-    }
-
-    if (!is3mf) {
-      return {
-        fileName,
-        fileSizeBytes: file.size,
-        slicerSource: 'Невідомо',
-        plates: [],
-        totalPredictionSeconds: 0,
-        totalWeightGrams: 0,
-        warnings: [],
-        parseStatus: 'corrupted',
-        errorMessage: 'Непідтримуваний формат файлу. Очікується файл проекту Bambu Studio (.gcode.3mf).',
-      };
-    }
-
-    return {
-      fileName: file.name,
-      fileSizeBytes: file.size,
-      slicerSource: 'Bambu Studio / OrcaSlicer (клієнтський аналізатор)',
-      plates: [
-        {
-          plateIndex: 1,
-          plateName: 'Plate 1',
-          predictionSeconds: 7800,
-          totalWeightGrams: 98,
-          selected: true,
-          repeatsCount: 1,
-          filaments: [
-            {
-              trayId: 1,
-              type: 'PLA',
-              colorHex: '#0ea5e9',
-              colorName: 'Синій',
-              weightGrams: 98,
-            },
-          ],
-        },
-      ],
-      totalPredictionSeconds: 7800,
-      totalWeightGrams: 98,
-      warnings: [],
-      parseStatus: 'success',
-    };
+    });
   },
 };
 
-// ============================================================================
-// 9. SETTINGS API MODULE
-// ============================================================================
+const materialData = privateRepository<MaterialProfile>('materials', STORAGE_KEYS.MATERIALS, () => INITIAL_MATERIALS);
+export const materialsApi = {
+  ...materialData,
+  async duplicate(id: string): Promise<MaterialProfile> {
+    const identity = sessionIdentity();
+    const original = await this.getById(id);
+    requireSameSession(identity);
+    if (!original) throw new Error('Матеріал не знайдено.');
+    const { id: _id, createdAt: _createdAt, ...input } = original;
+    return this.create({ ...input, name: `${original.name} (копія)` });
+  },
+  async archive(id: string): Promise<void> {
+    const identity = sessionIdentity();
+    const original = await this.getById(id);
+    requireSameSession(identity);
+    if (!original) throw new Error('Матеріал не знайдено.');
+    await this.update(id, { isArchived: !original.isArchived });
+  },
+};
+
+const printerData = privateRepository<PrinterProfile>('printers', STORAGE_KEYS.PRINTERS, () => INITIAL_PRINTERS);
+async function savePrinter(printer: PrinterProfile, isNew: boolean): Promise<PrinterProfile> {
+  if (authService.isDemoSession()) {
+    const printers = await printerData.getAll();
+    const updated = printers.filter((item) => item.id !== printer.id).map((item) => printer.isDefault ? { ...item, isDefault: false } : item);
+    writeDemo(STORAGE_KEYS.PRINTERS, [...updated, printer]);
+    const settings = readDemo(STORAGE_KEYS.SETTINGS, INITIAL_PRICING_SETTINGS);
+    if (printer.isDefault || settings.defaultPrinterId === printer.id) writeDemo(STORAGE_KEYS.SETTINGS, { ...settings, defaultPrinterId: printer.isDefault ? printer.id : null });
+    return printer;
+  }
+  const scope = userPath();
+  const settingsRef = doc(db(), `${scope}/settings/pricing`);
+  const ref = doc(db(), `${scope}/printers`, printer.id);
+  return runTransaction(db(), async (transaction) => {
+    const [savedSettings, savedPrinter] = await Promise.all([transaction.get(settingsRef), transaction.get(ref)]);
+    if (!isNew && !savedPrinter.exists()) throw new Error('Принтер не знайдено.');
+    const settings = savedSettings.exists() ? savedSettings.data() as PricingSettings : { ...INITIAL_PRICING_SETTINGS, electricityTariffUahPerKwh: null, defaultPrinterId: null, filamentMappingPresets: {} };
+    const previous = settings.defaultPrinterId && settings.defaultPrinterId !== printer.id ? doc(db(), `${scope}/printers`, validId(settings.defaultPrinterId)) : null;
+    const previousPrinter = previous ? await transaction.get(previous) : null;
+    const value = clean({ ...savedPrinter.data(), ...printer, id: printer.id, createdAt: savedPrinter.data()?.createdAt || printer.createdAt });
+    if (printer.isDefault) {
+      if (previous && previousPrinter?.exists()) transaction.update(previous, { isDefault: false });
+      transaction.set(settingsRef, { ...settings, defaultPrinterId: printer.id });
+    } else if (settings.defaultPrinterId === printer.id) transaction.set(settingsRef, { ...settings, defaultPrinterId: null });
+    transaction.set(ref, value);
+    return value;
+  });
+}
+export const printersApi = {
+  ...printerData,
+  async create(input: Omit<PrinterProfile, 'id' | 'createdAt'>): Promise<PrinterProfile> { return savePrinter(clean({ ...input, id: crypto.randomUUID(), createdAt: new Date().toISOString() }), true); },
+  async update(id: string, updates: Partial<PrinterProfile>): Promise<PrinterProfile> {
+    const identity = sessionIdentity();
+    const original = await this.getById(id);
+    requireSameSession(identity);
+    if (!original) throw new Error('Принтер не знайдено.');
+    return savePrinter(clean({ ...original, ...updates, id, createdAt: original.createdAt }), false);
+  },
+  async delete(id: string): Promise<void> {
+    validId(id);
+    if (authService.isDemoSession()) {
+      await printerData.delete(id);
+      const settings = readDemo(STORAGE_KEYS.SETTINGS, INITIAL_PRICING_SETTINGS);
+      if (settings.defaultPrinterId === id) writeDemo(STORAGE_KEYS.SETTINGS, { ...settings, defaultPrinterId: null });
+      return;
+    }
+    const settingsRef = doc(db(), `${userPath()}/settings/pricing`);
+    const ref = doc(db(), `${userPath()}/printers`, id);
+    await runTransaction(db(), async (transaction) => {
+      const settings = await transaction.get(settingsRef);
+      if (settings.exists() && settings.data().defaultPrinterId === id) transaction.update(settingsRef, { defaultPrinterId: null });
+      transaction.delete(ref);
+    });
+  },
+  async setDefault(id: string): Promise<void> { await this.update(id, { isDefault: true }); },
+};
+
+const calculationData = privateRepository<CalculationSnapshot>('calculations', STORAGE_KEYS.CALCULATIONS, getInitialCalculationSnapshots);
+export const calculationsApi = {
+  ...calculationData,
+  async save(snapshot: Omit<CalculationSnapshot, 'id' | 'createdAt'>): Promise<CalculationSnapshot> { return this.create(snapshot); },
+  async duplicate(id: string): Promise<CalculationSnapshot> {
+    const identity = sessionIdentity();
+    const original = await this.getById(id);
+    requireSameSession(identity);
+    if (!original) throw new Error('Розрахунок не знайдено.');
+    const { id: _id, createdAt: _createdAt, ...input } = original;
+    return this.create({ ...input, title: `${original.title} (копія)` });
+  },
+};
+
 export const settingsApi = {
   async getSettings(): Promise<PricingSettings> {
-    const { data, isServerAvailable } = await request<PricingSettings>('settings');
-    if (isServerAvailable && data) {
-      writeStorage(STORAGE_KEYS.SETTINGS, data);
-      return data;
-    }
-    return readStorage<PricingSettings>(STORAGE_KEYS.SETTINGS, INITIAL_PRICING_SETTINGS);
+    if (authService.isDemoSession()) return readDemo(STORAGE_KEYS.SETTINGS, INITIAL_PRICING_SETTINGS);
+    const settings = await getDocFromServer(doc(db(), `${userPath()}/settings/pricing`));
+    return settings.exists() ? settings.data() as PricingSettings : { ...structuredClone(INITIAL_PRICING_SETTINGS), electricityTariffUahPerKwh: null, defaultPrinterId: null, filamentMappingPresets: {} };
   },
-
   async updateSettings(updates: Partial<PricingSettings>): Promise<PricingSettings> {
-    const { data, isServerAvailable } = await request<PricingSettings>('settings', {
-      method: 'PUT',
-      body: JSON.stringify(updates),
-    });
-
-    if (isServerAvailable && data) {
-      writeStorage(STORAGE_KEYS.SETTINGS, data);
-      return data;
-    }
-
+    const identity = sessionIdentity();
     const current = await this.getSettings();
-    const updated = { ...current, ...updates };
-    writeStorage(STORAGE_KEYS.SETTINGS, updated);
-    return updated;
+    requireSameSession(identity);
+    const next = clean({ ...current, ...updates });
+    validateSettings(next);
+    if (authService.isDemoSession()) {
+      const printers = await printerData.getAll();
+      if (next.defaultPrinterId && !printers.some((printer) => printer.id === next.defaultPrinterId)) throw new Error('Обраний принтер не існує.');
+      writeDemo(STORAGE_KEYS.SETTINGS, next);
+      if (Object.hasOwn(updates, 'defaultPrinterId')) writeDemo(STORAGE_KEYS.PRINTERS, printers.map((printer) => ({ ...printer, isDefault: printer.id === next.defaultPrinterId })));
+      return next;
+    }
+    const scope = userPath();
+    const settingsRef = doc(db(), `${scope}/settings/pricing`);
+    return runTransaction(db(), async (transaction) => {
+      const saved = await transaction.get(settingsRef);
+      const value = clean({ ...(saved.exists() ? saved.data() : current), ...updates }) as PricingSettings;
+      validateSettings(value);
+      const previousId = saved.data()?.defaultPrinterId;
+      const previousRef = previousId && previousId !== value.defaultPrinterId ? doc(db(), `${scope}/printers`, validId(previousId)) : null;
+      const nextRef = value.defaultPrinterId ? doc(db(), `${scope}/printers`, validId(value.defaultPrinterId)) : null;
+      const previous = previousRef ? await transaction.get(previousRef) : null;
+      const selected = nextRef ? await transaction.get(nextRef) : null;
+      if (nextRef && !selected?.exists()) throw new Error('Обраний принтер не існує.');
+      if (previousRef && previous?.exists()) transaction.update(previousRef, { isDefault: false });
+      if (nextRef) transaction.update(nextRef, { isDefault: true });
+      transaction.set(settingsRef, value);
+      return value;
+    });
   },
-
-  async exportConfigJson(): Promise<string> {
-    const settings = await this.getSettings();
-    return JSON.stringify(settings, null, 2);
-  },
-
+  async exportConfigJson(): Promise<string> { return JSON.stringify(await this.getSettings(), null, 2); },
   async importConfigJson(jsonString: string): Promise<PricingSettings> {
     const parsed = JSON.parse(jsonString);
-    const updated = { ...INITIAL_PRICING_SETTINGS, ...parsed };
-    await this.updateSettings(updated);
-    return updated;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Очікується JSON-об’єкт налаштувань.');
+    return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, ...parsed });
   },
-
-  async resetToDefaults(): Promise<PricingSettings> {
-    writeStorage(STORAGE_KEYS.SETTINGS, INITIAL_PRICING_SETTINGS);
-    return INITIAL_PRICING_SETTINGS;
-  },
+  async resetToDefaults(): Promise<PricingSettings> { return this.updateSettings({ ...INITIAL_PRICING_SETTINGS, defaultPrinterId: null, filamentMappingPresets: {} }); },
 };
-
-// ============================================================================
-// 10. PROFILE API MODULE
-// ============================================================================
 export const profileApi = {
   async getProfile(): Promise<UserProfile> {
-    const { data, isServerAvailable } = await request<UserProfile>('profile');
-    if (isServerAvailable && data) {
-      writeStorage(STORAGE_KEYS.PROFILE, data);
-      return data;
-    }
-    return readStorage<UserProfile>(STORAGE_KEYS.PROFILE, INITIAL_USER_PROFILE);
+    const profile = await authService.getCurrentUser();
+    if (!profile) throw new Error('Увійдіть в акаунт.');
+    return profile;
   },
-
   async updateProfile(updates: Partial<UserProfile>): Promise<UserProfile> {
-    const { data, isServerAvailable } = await request<UserProfile>('profile', {
-      method: 'PUT',
-      body: JSON.stringify(updates),
-    });
-
-    if (isServerAvailable && data) {
-      writeStorage(STORAGE_KEYS.PROFILE, data);
-      return data;
-    }
-
     const current = await this.getProfile();
-    const updated = { ...current, ...updates };
-    writeStorage(STORAGE_KEYS.PROFILE, updated);
-    return updated;
+    return authService.updateProfile({ fullName: updates.fullName ?? current.fullName, workshopName: updates.workshopName ?? current.workshopName });
   },
 };
 
-// ============================================================================
-// UNIFIED MASTER API OBJECT
-// ============================================================================
-export const api = {
-  auth: authApi,
-  filaments: filamentsApi,
-  manufacturers: manufacturersApi,
-  temperatures: temperatureProfilesApi,
-  materials: materialsApi,
-  printers: printersApi,
-  calculations: calculationsApi,
-  analysis: fileAnalysisApi,
-  settings: settingsApi,
-  profile: profileApi,
-  config: {
-    baseUrl: API_BASE_URL,
-    storageKeys: STORAGE_KEYS,
-  },
-};
-
+export const authApi = authService;
+export const fileAnalysisApi = fileAnalysisService;
+export const api = { auth: authApi, analysis: fileAnalysisApi, filaments: filamentsApi, manufacturers: manufacturersApi, temperatures: temperatureProfilesApi, catalog: catalogApi, materials: materialsApi, printers: printersApi, calculations: calculationsApi, settings: settingsApi, profile: profileApi, config: { storageKeys: STORAGE_KEYS } };
 export default api;

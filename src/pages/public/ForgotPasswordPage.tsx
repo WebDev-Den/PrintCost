@@ -4,23 +4,29 @@ import { Mail, ArrowLeft, CheckCircle } from 'lucide-react';
 import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
-import { useAuth } from '../../context/AuthContext.tsx';
+import { authService, authErrorMessage } from '../../services/authService.ts';
 
 export const ForgotPasswordPage: React.FC = () => {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email) return;
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
+    setError(null);
+    try {
+      await authService.forgotPassword(email);
       setSubmitted(true);
-    }, 500);
+    } catch (error) {
+      setError(authErrorMessage(error));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -63,6 +69,7 @@ export const ForgotPasswordPage: React.FC = () => {
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
+              {error && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{error}</p>}
               <Input
                 label="Ваша електронна пошта"
                 type="email"

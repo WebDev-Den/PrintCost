@@ -1,0 +1,158 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owner(uid) { return request.auth != null && request.auth.uid == uid; }
+    function admin() { return request.auth != null && request.auth.token.get('admin', false) == true; }
+    function text(value, max) { return value is string && value.size() <= max; }
+    function money(value) { return value is string && value.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'); }
+    function signedMoney(value) { return value is string && value.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?$'); }
+    function optionalMoney(value) { return value == null || value == '' || money(value); }
+    function identity(data, id) { return data.id == id && text(data.createdAt, 40) && data.createdAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*'); }
+    function immutable() { return request.resource.data.id == resource.data.id && request.resource.data.createdAt == resource.data.createdAt; }
+    function pricingMode(value) { return value in ['markup', 'target_margin']; }
+    function rounding(value) { return value in ['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100']; }
+    function validProfile(data, uid) {
+      return data.keys().hasAll(['email', 'fullName', 'workshopName', 'createdAt'])
+        && data.keys().hasOnly(['id', 'email', 'fullName', 'workshopName', 'createdAt', 'isDemoUser'])
+        && data.get('id', uid) == uid && data.get('isDemoUser', false) == false
+        && data.email == request.auth.token.email && text(data.email, 320)
+        && text(data.fullName, 200) && text(data.workshopName, 200) && text(data.createdAt, 40);
+    }
+    function validMaterial(data, id) {
+      return data.keys().hasAll(['id', 'name', 'type', 'family', 'brand', 'pricePerKgUah', 'isArchived', 'createdAt'])
+        && data.keys().hasOnly(['id', 'name', 'type', 'family', 'brand', 'colorHex', 'colorName', 'pricePerKgUah', 'spoolWeightGrams', 'spoolPriceUah', 'spoolsInStock', 'isArchived', 'createdAt', 'notes'])
+        && identity(data, id) && text(data.name, 200) && data.name.size() > 0 && text(data.type, 80) && text(data.family, 100) && text(data.brand, 200)
+        && optionalMoney(data.pricePerKgUah) && optionalMoney(data.get('spoolWeightGrams', null)) && optionalMoney(data.get('spoolPriceUah', null))
+        && text(data.get('colorName', ''), 100) && text(data.get('colorHex', ''), 20) && text(data.get('notes', ''), 5000)
+        && data.get('spoolsInStock', 0) is int && data.get('spoolsInStock', 0) >= 0 && data.get('spoolsInStock', 0) <= 1000000 && data.isArchived is bool;
+    }
+    function validPrinter(data, id) {
+      return data.keys().hasAll(['id', 'name', 'averagePowerWatts', 'costCalculationMode', 'machineHourlyRateUah', 'isDefault', 'createdAt'])
+        && data.keys().hasOnly(['id', 'name', 'modelId', 'averagePowerWatts', 'costCalculationMode', 'machineHourlyRateUah', 'printerPurchasePriceUah', 'lifespanHours', 'maintenanceHourlyRateUah', 'isDefault', 'createdAt'])
+        && identity(data, id) && text(data.name, 200) && data.name.size() > 0 && text(data.get('modelId', ''), 200)
+        && money(data.averagePowerWatts) && money(data.machineHourlyRateUah)
+        && optionalMoney(data.get('printerPurchasePriceUah', null)) && optionalMoney(data.get('lifespanHours', null)) && optionalMoney(data.get('maintenanceHourlyRateUah', null))
+        && data.costCalculationMode in ['manual_rate', 'depreciation'] && data.isDefault is bool;
+    }
+    function validSettings(data) {
+      return data.keys().hasAll(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone'])
+        && data.keys().hasOnly(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone', 'folderAutoImportPath'])
+        && optionalMoney(data.electricityTariffUahPerKwh) && pricingMode(data.pricingMode) && rounding(data.roundingMode)
+        && money(data.defaultMarkupPercent) && money(data.defaultMarginPercent) && float(data.defaultMarginPercent) < 100 && money(data.scrapReservePercent) && money(data.minOrderPriceUah)
+        && money(data.defaultOperatorFeeUah) && money(data.defaultPackagingFeeUah) && money(data.defaultPostProcessingFeeUah) && money(data.defaultOtherFeeUah)
+        && (data.defaultPrinterId == null || text(data.defaultPrinterId, 180))
+        && data.filamentMappingPresets is map && data.filamentMappingPresets.size() <= 100
+        && data.theme in ['light', 'dark', 'system'] && text(data.timezone, 100) && text(data.get('folderAutoImportPath', ''), 500);
+    }
+    function validJob(data) {
+      return data is map && data.keys().hasAll(['fileName', 'fileSizeBytes', 'slicerSource', 'plates', 'totalPredictionSeconds', 'totalWeightGrams', 'warnings', 'parseStatus'])
+        && data.keys().hasOnly(['fileName', 'fileSizeBytes', 'slicerSource', 'printerModelName', 'nozzleDiameterMm', 'plates', 'totalPredictionSeconds', 'totalWeightGrams', 'warnings', 'isDemoJob', 'parseStatus', 'errorMessage'])
+        && text(data.fileName, 500) && data.fileSizeBytes is number && data.fileSizeBytes >= 0 && text(data.slicerSource, 200)
+        && data.plates is list && data.plates.size() <= 100 && data.warnings is list && data.warnings.size() <= 100
+        && data.totalPredictionSeconds is number && data.totalPredictionSeconds >= 0 && data.totalWeightGrams is number && data.totalWeightGrams >= 0
+        && data.parseStatus in ['empty', 'reading', 'success', 'no_slicing_data', 'corrupted', 'file_limit_exceeded', 'error']
+        && data.get('isDemoJob', false) is bool && text(data.get('printerModelName', ''), 200) && text(data.get('nozzleDiameterMm', ''), 50) && text(data.get('errorMessage', ''), 2000);
+    }
+    function validInput(data) {
+      return data is map && data.keys().hasAll(['job', 'filaments', 'selectedPrinterId', 'averagePowerWatts', 'electricityTariffUahPerKwh', 'machineHourlyRateUah', 'operatorFeeUah', 'packagingFeeUah', 'postProcessingFeeUah', 'otherFeeUah', 'scrapReservePercent', 'pricingMode', 'markupPercent', 'marginPercent', 'minOrderPriceUah', 'roundingMode'])
+        && data.keys().hasOnly(['job', 'filaments', 'selectedPrinterId', 'averagePowerWatts', 'electricityTariffUahPerKwh', 'machineHourlyRateUah', 'operatorFeeUah', 'packagingFeeUah', 'postProcessingFeeUah', 'otherFeeUah', 'scrapReservePercent', 'pricingMode', 'markupPercent', 'marginPercent', 'minOrderPriceUah', 'roundingMode'])
+        && validJob(data.job) && data.filaments is list && data.filaments.size() <= 500
+        && (data.selectedPrinterId == null || text(data.selectedPrinterId, 180)) && money(data.averagePowerWatts) && optionalMoney(data.electricityTariffUahPerKwh)
+        && money(data.machineHourlyRateUah) && money(data.operatorFeeUah) && money(data.packagingFeeUah) && money(data.postProcessingFeeUah) && money(data.otherFeeUah)
+        && money(data.scrapReservePercent) && money(data.markupPercent) && money(data.marginPercent) && float(data.marginPercent) < 100 && money(data.minOrderPriceUah)
+        && pricingMode(data.pricingMode) && rounding(data.roundingMode);
+    }
+    function validResult(data) {
+      return data is map && data.keys().hasAll(['status', 'incompleteReasons', 'totalWeightGrams', 'totalDurationSeconds', 'totalEnergyKwh', 'materialsCostUah', 'electricityCostUah', 'machineCostUah', 'operatorCostUah', 'packagingCostUah', 'postProcessingCostUah', 'otherCostUah', 'baseCostSubtotalUah', 'scrapReserveUah', 'costPriceUah', 'preRoundingPriceUah', 'minOrderApplied', 'sellingPriceUah', 'profitUah', 'marginPercent', 'markupPercentActual'])
+        && data.keys().hasOnly(['status', 'incompleteReasons', 'totalWeightGrams', 'totalDurationSeconds', 'totalEnergyKwh', 'materialsCostUah', 'electricityCostUah', 'machineCostUah', 'operatorCostUah', 'packagingCostUah', 'postProcessingCostUah', 'otherCostUah', 'baseCostSubtotalUah', 'scrapReserveUah', 'costPriceUah', 'preRoundingPriceUah', 'minOrderApplied', 'sellingPriceUah', 'profitUah', 'marginPercent', 'markupPercentActual'])
+        && data.status in ['complete', 'incomplete'] && data.incompleteReasons is list && data.incompleteReasons.size() <= 100
+        && money(data.totalWeightGrams) && data.totalDurationSeconds is number && data.totalDurationSeconds >= 0 && money(data.totalEnergyKwh)
+        && money(data.materialsCostUah) && money(data.electricityCostUah) && money(data.machineCostUah) && money(data.operatorCostUah) && money(data.packagingCostUah)
+        && money(data.postProcessingCostUah) && money(data.otherCostUah) && money(data.baseCostSubtotalUah) && money(data.scrapReserveUah) && money(data.costPriceUah) && money(data.preRoundingPriceUah)
+        && data.minOrderApplied is bool && money(data.sellingPriceUah) && signedMoney(data.profitUah) && signedMoney(data.marginPercent) && signedMoney(data.markupPercentActual);
+    }
+    function validCalculation(data, id) {
+      return data.keys().hasAll(['id', 'title', 'createdAt', 'status', 'input', 'result', 'fileName'])
+        && data.keys().hasOnly(['id', 'title', 'createdAt', 'status', 'input', 'result', 'fileName', 'clientName', 'notes'])
+        && identity(data, id) && text(data.title, 300) && text(data.fileName, 500) && text(data.get('clientName', ''), 200) && text(data.get('notes', ''), 5000)
+        && data.status in ['complete', 'incomplete'] && validInput(data.input) && validResult(data.result) && data.status == data.result.status;
+    }
+    function tombstone(data, id) { return data.keys().hasOnly(['id', 'deleted']) && data.id == id && data.deleted == true; }
+    function validFilament(data, id) {
+      return tombstone(data, id) || (data.keys().hasAll(['id', 'name', 'brand', 'manufacturerId', 'type', 'family', 'approxPricePerKgUah', 'spoolWeightGrams', 'diameterMm', 'inStock', 'densityGPerCm3', 'description', 'primaryColorTone', 'popularColors', 'stores'])
+        && data.keys().hasOnly(['id', 'name', 'brand', 'manufacturerId', 'type', 'family', 'approxPricePerKgUah', 'spoolWeightGrams', 'diameterMm', 'inStock', 'stockStatusLabel', 'printTempNozzle', 'printTempBed', 'chamberTemp', 'coolingFan', 'recommendedSpeedMmS', 'densityGPerCm3', 'description', 'badge', 'packagingType', 'primaryColorTone', 'popularColors', 'stores'])
+        && data.id == id && text(data.name, 300) && text(data.brand, 200) && text(data.manufacturerId, 180) && text(data.type, 80)
+        && data.family in ['Стандартні', 'Інженерні', 'Гнучкі', 'Композитні', 'Підтримки']
+        && data.approxPricePerKgUah is number && data.approxPricePerKgUah >= 0 && data.spoolWeightGrams is number && data.spoolWeightGrams > 0
+        && data.diameterMm is number && data.diameterMm > 0 && data.inStock is bool && data.densityGPerCm3 is number && data.densityGPerCm3 > 0
+        && text(data.description, 10000) && data.primaryColorTone in ['black', 'white', 'grey', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'multicolor', 'special']
+        && data.get('packagingType', 'spool') in ['spool', 'refill'] && data.popularColors is list && data.popularColors.size() <= 200 && data.stores is list && data.stores.size() <= 100);
+    }
+    function validManufacturer(data, id) {
+      return tombstone(data, id) || (data.keys().hasAll(['id', 'name', 'country', 'website', 'logoText', 'logoBg', 'logoTextColor', 'description'])
+        && data.keys().hasOnly(['id', 'name', 'country', 'website', 'logoText', 'logoBg', 'logoTextColor', 'description'])
+        && data.id == id && text(data.name, 200) && text(data.country, 200) && text(data.website, 1000) && data.website.matches('^https?://.*')
+        && text(data.logoText, 50) && text(data.logoBg, 100) && text(data.logoTextColor, 100) && text(data.description, 10000));
+    }
+    function validTemperature(data) {
+      return (data.keys().hasOnly(['deleted']) && data.deleted == true) || (data.keys().hasAll(['plasticType', 'nozzleRange', 'bedRange', 'chamberRange', 'fanSpeed', 'notes', 'enclosureRequired', 'dryingTempTime'])
+        && data.keys().hasOnly(['plasticType', 'nozzleRange', 'bedRange', 'chamberRange', 'fanSpeed', 'notes', 'enclosureRequired', 'dryingTempTime'])
+        && text(data.plasticType, 200) && text(data.nozzleRange, 200) && text(data.bedRange, 200) && text(data.chamberRange, 300) && text(data.fanSpeed, 300)
+        && text(data.notes, 10000) && data.enclosureRequired is bool && text(data.dryingTempTime, 300));
+    }
+    match /users/{uid} {
+      allow get: if owner(uid);
+      allow create: if owner(uid) && validProfile(request.resource.data, uid);
+      allow update: if owner(uid) && validProfile(request.resource.data, uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'workshopName']);
+      match /materials/{id} {
+        allow get: if owner(uid);
+        allow list: if owner(uid) && request.query.limit <= 200;
+        allow create: if owner(uid) && validMaterial(request.resource.data, id);
+        allow update: if owner(uid) && immutable() && validMaterial(request.resource.data, id);
+        allow delete: if owner(uid);
+      }
+      match /printers/{id} {
+        allow get: if owner(uid);
+        allow list: if owner(uid) && request.query.limit <= 200;
+        allow create: if owner(uid) && validPrinter(request.resource.data, id);
+        allow update: if owner(uid) && immutable() && validPrinter(request.resource.data, id);
+        allow delete: if owner(uid);
+      }
+      match /calculations/{id} {
+        allow get: if owner(uid);
+        allow list: if owner(uid) && request.query.limit <= 200;
+        allow create: if owner(uid) && validCalculation(request.resource.data, id);
+        allow update: if owner(uid) && immutable() && validCalculation(request.resource.data, id);
+        allow delete: if owner(uid);
+      }
+      match /settings/pricing {
+        allow read: if owner(uid);
+        allow create, update: if owner(uid) && validSettings(request.resource.data);
+      }
+      match /likes/{id} {
+        allow get: if owner(uid);
+        allow list: if owner(uid) && request.query.limit <= 1000;
+        allow create: if owner(uid) && request.resource.data.keys().hasOnly(['filamentId']) && request.resource.data.filamentId == id;
+        allow delete: if owner(uid);
+      }
+    }
+    match /filaments/{id} {
+      allow get: if true;
+      allow list: if request.query.limit <= 1000;
+      allow create, update: if admin() && validFilament(request.resource.data, id);
+      allow delete: if admin();
+    }
+    match /manufacturers/{id} {
+      allow get: if true;
+      allow list: if request.query.limit <= 1000;
+      allow create, update: if admin() && validManufacturer(request.resource.data, id);
+      allow delete: if admin();
+    }
+    match /temperatureProfiles/{type} {
+      allow get: if true;
+      allow list: if request.query.limit <= 200;
+      allow create, update: if admin() && validTemperature(request.resource.data);
+      allow delete: if admin();
+    }
+  }
+}

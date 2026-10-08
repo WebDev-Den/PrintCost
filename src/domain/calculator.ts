@@ -1,5 +1,6 @@
 import { Decimal } from 'decimal.js';
 import type { CalculationInput, CalculationResult, RoundingMode } from './types.ts';
+import { isValidDecimalString, normalizeDecimalInput } from './formatters.ts';
 
 /**
  * Pure domain calculation engine for PrintCost.
@@ -7,9 +8,19 @@ import type { CalculationInput, CalculationResult, RoundingMode } from './types.
  */
 export function calculatePrintCost(input: CalculationInput): CalculationResult {
   const incompleteReasons: string[] = [];
+  const readDecimal = (value: string | null | undefined, label: string, optional = false): Decimal => {
+    const normalized = normalizeDecimalInput(value || (optional ? '0' : ''));
+    if (!isValidDecimalString(normalized)) {
+      incompleteReasons.push(`${label}: введіть невід’ємне число`);
+      return new Decimal(0);
+    }
+    return new Decimal(normalized);
+  };
+  if (input.job.parseStatus !== 'success') incompleteReasons.push('Завантажте файл із даними нарізки');
 
   // 1. Calculate duration and validate selected plates
   const selectedPlates = input.job.plates.filter((p) => p.selected);
+  if (new Set(selectedPlates.map((p) => p.plateIndex)).size !== selectedPlates.length) incompleteReasons.push('Індекси пластин мають бути унікальними');
   if (selectedPlates.length === 0) {
     incompleteReasons.push('Не вибрано жодної пластини для розрахунку');
   }
@@ -19,12 +30,18 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
 
   // Map of plate index to repeat count
   const plateRepeats = new Map<number, number>();
-  for (const plate of input.job.plates) {
-    if (plate.selected) {
-      const repeats = Math.max(1, plate.repeatsCount || 1);
+  for (const plate of selectedPlates) {
+      const repeats = Number.isSafeInteger(plate.repeatsCount) && plate.repeatsCount > 0 ? plate.repeatsCount : 1;
+      if (repeats !== plate.repeatsCount) incompleteReasons.push(`Пластина ${plate.plateName}: кількість повторів має бути цілим числом від 1`);
       plateRepeats.set(plate.plateIndex, repeats);
-      totalDurationSeconds += plate.predictionSeconds * repeats;
-    }
+      if (!Number.isFinite(plate.predictionSeconds) || plate.predictionSeconds <= 0 || !Number.isSafeInteger(Math.ceil(plate.predictionSeconds * repeats))) {
+        incompleteReasons.push(`Пластина ${plate.plateName}: немає коректного часу друку`);
+      } else totalDurationSeconds += plate.predictionSeconds * repeats;
+      const rows = input.filaments.filter((f) => f.plateIndex === plate.plateIndex);
+      const weight = rows.reduce((sum, f) => sum + (isValidDecimalString(f.weightGrams) ? Number(normalizeDecimalInput(f.weightGrams)) : 0), 0);
+      if (!plate.filaments.length || rows.length !== plate.filaments.length || new Set(rows.map((f) => f.trayId)).size !== rows.length || plate.filaments.some((f) => !rows.some((row) => row.trayId === f.trayId)) || !Number.isFinite(plate.totalWeightGrams) || plate.totalWeightGrams <= 0 || Math.abs(weight - plate.totalWeightGrams) > 0.1) {
+        incompleteReasons.push(`Пластина ${plate.plateName}: неповні дані витрат матеріалів`);
+      }
   }
 
   // 2. Materials Cost
@@ -34,13 +51,13 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
     const repeats = plateRepeats.get(f.plateIndex);
     if (!repeats) continue; // Plate is not selected
 
-    const weightDec = new Decimal(f.weightGrams || '0').mul(repeats);
+    const weightDec = readDecimal(f.weightGrams, `Маса ${f.typeFromFile}`).mul(repeats);
     totalWeightGramsDec = totalWeightGramsDec.plus(weightDec);
 
-    if (!f.pricePerKgUah || new Decimal(f.pricePerKgUah).isNaN() || new Decimal(f.pricePerKgUah).lte(0)) {
+    const pricePerKg = readDecimal(f.pricePerKgUah, `Ціна ${f.typeFromFile}`);
+    if (pricePerKg.lte(0)) {
       incompleteReasons.push(`Не задано ціну для матеріалу "${f.typeFromFile}" (Пластина: ${f.plateName})`);
     } else {
-      const pricePerKg = new Decimal(f.pricePerKgUah);
       // (weight in grams / 1000) * pricePerKg
       const itemCost = weightDec.div(1000).mul(pricePerKg);
       materialsCostDec = materialsCostDec.plus(itemCost);
@@ -49,36 +66,22 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
 
   // 3. Electricity calculation
   const durationHoursDec = new Decimal(totalDurationSeconds).div(3600);
-  const powerWattsDec = new Decimal(input.averagePowerWatts || '0');
+  const powerWattsDec = readDecimal(input.averagePowerWatts, 'Потужність принтера');
   const powerKwDec = powerWattsDec.div(1000);
   const totalEnergyKwhDec = durationHoursDec.mul(powerKwDec);
 
-  let electricityCostDec = new Decimal(0);
-  if (
-    !input.electricityTariffUahPerKwh ||
-    new Decimal(input.electricityTariffUahPerKwh).isNaN() ||
-    new Decimal(input.electricityTariffUahPerKwh).lte(0)
-  ) {
-    incompleteReasons.push('Не задано тариф на електроенергію (грн/кВт·год)');
-  } else {
-    const tariffDec = new Decimal(input.electricityTariffUahPerKwh);
-    electricityCostDec = totalEnergyKwhDec.mul(tariffDec);
-  }
+  const tariffDec = readDecimal(input.electricityTariffUahPerKwh, 'Тариф на електроенергію');
+  const electricityCostDec = totalEnergyKwhDec.mul(tariffDec);
 
   // 4. Machine time cost
-  let machineCostDec = new Decimal(0);
-  if (!input.machineHourlyRateUah || new Decimal(input.machineHourlyRateUah).isNaN()) {
-    incompleteReasons.push('Не задано машинну ставку принтера (грн/год)');
-  } else {
-    const machineHourlyRateDec = new Decimal(input.machineHourlyRateUah);
-    machineCostDec = durationHoursDec.mul(machineHourlyRateDec);
-  }
+  const machineHourlyRateDec = readDecimal(input.machineHourlyRateUah, 'Машинна ставка');
+  const machineCostDec = durationHoursDec.mul(machineHourlyRateDec);
 
   // 5. Additional fixed costs (applied ONCE per order)
-  const operatorCostDec = new Decimal(input.operatorFeeUah || '0');
-  const packagingCostDec = new Decimal(input.packagingFeeUah || '0');
-  const postProcessingCostDec = new Decimal(input.postProcessingFeeUah || '0');
-  const otherCostDec = new Decimal(input.otherFeeUah || '0');
+  const operatorCostDec = readDecimal(input.operatorFeeUah, 'Робота оператора', true);
+  const packagingCostDec = readDecimal(input.packagingFeeUah, 'Пакування', true);
+  const postProcessingCostDec = readDecimal(input.postProcessingFeeUah, 'Постобробка', true);
+  const otherCostDec = readDecimal(input.otherFeeUah, 'Інші витрати', true);
 
   // Base cost subtotal
   const baseCostSubtotalDec = materialsCostDec
@@ -90,7 +93,7 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
     .plus(otherCostDec);
 
   // 6. Scrap & contingency reserve
-  const reservePercentDec = new Decimal(input.scrapReservePercent || '0');
+  const reservePercentDec = readDecimal(input.scrapReservePercent, 'Резерв', true);
   const scrapReserveDec = baseCostSubtotalDec.mul(reservePercentDec.div(100));
 
   // Total cost price (собівартість)
@@ -99,25 +102,27 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
   // 7. Pricing method
   let preRoundingPriceDec = new Decimal(0);
   const isTargetMargin = input.pricingMode === 'target_margin';
+  if (!['target_margin', 'markup'].includes(input.pricingMode)) incompleteReasons.push('Невідомий спосіб ціноутворення');
 
   if (isTargetMargin) {
-    const marginPercentDec = new Decimal(input.marginPercent || '0');
+    const marginPercentDec = readDecimal(input.marginPercent, 'Маржа', true);
     if (marginPercentDec.gte(100)) {
       incompleteReasons.push('Цільова маржа не може дорівнювати або перевищувати 100%');
     } else if (marginPercentDec.lt(0)) {
       incompleteReasons.push('Цільова маржа не може бути від’ємною');
     } else {
       const divisor = new Decimal(1).minus(marginPercentDec.div(100));
-      preRoundingPriceDec = costPriceDec.div(divisor);
+      if (divisor.lte(0)) incompleteReasons.push('Маржа надто близька до 100%');
+      else preRoundingPriceDec = costPriceDec.div(divisor);
     }
   } else {
     // Markup mode
-    const markupPercentDec = new Decimal(input.markupPercent || '0');
+    const markupPercentDec = readDecimal(input.markupPercent, 'Націнка', true);
     preRoundingPriceDec = costPriceDec.mul(new Decimal(1).plus(markupPercentDec.div(100)));
   }
 
   // 8. Minimum order
-  const minOrderPriceDec = new Decimal(input.minOrderPriceUah || '0');
+  const minOrderPriceDec = readDecimal(input.minOrderPriceUah, 'Мінімальна ціна', true);
   let minOrderApplied = false;
   let priceBeforeRounding = preRoundingPriceDec;
 
@@ -127,7 +132,13 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
   }
 
   // 9. Rounding
-  const finalPriceDec = applyRounding(priceBeforeRounding, input.roundingMode);
+  let finalPriceDec = applyRounding(priceBeforeRounding, input.roundingMode);
+  if (!Number.isFinite(finalPriceDec.toNumber())) {
+    incompleteReasons.push('Ціна перевищує допустимий діапазон');
+    finalPriceDec = new Decimal(0);
+  }
+  if (!['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100'].includes(input.roundingMode)) incompleteReasons.push('Невідоме правило округлення');
+  if (!Number.isSafeInteger(Math.ceil(totalDurationSeconds))) incompleteReasons.push('Завелика сумарна тривалість друку');
 
   // 10. Profit & Margin calculation
   const profitDec = finalPriceDec.minus(costPriceDec);

@@ -32,8 +32,10 @@ export const PrinterModal: React.FC<PrinterModalProps> = ({
 
   const [isDefault, setIsDefault] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
+    setSaveError(null);
     if (initialPrinter) {
       setName(initialPrinter.name);
       setModelId(initialPrinter.modelId || '');
@@ -73,6 +75,12 @@ export const PrinterModal: React.FC<PrinterModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    if (isSubmitting) return;
+    setSaveError(null);
+    if (costMode === 'depreciation' && (!Number.isFinite(Number(lifespanHours)) || Number(lifespanHours) <= 0)) {
+      setSaveError('Ресурс принтера для амортизації має бути більшим за 0 годин.');
+      return;
+    }
 
     setIsSubmitting(true);
     try {
@@ -91,6 +99,8 @@ export const PrinterModal: React.FC<PrinterModalProps> = ({
         isDefault,
       });
       onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Не вдалося зберегти принтер. Перевірте з’єднання й повторіть спробу.');
     } finally {
       setIsSubmitting(false);
     }
@@ -99,7 +109,7 @@ export const PrinterModal: React.FC<PrinterModalProps> = ({
   return (
     <Modal
       isOpen={isOpen}
-      onClose={onClose}
+      onClose={() => { if (!isSubmitting) onClose(); }}
       title={initialPrinter ? 'Редагувати принтер' : 'Додати 3D-принтер'}
       description="Параметри потужності та машинного часу для калькулятора."
       maxWidth="lg"
@@ -111,7 +121,8 @@ export const PrinterModal: React.FC<PrinterModalProps> = ({
           <Button
             variant="primary"
             size="sm"
-            onClick={handleSubmit}
+            type="submit"
+            form="printer-profile-form"
             isLoading={isSubmitting}
             disabled={!name.trim()}
           >
@@ -120,7 +131,8 @@ export const PrinterModal: React.FC<PrinterModalProps> = ({
         </>
       }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form id="printer-profile-form" onSubmit={handleSubmit} className="space-y-4">
+        {saveError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{saveError}</p>}
         <Input
           label="Назва принтера в майстерні"
           placeholder="напр., Bambu Lab P1S #1 (AMS)"

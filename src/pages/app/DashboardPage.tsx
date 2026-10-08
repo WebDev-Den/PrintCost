@@ -59,7 +59,7 @@ export const DashboardPage: React.FC = () => {
   }, [materials]);
 
   // Check incomplete setup items
-  const missingElectricity = !settings.electricityTariffUahPerKwh || parseFloat(settings.electricityTariffUahPerKwh) <= 0;
+  const missingElectricity = settings.electricityTariffUahPerKwh === null || settings.electricityTariffUahPerKwh === '';
   const unpricedMaterialsCount = materials.filter((m) => !m.isArchived && (!m.pricePerKgUah || parseFloat(m.pricePerKgUah) <= 0)).length;
   const hasNoPrinters = printers.length === 0;
 
@@ -128,7 +128,7 @@ export const DashboardPage: React.FC = () => {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800">
           <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs">
-            <span>Збережені розрахунки</span>
+            <span>Останні 200 розрахунків</span>
             <History className="w-4 h-4 text-emerald-600" />
           </div>
           <p className="text-2xl font-bold font-mono tabular-nums text-neutral-900 dark:text-white mt-2">

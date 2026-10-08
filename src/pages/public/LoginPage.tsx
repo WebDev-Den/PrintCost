@@ -1,17 +1,15 @@
 import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Eye, EyeOff, Lock, Mail, ArrowRight, Sparkles } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, Sparkles } from 'lucide-react';
 import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
-
-// Google auth feature flag (hidden or enabled per configuration)
-const FEATURE_FLAG_GOOGLE_AUTH = false;
+import { authErrorMessage } from '../../services/authService.ts';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { login, enableDemoSession } = useAuth();
+  const { login, enableDemoSession, authError } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -36,18 +34,21 @@ export const LoginPage: React.FC = () => {
     try {
       await login(email, password);
       navigate('/app/dashboard');
-    } catch {
-      setError('Невірний логін або пароль');
+    } catch (error) {
+      setError(authErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleDemoLogin = async () => {
+    setError(null);
     setIsSubmitting(true);
     try {
       await enableDemoSession();
       navigate('/app/dashboard');
+    } catch (error) {
+      setError(authErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
@@ -98,9 +99,9 @@ export const LoginPage: React.FC = () => {
             </div>
           </div>
 
-          {error && (
-            <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300 font-medium">
-              {error}
+          {(error || authError) && (
+            <div role="alert" className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300 font-medium">
+              {error || authError}
             </div>
           )}
 
@@ -163,18 +164,6 @@ export const LoginPage: React.FC = () => {
               Увійти в кабінет
             </Button>
 
-            {/* Optional Google Auth behind feature flag */}
-            {FEATURE_FLAG_GOOGLE_AUTH && (
-              <Button
-                type="button"
-                variant="outline"
-                size="md"
-                className="w-full"
-                onClick={() => setError('Google OAuth доступний для корпоративного підключення')}
-              >
-                Увійти через Google
-              </Button>
-            )}
           </form>
 
           <div className="text-center text-xs text-neutral-500 dark:text-neutral-400 pt-2 border-t border-neutral-200 dark:border-neutral-800">

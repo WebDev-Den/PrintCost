@@ -43,7 +43,10 @@ import {
   buildConcreteFilamentSkus,
 } from '../../domain/filamentsDirectory.ts';
 import { catalogAdminRepository } from '../../services/catalogAdminRepository.ts';
-import { api, STORAGE_KEYS } from '../../services/api.ts';
+import { STORAGE_KEYS } from '../../services/api.ts';
+import { useAuth } from '../../context/AuthContext.tsx';
+import { firebaseConfigured } from '../../services/firebaseClient.ts';
+import { authErrorMessage } from '../../services/authService.ts';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import { formatUah } from '../../domain/formatters.ts';
 import { FilamentDirectoryCard } from '../../components/filaments/FilamentDirectoryCard.tsx';
@@ -52,11 +55,13 @@ import { FilamentDetailsModal } from '../../components/filaments/FilamentDetails
 export const FilamentsDirectoryPage: React.FC = () => {
   const navigate = useNavigate();
   const { addMaterial } = useAppData();
+  const { user, isDemoSession } = useAuth();
+  const [catalogError, setCatalogError] = useState<string | null>(null);
 
   // Load dynamic data from catalog repository (allowing admin updates to reflect here)
   const [filaments, setFilaments] = useState<PublicFilamentItem[]>([]);
   const [manufacturers, setManufacturers] = useState<ManufacturerBrand[]>([]);
-  const [tempProfiles, setTempProfiles] = useState<Record<string, any>>({});
+  const [tempProfiles, setTempProfiles] = useState<Record<string, TemperatureProfile>>({});
   const [likedIds, setLikedIds] = useState<string[]>([]);
 
   // Detailed Product Modal Popup State
@@ -128,25 +133,38 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
   // Refresh data on mount
   useEffect(() => {
-    // Load from repository / api
-    setFilaments(catalogAdminRepository.getFilaments());
-    setManufacturers(catalogAdminRepository.getManufacturers());
-    setTempProfiles(catalogAdminRepository.getTemperatureProfiles());
-    setLikedIds(catalogAdminRepository.getLikedFilamentIds());
-
-    // Background sync via api
-    api.filaments.getAll().then((data) => {
-      if (data && data.length > 0) setFilaments(data);
-    }).catch(() => {});
-    api.manufacturers.getAll().then((data) => {
-      if (data && data.length > 0) setManufacturers(data);
-    }).catch(() => {});
-  }, []);
+    let active = true;
+    setLikedIds([]);
+    setCatalogError(null);
+    Promise.all([
+      catalogAdminRepository.getFilaments(), catalogAdminRepository.getManufacturers(),
+      catalogAdminRepository.getTemperatureProfiles(), catalogAdminRepository.getLikedFilamentIds(),
+    ]).then(([items, brands, profiles, likes]) => {
+      if (!active) return;
+      setFilaments(items);
+      setManufacturers(brands);
+      setTempProfiles(profiles);
+      setLikedIds(likes);
+    }).catch((error) => { if (active) setCatalogError(authErrorMessage(error)); });
+    return () => { active = false; };
+  }, [user?.id, isDemoSession]);
 
   // Build concrete 1-card-1-item SKUs (1 card = 1 weight, 1 color, 1 manufacturer, 1 profile, 1 direct store link)
   const concreteSkus = useMemo(() => {
-    return buildConcreteFilamentSkus(filaments);
-  }, [filaments]);
+    const byId = new Map(filaments.map((item) => [item.id, item]));
+    return buildConcreteFilamentSkus(filaments).map((sku) => {
+      const filament = byId.get(sku.parentFilamentId)!;
+      const profile = tempProfiles[sku.type];
+      return {
+        ...sku,
+        profileNozzle: filament.printTempNozzle || profile?.nozzleRange || 'Не задано',
+        profileBed: filament.printTempBed || profile?.bedRange || 'Не задано',
+        profileChamber: filament.chamberTemp || profile?.chamberRange,
+        profileFan: filament.coolingFan || profile?.fanSpeed,
+        profileNotes: profile?.notes,
+      };
+    });
+  }, [filaments, tempProfiles]);
 
   // Distinct plastic types available across concrete SKUs
   const plasticTypes = useMemo(() => {
@@ -162,9 +180,10 @@ export const FilamentsDirectoryPage: React.FC = () => {
   }, [manufacturers]);
 
   // Toggle user like / favorite
-  const handleToggleLike = (id: string) => {
-    catalogAdminRepository.toggleLike(id);
-    setLikedIds(catalogAdminRepository.getLikedFilamentIds());
+  const handleToggleLike = async (id: string) => {
+    if (!user) { navigate('/login'); return; }
+    try { setLikedIds(await catalogAdminRepository.toggleLike(id)); }
+    catch (error) { setCatalogError(authErrorMessage(error)); }
   };
 
   // Filtered and Sorted concrete SKU cards
@@ -256,7 +275,9 @@ export const FilamentsDirectoryPage: React.FC = () => {
   ]);
 
   const handleAddMaterialToWorkshop = async (sku: ConcreteFilamentSku) => {
-    await addMaterial({
+    if (!user) { navigate('/login'); return; }
+    try {
+      await addMaterial({
       name: sku.name,
       type: sku.type,
       family: sku.family,
@@ -273,6 +294,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
     setAddedMaterialId(sku.id);
     setTimeout(() => setAddedMaterialId(null), 2500);
+    } catch (error) { setCatalogError(authErrorMessage(error)); }
   };
 
   const handleCalculatePrint = (sku: ConcreteFilamentSku) => {
@@ -298,6 +320,8 @@ export const FilamentsDirectoryPage: React.FC = () => {
       <PublicNavbar />
 
       <main className="flex-1">
+        {!firebaseConfigured && !isDemoSession && <p role="status" className="max-w-6xl mx-auto p-4 text-sm text-amber-700">Каталог використовує початкові дані. Для акаунтів і синхронізації потрібне налаштування Firebase.</p>}
+        {catalogError && <p role="alert" className="max-w-6xl mx-auto p-4 text-sm text-red-700">{catalogError}</p>}
         {/* Header Hero Section */}
         <section className="bg-white dark:bg-neutral-900/60 border-b border-neutral-200 dark:border-neutral-800 py-10 px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto space-y-4">
@@ -308,7 +332,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
               </div>
 
               {/* Quick Admin & Add Filament Link */}
-              <div className="flex items-center gap-2">
+              {(isDemoSession || user?.isAdmin) && <div className="flex items-center gap-2">
                 <NavLink
                   to="/app/admin/catalog"
                   className="inline-flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:text-emerald-600 dark:hover:text-emerald-400 bg-white dark:bg-neutral-800 px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors shadow-2xs font-bold"
@@ -326,7 +350,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
                   <Lock className="w-3.5 h-3.5" />
                   <span>Адмінка</span>
                 </NavLink>
-              </div>
+              </div>}
             </div>
 
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search,
@@ -32,6 +32,7 @@ export const MaterialsPage: React.FC = () => {
     duplicateMaterial,
     archiveMaterial,
     deleteMaterial,
+    actionError,
   } = useAppData();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -42,6 +43,17 @@ export const MaterialsPage: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMaterial, setEditingMaterial] = useState<MaterialProfile | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const busy = useRef(false);
+
+  const runAction = async (operation: () => Promise<unknown>) => {
+    if (busy.current) return false;
+    busy.current = true;
+    setIsPending(true);
+    try { await operation(); return true; }
+    catch { return false; /* The shared context displays the error. */ }
+    finally { busy.current = false; setIsPending(false); }
+  };
 
   const families = useMemo(() => {
     const list = new Set(materials.map((m) => m.family || 'Стандартні'));
@@ -110,8 +122,7 @@ export const MaterialsPage: React.FC = () => {
 
   const confirmDelete = async () => {
     if (deletingId) {
-      await deleteMaterial(deletingId);
-      setDeletingId(null);
+      if (await runAction(() => deleteMaterial(deletingId))) setDeletingId(null);
     }
   };
 
@@ -337,12 +348,12 @@ export const MaterialsPage: React.FC = () => {
                           <div className="flex items-center gap-1 text-[10px] text-neutral-500 dark:text-neutral-400 font-mono">
                             <button
                               type="button"
-                              onClick={() =>
+                              disabled={isPending}
+                              onClick={() => runAction(() =>
                                 updateMaterial(m.id, {
-                                  ...m,
                                   spoolsInStock: Math.max(0, inStockCount - 1),
                                 })
-                              }
+                              )}
                               title="Зменшити залишок на 1 котушку"
                               className="w-4 h-4 rounded flex items-center justify-center bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 font-bold"
                             >
@@ -351,12 +362,12 @@ export const MaterialsPage: React.FC = () => {
                             <span className="font-semibold">{inStockCount} котуш.</span>
                             <button
                               type="button"
-                              onClick={() =>
+                              disabled={isPending}
+                              onClick={() => runAction(() =>
                                 updateMaterial(m.id, {
-                                  ...m,
                                   spoolsInStock: inStockCount + 1,
                                 })
-                              }
+                              )}
                               title="Додати 1 котушку на склад"
                               className="w-4 h-4 rounded flex items-center justify-center bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 font-bold"
                             >
@@ -402,7 +413,8 @@ export const MaterialsPage: React.FC = () => {
                           </button>
                           <button
                             type="button"
-                            onClick={() => duplicateMaterial(m.id)}
+                            onClick={() => runAction(() => duplicateMaterial(m.id))}
+                            disabled={isPending}
                             title="Дублювати"
                             className="p-1.5 text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
                           >
@@ -410,7 +422,8 @@ export const MaterialsPage: React.FC = () => {
                           </button>
                           <button
                             type="button"
-                            onClick={() => archiveMaterial(m.id)}
+                            onClick={() => runAction(() => archiveMaterial(m.id))}
+                            disabled={isPending}
                             title={m.isArchived ? 'Відновити з архіву' : 'Архівувати'}
                             className="p-1.5 text-neutral-500 hover:text-amber-600 dark:hover:text-amber-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
                           >
@@ -446,15 +459,15 @@ export const MaterialsPage: React.FC = () => {
       {/* Delete Confirmation Modal */}
       <Modal
         isOpen={Boolean(deletingId)}
-        onClose={() => setDeletingId(null)}
+        onClose={() => { if (!isPending) setDeletingId(null); }}
         title="Видалити профіль матеріалу?"
         description="Цей матеріал буде вилучено з вашого каталогу. Попередні збережені знімки розрахунків збережуть свої значення."
         footer={
           <>
-            <Button variant="outline" size="sm" onClick={() => setDeletingId(null)}>
+            <Button variant="outline" size="sm" onClick={() => setDeletingId(null)} disabled={isPending}>
               Скасувати
             </Button>
-            <Button variant="danger" size="sm" onClick={confirmDelete}>
+            <Button variant="danger" size="sm" onClick={confirmDelete} isLoading={isPending}>
               Видалити матеріал
             </Button>
           </>
@@ -463,6 +476,7 @@ export const MaterialsPage: React.FC = () => {
         <p className="text-xs text-neutral-500">
           Ви впевнені, що хочете видалити цей матеріал? Дія незворотна для майбутніх розрахунків.
         </p>
+        {actionError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{actionError}</p>}
       </Modal>
     </div>
   );

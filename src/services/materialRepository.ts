@@ -1,5 +1,5 @@
 import type { MaterialProfile } from '../domain/types.ts';
-import { api, STORAGE_KEYS } from './api.ts';
+import { api } from './api.ts';
 
 export interface MaterialRepository {
   getAll(): Promise<MaterialProfile[]>;

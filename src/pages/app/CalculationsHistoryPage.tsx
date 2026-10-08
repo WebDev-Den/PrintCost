@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search,
@@ -20,7 +20,7 @@ import { formatUah, formatDurationUk, formatWeightUk } from '../../domain/format
 
 export const CalculationsHistoryPage: React.FC = () => {
   const navigate = useNavigate();
-  const { calculations, duplicateCalculation, deleteCalculation } = useAppData();
+  const { calculations, duplicateCalculation, deleteCalculation, actionError } = useAppData();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'complete' | 'incomplete'>('all');
@@ -29,6 +29,8 @@ export const CalculationsHistoryPage: React.FC = () => {
 
   // Delete modal state
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const busy = useRef(false);
 
   const filteredCalculations = useMemo(() => {
     return calculations.filter((c) => {
@@ -45,20 +47,33 @@ export const CalculationsHistoryPage: React.FC = () => {
   }, [calculations, searchQuery, statusFilter]);
 
   const totalPages = Math.ceil(filteredCalculations.length / itemsPerPage) || 1;
+  useEffect(() => { setCurrentPage(page => Math.min(page, totalPages)); }, [totalPages]);
   const paginatedCalculations = useMemo(() => {
     const start = (currentPage - 1) * itemsPerPage;
     return filteredCalculations.slice(start, start + itemsPerPage);
   }, [filteredCalculations, currentPage, itemsPerPage]);
 
   const handleDuplicate = async (id: string) => {
-    const copy = await duplicateCalculation(id);
-    navigate(`/app/calculations/${copy.id}`);
+    if (busy.current) return;
+    busy.current = true;
+    setIsPending(true);
+    try {
+      const copy = await duplicateCalculation(id);
+      navigate(`/app/calculations/${copy.id}`);
+    } catch { /* The shared context displays the error. */ }
+    finally { busy.current = false; setIsPending(false); }
   };
 
   const confirmDelete = async () => {
     if (deletingId) {
-      await deleteCalculation(deletingId);
-      setDeletingId(null);
+      if (busy.current) return;
+      busy.current = true;
+      setIsPending(true);
+      try {
+        await deleteCalculation(deletingId);
+        setDeletingId(null);
+      } catch { /* The shared context displays the error. */ }
+      finally { busy.current = false; setIsPending(false); }
     }
   };
 
@@ -67,7 +82,7 @@ export const CalculationsHistoryPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-white">
-            Історія розрахунків
+            Останні 200 розрахунків
           </h2>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
             Архів розрахунків собівартості із зафіксованими знімками параметрів
@@ -234,6 +249,7 @@ export const CalculationsHistoryPage: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => handleDuplicate(c.id)}
+                            disabled={isPending}
                             title="Створити копію"
                             className="p-1.5 text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
                           >
@@ -288,15 +304,15 @@ export const CalculationsHistoryPage: React.FC = () => {
       {/* Confirmation Modal for Delete */}
       <Modal
         isOpen={Boolean(deletingId)}
-        onClose={() => setDeletingId(null)}
+        onClose={() => { if (!isPending) setDeletingId(null); }}
         title="Видалити збережений розрахунок?"
-        description="Цю дію неможливо скасувати. Запис буде вилучено з локальної історії розрахунків."
+        description="Запис буде вилучено з історії цього акаунта."
         footer={
           <>
-            <Button variant="outline" size="sm" onClick={() => setDeletingId(null)}>
+            <Button variant="outline" size="sm" onClick={() => setDeletingId(null)} disabled={isPending}>
               Скасувати
             </Button>
-            <Button variant="danger" size="sm" onClick={confirmDelete}>
+            <Button variant="danger" size="sm" onClick={confirmDelete} isLoading={isPending}>
               Видалити запис
             </Button>
           </>
@@ -305,6 +321,7 @@ export const CalculationsHistoryPage: React.FC = () => {
         <p className="text-xs text-neutral-600 dark:text-neutral-400">
           Ви впевнені, що бажаєте видалити цей розрахунок собівартості?
         </p>
+        {actionError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{actionError}</p>}
       </Modal>
     </div>
   );

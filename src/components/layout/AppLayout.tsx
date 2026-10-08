@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Navigate, NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Calculator,
   LayoutDashboard,
@@ -19,15 +19,17 @@ import {
   PanelLeftClose,
   ChevronLeft,
   ChevronRight,
+  Loader2,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import { DemoBanner } from '../common/DemoBanner.tsx';
 import { BrandLogo } from '../common/BrandLogo.tsx';
+import { ErrorPage } from '../../pages/ErrorPage.tsx';
 
 export const AppLayout: React.FC = () => {
-  const { user, logout } = useAuth();
-  const { theme, setTheme } = useAppData();
+  const { user, logout, isLoading: authLoading, isDemoSession, authError, reloadUser } = useAuth();
+  const { theme, setTheme, isLoading, loadError, actionError, clearActionError, retryLoad } = useAppData();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -77,11 +79,11 @@ export const AppLayout: React.FC = () => {
     { to: '/app/printers', label: 'Принтери', icon: Printer },
     { to: '/app/settings', label: 'Налаштування', icon: Settings },
     { to: '/app/account', label: 'Акаунт', icon: User },
-  ];
+  ].filter((item) => item.to !== '/app/admin/catalog' || user?.isAdmin || isDemoSession);
 
   const handleLogout = async () => {
-    await logout();
-    navigate('/');
+    try { await logout(); navigate('/'); }
+    catch { /* AuthContext displays the error. */ }
   };
 
   const getPageTitle = () => {
@@ -90,6 +92,13 @@ export const AppLayout: React.FC = () => {
     if (location.pathname.includes('/calculations/')) return 'Деталі розрахунку';
     return current ? current.label : 'Кабінет';
   };
+
+  if (authLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження акаунту" /></div>;
+  if (authError) return <ErrorPage error={new Error(authError)} resetErrorBoundary={() => { void reloadUser(); }} />;
+  if (!user) return <Navigate to="/auth/login" state={{ from: location }} replace />;
+  if (isLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження даних" /></div>;
+  if (loadError) return <ErrorPage error={new Error(loadError)} resetErrorBoundary={retryLoad} />;
+  if (location.pathname.startsWith('/app/admin') && !user.isAdmin && !isDemoSession) return <Navigate to="/app/dashboard" replace />;
 
   return (
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col antialiased">
@@ -317,7 +326,8 @@ export const AppLayout: React.FC = () => {
 
           {/* Page Content Viewport with Responsive Max-Width */}
           <main className="flex-1 p-3 sm:p-5 lg:p-6 w-full mx-auto max-w-full">
-            <Outlet />
+            {actionError && <div role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 flex items-center justify-between gap-3"><span>{actionError}</span><button onClick={clearActionError} aria-label="Закрити повідомлення"><X className="w-4 h-4" /></button></div>}
+            <Outlet key={isDemoSession ? 'demo' : user.id} />
           </main>
         </div>
       </div>

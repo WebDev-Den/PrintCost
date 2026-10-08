@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { Lock, Eye, EyeOff, CheckCircle, AlertTriangle } from 'lucide-react';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
+import { authService, authErrorMessage } from '../../services/authService.ts';
 
 export const ResetPasswordPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const isExpiredToken = searchParams.get('expired') === 'true';
+  const code = searchParams.get('oobCode') || '';
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -15,8 +16,20 @@ export const ResetPasswordPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [isChecking, setIsChecking] = useState(true);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    let active = true;
+    setIsChecking(true);
+    setLinkError(null);
+    authService.verifyPasswordResetCode(code).catch(error => {
+      if (active) setLinkError(authErrorMessage(error));
+    }).finally(() => { if (active) setIsChecking(false); });
+    return () => { active = false; };
+  }, [code]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -30,13 +43,17 @@ export const ResetPasswordPage: React.FC = () => {
     }
 
     setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
+    try {
+      await authService.resetPassword(password, code);
       setSuccess(true);
-    }, 600);
+    } catch (error) {
+      setError(authErrorMessage(error));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  if (isExpiredToken) {
+  if (linkError) {
     return (
       <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
         <div className="sm:mx-auto sm:w-full sm:max-w-md bg-white dark:bg-neutral-900 p-8 rounded-2xl border border-neutral-200 dark:border-neutral-800 text-center space-y-4">
@@ -44,10 +61,10 @@ export const ResetPasswordPage: React.FC = () => {
             <AlertTriangle className="w-6 h-6" />
           </div>
           <h2 className="text-base font-semibold text-neutral-900 dark:text-white">
-            Посилання для відновлення застаріло
+            Посилання для відновлення недійсне
           </h2>
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            Термін дії цього одноразового посилання вичерпано. Будь ласка, надішліть новий запит на відновлення пароля.
+            {linkError}
           </p>
           <Button
             variant="primary"
@@ -95,7 +112,7 @@ export const ResetPasswordPage: React.FC = () => {
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               {error && (
-                <div className="p-3 bg-red-50 dark:bg-red-950 border border-red-200 text-xs text-red-700 rounded-lg">
+                <div role="alert" className="p-3 bg-red-50 dark:bg-red-950 border border-red-200 text-xs text-red-700 rounded-lg">
                   {error}
                 </div>
               )}
@@ -118,6 +135,7 @@ export const ResetPasswordPage: React.FC = () => {
                   />
                   <button
                     type="button"
+                    aria-label={showPassword ? 'Приховати пароль' : 'Показати пароль'}
                     onClick={() => setShowPassword(!showPassword)}
                     className="pr-3 pl-2 text-neutral-400"
                   >
@@ -151,8 +169,9 @@ export const ResetPasswordPage: React.FC = () => {
                 size="md"
                 className="w-full"
                 isLoading={isSubmitting}
+                disabled={isChecking}
               >
-                Зберегти новий пароль
+                {isChecking ? 'Перевірка посилання…' : 'Зберегти новий пароль'}
               </Button>
             </form>
           )}

@@ -39,8 +39,13 @@ import {
 import { catalogAdminRepository } from '../../services/catalogAdminRepository.ts';
 import { formatUah } from '../../domain/formatters.ts';
 import { FilamentColorVisual } from '../../components/filaments/FilamentColorVisual.tsx';
+import { useAuth } from '../../context/AuthContext.tsx';
+import { authErrorMessage } from '../../services/authService.ts';
 
 export const CatalogAdminPage: React.FC = () => {
+  const { user, isDemoSession } = useAuth();
+  const canEdit = isDemoSession || user?.isAdmin === true;
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'filaments' | 'manufacturers' | 'plastic_types' | 'temperatures'>('filaments');
 
   // Loaded data
@@ -142,15 +147,25 @@ export const CatalogAdminPage: React.FC = () => {
   const [plasticTypeFormDescription, setPlasticTypeFormDescription] = useState('');
 
   // Load from repository
-  const reloadData = () => {
-    setFilaments(catalogAdminRepository.getFilaments());
-    setManufacturers(catalogAdminRepository.getManufacturers());
-    setTemperatures(catalogAdminRepository.getTemperatureProfiles());
+  const reloadData = async () => {
+    const [items, brands, profiles] = await Promise.all([
+      catalogAdminRepository.getFilaments(), catalogAdminRepository.getManufacturers(), catalogAdminRepository.getTemperatureProfiles(),
+    ]);
+    setFilaments(items);
+    setManufacturers(brands);
+    setTemperatures(profiles);
   };
 
   useEffect(() => {
-    reloadData();
-  }, []);
+    if (canEdit) void reloadData().catch((error) => setSaveError(authErrorMessage(error)));
+  }, [canEdit, user?.id, isDemoSession]);
+
+  const runAction = async (action: () => Promise<void>) => {
+    setSaveError(null);
+    setFormError(null);
+    try { await action(); }
+    catch (error) { const message = authErrorMessage(error); setSaveError(message); setFormError(message); setQuickMfgError(message); }
+  };
 
   const notify = (msg: string) => {
     setNotification(msg);
@@ -237,13 +252,13 @@ export const CatalogAdminPage: React.FC = () => {
   };
 
   // Quick save new manufacturer directly from the filament modal
-  const handleSaveQuickManufacturer = () => {
+  const handleSaveQuickManufacturer = () => runAction(async () => {
     if (!newMfgName.trim()) {
       setQuickMfgError('Вкажіть назву нового бренду');
       return;
     }
 
-    const created = catalogAdminRepository.createManufacturer({
+    const created = await catalogAdminRepository.createManufacturer({
       name: newMfgName.trim(),
       country: newMfgCountry,
       website: newMfgWebsite.trim() || 'https://',
@@ -253,7 +268,7 @@ export const CatalogAdminPage: React.FC = () => {
       description: `Виробник філаментів для 3D-друку ${newMfgName.trim()}`,
     });
 
-    const updated = catalogAdminRepository.getManufacturers();
+    const updated = await catalogAdminRepository.getManufacturers();
     setManufacturers(updated);
 
     // Immediately select this newly added manufacturer in filamentForm
@@ -268,9 +283,9 @@ export const CatalogAdminPage: React.FC = () => {
     setNewMfgName('');
     setNewMfgWebsite('');
     notify(`Виробника "${created.name}" успішно створено та вибрано!`);
-  };
+  });
 
-  const handleSaveFilament = () => {
+  const handleSaveFilament = () => runAction(async () => {
     const finalType = isCustomPlasticType
       ? customPlasticTypeName.trim() || filamentForm.type || 'PLA'
       : filamentForm.type || 'PLA';
@@ -332,16 +347,16 @@ export const CatalogAdminPage: React.FC = () => {
     };
 
     if (editingFilament) {
-      catalogAdminRepository.updateFilament(editingFilament.id, payload as any);
+      await catalogAdminRepository.updateFilament(editingFilament.id, payload as any);
       notify(`Філамент "${filamentForm.name}" успішно оновлено`);
     } else {
-      catalogAdminRepository.createFilament(payload as any);
+      await catalogAdminRepository.createFilament(payload as any);
       notify(`Новий філамент "${filamentForm.name}" додано до каталогу`);
     }
 
     setIsFilamentModalOpen(false);
-    reloadData();
-  };
+    await reloadData();
+  });
 
   const handleDeleteFilament = (id: string, name: string) => {
     setConfirmDialog({
@@ -349,24 +364,24 @@ export const CatalogAdminPage: React.FC = () => {
       title: 'Видалити філамент?',
       message: `Ви впевнені, що хочете видалити позицію "${name}" з каталогу?`,
       actionText: 'Видалити',
-      onConfirm: () => {
-        catalogAdminRepository.deleteFilament(id);
+      onConfirm: () => runAction(async () => {
+        await catalogAdminRepository.deleteFilament(id);
         notify(`Філамент "${name}" видалено`);
-        reloadData();
+        await reloadData();
         setConfirmDialog(null);
-      },
+      }),
     });
   };
 
-  const handleToggleStockStatus = (item: PublicFilamentItem) => {
+  const handleToggleStockStatus = (item: PublicFilamentItem) => runAction(async () => {
     const nextStatus = !item.inStock;
-    catalogAdminRepository.updateFilament(item.id, {
+    await catalogAdminRepository.updateFilament(item.id, {
       inStock: nextStatus,
       stockStatusLabel: nextStatus ? 'В наявності' : 'Немає в наявності',
     });
     notify(`Статус для "${item.name}" змінено на: ${nextStatus ? 'В наявності' : 'Немає в наявності'}`);
-    reloadData();
-  };
+    await reloadData();
+  });
 
   // --- MANUFACTURER ACTIONS ---
   const handleOpenAddManufacturer = () => {
@@ -391,23 +406,23 @@ export const CatalogAdminPage: React.FC = () => {
     setIsManufacturerModalOpen(true);
   };
 
-  const handleSaveManufacturer = () => {
+  const handleSaveManufacturer = () => runAction(async () => {
     if (!manufacturerForm.name) {
       setFormError('Вкажіть назву виробника');
       return;
     }
 
     if (editingManufacturer) {
-      catalogAdminRepository.updateManufacturer(editingManufacturer.id, manufacturerForm as any);
+      await catalogAdminRepository.updateManufacturer(editingManufacturer.id, manufacturerForm as any);
       notify(`Виробника "${manufacturerForm.name}" оновлено`);
     } else {
-      catalogAdminRepository.createManufacturer(manufacturerForm as any);
+      await catalogAdminRepository.createManufacturer(manufacturerForm as any);
       notify(`Нового виробника "${manufacturerForm.name}" створено`);
     }
 
     setIsManufacturerModalOpen(false);
-    reloadData();
-  };
+    await reloadData();
+  });
 
   const handleDeleteManufacturer = (id: string, name: string) => {
     setConfirmDialog({
@@ -415,12 +430,12 @@ export const CatalogAdminPage: React.FC = () => {
       title: 'Видалити компанію?',
       message: `Видалити виробника "${name}"?`,
       actionText: 'Видалити',
-      onConfirm: () => {
-        catalogAdminRepository.deleteManufacturer(id);
+      onConfirm: () => runAction(async () => {
+        await catalogAdminRepository.deleteManufacturer(id);
         notify(`Виробника "${name}" видалено`);
-        reloadData();
+        await reloadData();
         setConfirmDialog(null);
-      },
+      }),
     });
   };
 
@@ -450,7 +465,7 @@ export const CatalogAdminPage: React.FC = () => {
     setIsTempModalOpen(true);
   };
 
-  const handleSaveTemp = () => {
+  const handleSaveTemp = () => runAction(async () => {
     const finalKey = isCreatingNewTemp ? newTempTypeKey.trim().toUpperCase() : editingTempType;
     if (!finalKey) {
       notify('Вкажіть унікальний ідентифікатор типу (наприклад, PETG, ABS, PC)');
@@ -472,11 +487,11 @@ export const CatalogAdminPage: React.FC = () => {
       dryingTempTime: tempForm.dryingTempTime || '50 °C (4 год)',
     };
 
-    catalogAdminRepository.updateTemperatureProfile(finalKey, payload);
+    await catalogAdminRepository.updateTemperatureProfile(finalKey, payload);
     notify(isCreatingNewTemp ? `Створено новий температурний профіль "${finalKey}"` : `Температурний профіль для "${finalKey}" збережено`);
     setIsTempModalOpen(false);
-    reloadData();
-  };
+    await reloadData();
+  });
 
   const handleDeleteTemp = (typeKey: string) => {
     setConfirmDialog({
@@ -484,12 +499,12 @@ export const CatalogAdminPage: React.FC = () => {
       title: 'Видалити температурний стандарт?',
       message: `Видалити стандарт температур для типу "${typeKey}"?`,
       actionText: 'Видалити',
-      onConfirm: () => {
-        catalogAdminRepository.deleteTemperatureProfile(typeKey);
+      onConfirm: () => runAction(async () => {
+        await catalogAdminRepository.deleteTemperatureProfile(typeKey);
         notify(`Температурний стандарт "${typeKey}" видалено`);
-        reloadData();
+        await reloadData();
         setConfirmDialog(null);
-      },
+      }),
     });
   };
 
@@ -514,7 +529,7 @@ export const CatalogAdminPage: React.FC = () => {
     setIsPlasticTypeModalOpen(true);
   };
 
-  const handleSavePlasticType = () => {
+  const handleSavePlasticType = () => runAction(async () => {
     const cleanName = plasticTypeFormName.trim().toUpperCase();
     if (!cleanName) {
       notify('Вкажіть назву типу пластику');
@@ -522,29 +537,12 @@ export const CatalogAdminPage: React.FC = () => {
     }
 
     // 1. If renaming, update all existing filaments of this type
-    if (editingPlasticTypeOriginal && editingPlasticTypeOriginal !== cleanName) {
-      const allFilaments = catalogAdminRepository.getFilaments();
-      const updatedFilaments = allFilaments.map((f) =>
-        f.type.toUpperCase() === editingPlasticTypeOriginal.toUpperCase()
-          ? { ...f, type: cleanName, family: plasticTypeFormFamily, densityGPerCm3: plasticTypeFormDensity }
-          : f
-      );
-      catalogAdminRepository.saveFilaments(updatedFilaments);
-
-      // If temp profile existed under old name, transfer it
-      if (temperatures[editingPlasticTypeOriginal]) {
-        const oldProf = temperatures[editingPlasticTypeOriginal];
-        catalogAdminRepository.deleteTemperatureProfile(editingPlasticTypeOriginal);
-        catalogAdminRepository.updateTemperatureProfile(cleanName, {
-          ...oldProf,
-          plasticType: cleanName,
-          notes: plasticTypeFormDescription || oldProf.notes,
-        });
-      }
+    if (editingPlasticTypeOriginal) {
+      await catalogAdminRepository.renamePlasticType(editingPlasticTypeOriginal, cleanName, plasticTypeFormFamily, plasticTypeFormDensity, plasticTypeFormDescription);
     } else {
       // 2. Ensure matching temperature standard profile exists
       if (!temperatures[cleanName]) {
-        catalogAdminRepository.updateTemperatureProfile(cleanName, {
+        await catalogAdminRepository.updateTemperatureProfile(cleanName, {
           plasticType: cleanName,
           nozzleRange: '210–235 °C',
           bedRange: '60–80 °C',
@@ -559,8 +557,8 @@ export const CatalogAdminPage: React.FC = () => {
 
     notify(`Тип пластику "${cleanName}" успішно збережено`);
     setIsPlasticTypeModalOpen(false);
-    reloadData();
-  };
+    await reloadData();
+  });
 
   const handleDeletePlasticType = (typeName: string) => {
     setConfirmDialog({
@@ -568,12 +566,12 @@ export const CatalogAdminPage: React.FC = () => {
       title: 'Видалити тип пластику?',
       message: `Видалити тип "${typeName}"? Пов'язані позиції товарів у каталозі залишаться, але потребуватимуть оновлення.`,
       actionText: 'Видалити тип',
-      onConfirm: () => {
-        catalogAdminRepository.deleteTemperatureProfile(typeName);
+      onConfirm: () => runAction(async () => {
+        await catalogAdminRepository.deleteTemperatureProfile(typeName);
         notify(`Тип пластику "${typeName}" видалено`);
-        reloadData();
+        await reloadData();
         setConfirmDialog(null);
-      },
+      }),
     });
   };
 
@@ -583,17 +581,20 @@ export const CatalogAdminPage: React.FC = () => {
       title: 'Скинути всі дані каталогу?',
       message: 'Скинути всі дані каталогу (товари, виробники, профілі) до заводських еталонних значень?',
       actionText: 'Скинути до заводських',
-      onConfirm: () => {
-        catalogAdminRepository.resetAllToFactory();
+      onConfirm: () => runAction(async () => {
+        await catalogAdminRepository.resetAllToFactory();
         notify('Дані успішно скинуто до еталонних налаштувань');
-        reloadData();
+        await reloadData();
         setConfirmDialog(null);
-      },
+      }),
     });
   };
 
+  if (!canEdit) return <div role="alert" className="p-5 text-sm">Керування каталогом доступне лише адміністратору.</div>;
+
   return (
     <div className="space-y-6">
+      {saveError && <div role="alert" className="p-3 rounded-xl border border-red-300 bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200 text-sm">{saveError}</div>}
       {/* Top Admin Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-neutral-900 p-5 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-2xs">
         <div>
@@ -1850,6 +1851,7 @@ export const CatalogAdminPage: React.FC = () => {
         }
       >
         <div className="space-y-3">
+          {saveError && <p role="alert" className="text-sm text-red-700">{saveError}</p>}
           {isCreatingNewTemp && (
             <div className="grid grid-cols-2 gap-3">
               <Input
@@ -1932,6 +1934,7 @@ export const CatalogAdminPage: React.FC = () => {
         }
       >
         <div className="space-y-3">
+          {saveError && <p role="alert" className="text-sm text-red-700">{saveError}</p>}
           <Input
             label="Назва типу пластику (e.g. PLA, PETG, ABS, PC, ASA) *"
             value={plasticTypeFormName}
@@ -1998,6 +2001,7 @@ export const CatalogAdminPage: React.FC = () => {
           <p className="text-xs text-neutral-600 dark:text-neutral-400">
             {confirmDialog.message}
           </p>
+          {saveError && <p role="alert" className="mt-3 text-sm text-red-700">{saveError}</p>}
         </Modal>
       )}
     </div>

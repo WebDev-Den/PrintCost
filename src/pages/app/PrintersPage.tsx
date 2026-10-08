@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Plus, Printer, Edit2, Trash2, Check, Star, AlertCircle } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import type { PrinterProfile } from '../../domain/types.ts';
@@ -8,11 +8,22 @@ import { Modal } from '../../components/common/Modal.tsx';
 import { formatUah } from '../../domain/formatters.ts';
 
 export const PrintersPage: React.FC = () => {
-  const { printers, addPrinter, updatePrinter, deletePrinter, setDefaultPrinter } = useAppData();
+  const { printers, addPrinter, updatePrinter, deletePrinter, setDefaultPrinter, actionError } = useAppData();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPrinter, setEditingPrinter] = useState<PrinterProfile | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const busy = useRef(false);
+
+  const runAction = async (operation: () => Promise<unknown>) => {
+    if (busy.current) return false;
+    busy.current = true;
+    setIsPending(true);
+    try { await operation(); return true; }
+    catch { return false; /* The shared context displays the error. */ }
+    finally { busy.current = false; setIsPending(false); }
+  };
 
   const handleOpenAdd = () => {
     setEditingPrinter(null);
@@ -34,8 +45,7 @@ export const PrintersPage: React.FC = () => {
 
   const confirmDelete = async () => {
     if (deletingId) {
-      await deletePrinter(deletingId);
-      setDeletingId(null);
+      if (await runAction(() => deletePrinter(deletingId))) setDeletingId(null);
     }
   };
 
@@ -108,7 +118,8 @@ export const PrintersPage: React.FC = () => {
                 ) : (
                   <button
                     type="button"
-                    onClick={() => setDefaultPrinter(p.id)}
+                    onClick={() => runAction(() => setDefaultPrinter(p.id))}
+                    disabled={isPending}
                     title="Зробити типовим"
                     className="text-xs text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400"
                   >
@@ -178,15 +189,15 @@ export const PrintersPage: React.FC = () => {
       {/* Confirmation Modal */}
       <Modal
         isOpen={Boolean(deletingId)}
-        onClose={() => setDeletingId(null)}
+        onClose={() => { if (!isPending) setDeletingId(null); }}
         title="Видалити принтер?"
         description="Цей принтер буде вилучено зі списку вашого обладнання."
         footer={
           <>
-            <Button variant="outline" size="sm" onClick={() => setDeletingId(null)}>
+            <Button variant="outline" size="sm" onClick={() => setDeletingId(null)} disabled={isPending}>
               Скасувати
             </Button>
-            <Button variant="danger" size="sm" onClick={confirmDelete}>
+            <Button variant="danger" size="sm" onClick={confirmDelete} isLoading={isPending}>
               Видалити
             </Button>
           </>
@@ -195,6 +206,7 @@ export const PrintersPage: React.FC = () => {
         <p className="text-xs text-neutral-600 dark:text-neutral-400">
           Ви дійсно бажаєте видалити цей принтер?
         </p>
+        {actionError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{actionError}</p>}
       </Modal>
     </div>
   );

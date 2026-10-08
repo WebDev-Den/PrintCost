@@ -11,6 +11,9 @@ import {
 import { DEMO_JOB_SECTION_9 } from '../../domain/defaultData.ts';
 import { calculatePrintCost } from '../../domain/calculator.ts';
 import { useAppData } from '../../context/AppDataContext.tsx';
+import { useAuth } from '../../context/AuthContext.tsx';
+import { Decimal } from 'decimal.js';
+import { isValidDecimalString, normalizeDecimalInput } from '../../domain/formatters.ts';
 import { FileDropzone } from '../../components/calculator/FileDropzone.tsx';
 import { JobOverviewCard } from '../../components/calculator/JobOverviewCard.tsx';
 import { PlatesSelector } from '../../components/calculator/PlatesSelector.tsx';
@@ -30,8 +33,12 @@ import {
   CheckCircle,
 } from 'lucide-react';
 
+const EMPTY_JOB: ParsedJob = { fileName: '', fileSizeBytes: 0, slicerSource: '', plates: [], totalPredictionSeconds: 0, totalWeightGrams: 0, warnings: [], parseStatus: 'empty' };
+const filamentCost = (weight: string | number, price: string | null) => price && isValidDecimalString(price) && isValidDecimalString(String(weight)) ? new Decimal(normalizeDecimalInput(String(weight))).div(1000).mul(normalizeDecimalInput(price)).toFixed(2) : null;
+
 export const CalculatorPage: React.FC = () => {
   const navigate = useNavigate();
+  const { isDemoSession } = useAuth();
   const {
     materials,
     printers,
@@ -82,13 +89,13 @@ export const CalculatorPage: React.FC = () => {
 
   // Calculation parameters (initialized from global settings or active printer)
   const defaultPrinter = useMemo(() => {
-    return printers.find((p) => p.isDefault) || printers[0] || null;
-  }, [printers]);
+    return printers.find((p) => p.id === settings.defaultPrinterId) || printers.find((p) => p.isDefault) || printers[0] || null;
+  }, [printers, settings.defaultPrinterId]);
 
   const [calcParams, setCalcParams] = useState({
-    averagePowerWatts: defaultPrinter?.averagePowerWatts || '100',
-    electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh || '5.00',
-    machineHourlyRateUah: defaultPrinter?.machineHourlyRateUah || '10.00',
+    averagePowerWatts: defaultPrinter?.averagePowerWatts ?? '',
+    electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh ?? '',
+    machineHourlyRateUah: defaultPrinter?.machineHourlyRateUah ?? '',
     operatorFeeUah: settings.defaultOperatorFeeUah || '20',
     packagingFeeUah: settings.defaultPackagingFeeUah || '0',
     postProcessingFeeUah: settings.defaultPostProcessingFeeUah || '0',
@@ -100,31 +107,6 @@ export const CalculatorPage: React.FC = () => {
     minOrderPriceUah: settings.minOrderPriceUah || '200',
     roundingMode: (settings.roundingMode || 'up_10') as RoundingMode,
   });
-
-  // Sync default parameters when settings/printers finish loading
-  useEffect(() => {
-    if (settings.electricityTariffUahPerKwh !== undefined) {
-      setCalcParams((prev) => ({
-        ...prev,
-        electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh || '5.00',
-        pricingMode: settings.pricingMode || prev.pricingMode,
-        markupPercent: settings.defaultMarkupPercent || prev.markupPercent,
-        marginPercent: settings.defaultMarginPercent || prev.marginPercent,
-        scrapReservePercent: settings.scrapReservePercent || prev.scrapReservePercent,
-        minOrderPriceUah: settings.minOrderPriceUah || prev.minOrderPriceUah,
-        roundingMode: settings.roundingMode || prev.roundingMode,
-        operatorFeeUah: settings.defaultOperatorFeeUah || prev.operatorFeeUah,
-        packagingFeeUah: settings.defaultPackagingFeeUah || prev.packagingFeeUah,
-      }));
-    }
-  }, [settings]);
-
-  // Load agreed demo job by default on first mount
-  useEffect(() => {
-    if (!currentJob) {
-      handleJobLoaded(JSON.parse(JSON.stringify(DEMO_JOB_SECTION_9)));
-    }
-  }, []);
 
   // When a job is loaded or changed, construct initial filament usage rows
   const handleJobLoaded = useCallback(
@@ -153,19 +135,14 @@ export const CalculatorPage: React.FC = () => {
           let colorHex = layer.colorHex;
           let matchMethod = matchResult.method;
 
-          // If preselected filament exists and matches type (or first row)
-          if (preselectedInfo && (layer.type.toUpperCase().includes(preselectedInfo.type.toUpperCase()) || rows.length === 0)) {
+          if (preselectedInfo && layer.type.trim().toUpperCase() === preselectedInfo.type?.trim().toUpperCase()) {
             price = preselectedInfo.pricePerKgUah;
             mappedName = preselectedInfo.name;
             if (preselectedInfo.colorHex) colorHex = preselectedInfo.colorHex;
             matchMethod = 'exact_preset';
           }
 
-          let cost: string | null = null;
-          if (price && layer.weightGrams > 0) {
-            const grams = layer.weightGrams;
-            cost = ((grams / 1000) * parseFloat(price)).toFixed(2);
-          }
+          const cost = filamentCost(layer.weightGrams, price);
 
           rows.push({
             key,
@@ -174,8 +151,8 @@ export const CalculatorPage: React.FC = () => {
             trayId: layer.trayId,
             colorHex,
             typeFromFile: layer.type,
-            weightGrams: String(layer.weightGrams),
-            lengthMeters: layer.lengthMeters ? String(layer.lengthMeters) : null,
+            weightGrams: new Decimal(layer.weightGrams).toDecimalPlaces(6).toFixed(),
+            lengthMeters: layer.lengthMeters ? new Decimal(layer.lengthMeters).toDecimalPlaces(6).toFixed() : null,
             mappedMaterialId: mappedMaterial ? mappedMaterial.id : null,
             mappedMaterialName: mappedName,
             pricePerKgUah: price,
@@ -189,6 +166,10 @@ export const CalculatorPage: React.FC = () => {
     },
     [findBestMaterialMatch]
   );
+
+  useEffect(() => {
+    if (isDemoSession) handleJobLoaded(structuredClone(DEMO_JOB_SECTION_9));
+  }, [isDemoSession]);
 
   // Toggle plate selection
   const handleTogglePlate = (plateIndex: number) => {
@@ -215,10 +196,7 @@ export const CalculatorPage: React.FC = () => {
       prev.map((f) => {
         if (f.key !== filamentKey) return f;
         const price = selectedMat?.pricePerKgUah || null;
-        let cost: string | null = null;
-        if (price && parseFloat(f.weightGrams) > 0) {
-          cost = ((parseFloat(f.weightGrams) / 1000) * parseFloat(price)).toFixed(2);
-        }
+        const cost = filamentCost(f.weightGrams, price);
         return {
           ...f,
           mappedMaterialId: selectedMat ? selectedMat.id : null,
@@ -233,17 +211,14 @@ export const CalculatorPage: React.FC = () => {
 
   // Override price per kg manually
   const handlePriceOverride = (filamentKey: string, newPrice: string) => {
+    newPrice = normalizeDecimalInput(newPrice);
     setFilamentsUsage((prev) =>
       prev.map((f) => {
         if (f.key !== filamentKey) return f;
-        let cost: string | null = null;
-        const numPrice = parseFloat(newPrice);
-        if (!isNaN(numPrice) && numPrice > 0 && parseFloat(f.weightGrams) > 0) {
-          cost = ((parseFloat(f.weightGrams) / 1000) * numPrice).toFixed(2);
-        }
+        const cost = filamentCost(f.weightGrams, newPrice);
         return {
           ...f,
-          pricePerKgUah: newPrice,
+          pricePerKgUah: newPrice.trim() || null,
           costUah: cost,
         };
       })
@@ -252,9 +227,11 @@ export const CalculatorPage: React.FC = () => {
 
   // Save filament preference
   const handleSavePreference = async (typeFromFile: string, materialId: string) => {
+    try {
     await saveFilamentMapping(typeFromFile, materialId);
     setSaveSuccessMsg(`Запам’ятовано: тип "${typeFromFile}" буде за замовчуванням зіставлятися з вибраним матеріалом.`);
     setTimeout(() => setSaveSuccessMsg(null), 3000);
+    } catch { /* AppDataContext displays the error. */ }
   };
 
   // Update quick inputs
@@ -264,6 +241,7 @@ export const CalculatorPage: React.FC = () => {
 
   // Save quick inputs as global defaults
   const handleSaveAsDefault = async () => {
+    try {
     await updateSettings({
       electricityTariffUahPerKwh: calcParams.electricityTariffUahPerKwh,
       pricingMode: calcParams.pricingMode,
@@ -279,12 +257,13 @@ export const CalculatorPage: React.FC = () => {
     });
     setSaveSuccessMsg('Поточні параметри збережено як типові налаштування кабінету.');
     setTimeout(() => setSaveSuccessMsg(null), 3000);
+    } catch { /* AppDataContext displays the error. */ }
   };
 
   // Calculate live domain result via pure domain function
   const calculationInput: CalculationInput = useMemo(() => {
     return {
-      job: currentJob || DEMO_JOB_SECTION_9,
+      job: currentJob || EMPTY_JOB,
       filaments: filamentsUsage,
       selectedPrinterId: defaultPrinter?.id || null,
       averagePowerWatts: calcParams.averagePowerWatts,
@@ -322,9 +301,16 @@ export const CalculatorPage: React.FC = () => {
       .reduce((sum, p) => sum + p.totalWeightGrams * (p.repeatsCount || 1), 0);
   }, [currentJob]);
 
+  const activeFilaments = filamentsUsage.filter((f) => currentJob?.plates.some((p) => p.selected && p.plateIndex === f.plateIndex));
+  const displayedFilaments = activeFilaments.map((f) => {
+    const repeats = currentJob?.plates.find((p) => p.plateIndex === f.plateIndex)?.repeatsCount || 1;
+    const weightGrams = new Decimal(f.weightGrams).mul(repeats).toFixed(2);
+    return { ...f, weightGrams, costUah: filamentCost(weightGrams, f.pricePerKgUah) };
+  });
+
   // Save calculation snapshot
   const handleSaveCalculation = async () => {
-    if (!currentJob) return;
+    if (!currentJob || currentJob.parseStatus !== 'success') return;
     setIsSaving(true);
     try {
       await saveCalculation({
@@ -337,8 +323,7 @@ export const CalculatorPage: React.FC = () => {
       setSaveSuccessMsg('Розрахунок успішно збережено в історію замовлень.');
       setTimeout(() => setSaveSuccessMsg(null), 3000);
     } catch {
-      setSaveSuccessMsg('Помилка при збереженні розрахунку в історію');
-      setTimeout(() => setSaveSuccessMsg(null), 4000);
+      setSaveSuccessMsg(null);
     } finally {
       setIsSaving(false);
     }
@@ -393,7 +378,7 @@ export const CalculatorPage: React.FC = () => {
 
     const csvContent =
       'data:text/csv;charset=utf-8,' +
-      [headers.join(','), ...rows.map((e) => e.map((val) => `"${val}"`).join(','))].join('\n');
+      [headers.join(','), ...rows.map((e) => e.map((val) => `"${String(val).replace(/"/g, '""').replace(/^[=+@-]/, "'$&")}"`).join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
@@ -413,7 +398,7 @@ export const CalculatorPage: React.FC = () => {
             <span>Калькулятор собівартості FDM 3D-друку</span>
           </h1>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-            Аналіз будь-яких файлів нарізки <code className="text-emerald-600 dark:text-emerald-400 font-bold">.gcode.3mf</code> / <code className="text-emerald-600 dark:text-emerald-400 font-bold">.gcode</code> з автоматичним зіставленням матеріалів.
+            Аналіз підтримуваних файлів нарізки <code className="text-emerald-600 dark:text-emerald-400 font-bold">.gcode.3mf</code> / <code className="text-emerald-600 dark:text-emerald-400 font-bold">.gcode</code> з автоматичним зіставленням матеріалів.
           </p>
         </div>
 
@@ -546,7 +531,7 @@ export const CalculatorPage: React.FC = () => {
 
                   {/* Filament Mapping Table */}
                   <FilamentMappingTable
-                    filaments={filamentsUsage}
+                    filaments={displayedFilaments}
                     availableMaterials={materials}
                     onMapMaterial={handleMapMaterial}
                     onPriceOverride={handlePriceOverride}
@@ -593,7 +578,7 @@ export const CalculatorPage: React.FC = () => {
             sellingPriceUah: calculationResult.sellingPriceUah,
             totalWeightGrams: calculationResult.totalWeightGrams,
             totalDurationSeconds: calculationResult.totalDurationSeconds,
-            filaments: filamentsUsage,
+            filaments: activeFilaments,
           }}
         />
       )}

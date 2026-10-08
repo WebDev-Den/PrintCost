@@ -44,8 +44,10 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
+    setSaveError(null);
     if (initialMaterial) {
       setName(initialMaterial.name);
       setType(initialMaterial.type);
@@ -131,8 +133,10 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    if (isSubmitting) return;
 
     setIsSubmitting(true);
+    setSaveError(null);
     try {
       await onSave({
         name: name.trim(),
@@ -149,6 +153,8 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
         notes: notes.trim() || undefined,
       });
       onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Не вдалося зберегти матеріал. Перевірте з’єднання й повторіть спробу.');
     } finally {
       setIsSubmitting(false);
     }
@@ -186,7 +192,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   return (
     <Modal
       isOpen={isOpen}
-      onClose={onClose}
+      onClose={() => { if (!isSubmitting) onClose(); }}
       title={initialMaterial ? 'Редагувати матеріал' : 'Додати позицію матеріалу'}
       description="Введіть вагу в кг та ціну — наявність на складі, вартість за кг, грам та загальний баланс розраховуються автоматично."
       maxWidth="lg"
@@ -198,7 +204,8 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
           <Button
             variant="primary"
             size="sm"
-            onClick={handleSubmit}
+            type="submit"
+            form="material-profile-form"
             isLoading={isSubmitting}
             disabled={!name.trim()}
           >
@@ -207,7 +214,8 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
         </>
       }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form id="material-profile-form" onSubmit={handleSubmit} className="space-y-4">
+        {saveError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{saveError}</p>}
         <Input
           label="Назва позиції / матеріалу"
           placeholder="напр., Bambu PETG Basic Black"

@@ -257,6 +257,7 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
           leftIcon={<Save className="w-4 h-4" />}
           onClick={onSave}
           isLoading={isSaving}
+          disabled={input.job.parseStatus !== 'success'}
         >
           Зберегти розрахунок в історію
         </Button>
@@ -268,6 +269,7 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
             className="text-xs"
             leftIcon={<Share2 className="w-3.5 h-3.5 text-emerald-600" />}
             onClick={onOpenClientQuote}
+            disabled={!isComplete}
           >
             Комерційний текст
           </Button>
@@ -278,6 +280,7 @@ export const PricingSummaryCard: React.FC<PricingSummaryCardProps> = ({
             className="text-xs"
             leftIcon={copiedPrice ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
             onClick={handleCopyPrice}
+            disabled={!isComplete}
           >
             {copiedPrice ? 'Скопійовано' : 'Копіювати ціну'}
           </Button>

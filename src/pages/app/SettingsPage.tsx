@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Settings as SettingsIcon,
   Zap,
@@ -21,7 +21,6 @@ import type { PricingMode, RoundingMode } from '../../domain/types.ts';
 export const SettingsPage: React.FC = () => {
   const {
     settings,
-    printers,
     updateSettings,
     exportSettings,
     importSettings,
@@ -30,32 +29,33 @@ export const SettingsPage: React.FC = () => {
     setTheme,
   } = useAppData();
 
-  const [form, setForm] = useState({
-    electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh || '5.00',
-    pricingMode: settings.pricingMode || 'markup',
-    defaultMarkupPercent: settings.defaultMarkupPercent || '100',
-    defaultMarginPercent: settings.defaultMarginPercent || '50',
-    scrapReservePercent: settings.scrapReservePercent || '10',
-    minOrderPriceUah: settings.minOrderPriceUah || '200',
-    roundingMode: settings.roundingMode || 'up_10',
-    defaultOperatorFeeUah: settings.defaultOperatorFeeUah || '20',
-    defaultPackagingFeeUah: settings.defaultPackagingFeeUah || '0',
-    defaultPostProcessingFeeUah: settings.defaultPostProcessingFeeUah || '0',
-    defaultOtherFeeUah: settings.defaultOtherFeeUah || '0',
-    defaultPrinterId: settings.defaultPrinterId || printers[0]?.id || '',
-    timezone: settings.timezone || 'Europe/Kyiv',
-  });
+  const [form, setForm] = useState(() => ({ ...settings, electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh ?? '', defaultPrinterId: settings.defaultPrinterId ?? '' }));
+  const [formVersion, setFormVersion] = useState(0);
+  useEffect(() => {
+    setForm({ ...settings, electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh ?? '', defaultPrinterId: settings.defaultPrinterId ?? '' });
+  }, [settings.electricityTariffUahPerKwh, settings.pricingMode, settings.defaultMarkupPercent, settings.defaultMarginPercent,
+    settings.scrapReservePercent, settings.minOrderPriceUah, settings.roundingMode, settings.defaultOperatorFeeUah,
+    settings.defaultPackagingFeeUah, settings.defaultPostProcessingFeeUah, settings.defaultOtherFeeUah, settings.defaultPrinterId, settings.timezone, formVersion]);
 
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
   const [showImportBox, setShowImportBox] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const busy = useRef(false);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy.current) return;
+    busy.current = true;
+    setIsPending(true);
+    setSavedSuccess(false);
+    setError(null);
+    try {
     await updateSettings({
-      electricityTariffUahPerKwh: form.electricityTariffUahPerKwh,
+      electricityTariffUahPerKwh: form.electricityTariffUahPerKwh.trim() || null,
       pricingMode: form.pricingMode as PricingMode,
       defaultMarkupPercent: form.defaultMarkupPercent,
       defaultMarginPercent: form.defaultMarginPercent,
@@ -70,10 +70,16 @@ export const SettingsPage: React.FC = () => {
       timezone: form.timezone,
     });
     setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2500);
+    } catch (error) { setError(error instanceof Error ? error.message : 'Не вдалося зберегти налаштування.'); }
+    finally { busy.current = false; setIsPending(false); }
   };
 
   const handleExport = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setIsPending(true);
+    setError(null);
+    try {
     const jsonStr = await exportSettings();
     const blob = new Blob([jsonStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -82,30 +88,45 @@ export const SettingsPage: React.FC = () => {
     a.download = 'printcost_settings_backup.json';
     a.click();
     URL.revokeObjectURL(url);
+    } catch (error) { setError(error instanceof Error ? error.message : 'Не вдалося експортувати налаштування.'); }
+    finally { busy.current = false; setIsPending(false); }
   };
 
   const handleImport = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setIsPending(true);
+    setSavedSuccess(false);
     setImportError(null);
     try {
       await importSettings(importJsonText);
+      setFormVersion(version => version + 1);
       setShowImportBox(false);
       setImportJsonText('');
       setSavedSuccess(true);
-      setTimeout(() => setSavedSuccess(false), 2500);
-    } catch {
-      setImportError('Помилка: невалідний JSON-файл конфігурації');
-    }
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'Не вдалося імпортувати налаштування.');
+    } finally { busy.current = false; setIsPending(false); }
   };
 
   const handleConfirmReset = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setIsPending(true);
+    setSavedSuccess(false);
+    setError(null);
+    try {
     await resetSettings();
+    setFormVersion(version => version + 1);
     setIsResetConfirmOpen(false);
     setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2500);
+    } catch (error) { setError(error instanceof Error ? error.message : 'Не вдалося скинути налаштування.'); }
+    finally { busy.current = false; setIsPending(false); }
   };
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {error && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{error}</p>}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-white">
@@ -123,7 +144,7 @@ export const SettingsPage: React.FC = () => {
         )}
       </div>
 
-      <form onSubmit={handleSave} className="space-y-6">
+      <form onSubmit={handleSave} onChange={() => setSavedSuccess(false)} className="space-y-6">
         {/* Section 1: Energy */}
         <div className="bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
           <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 pb-3">
@@ -316,7 +337,7 @@ export const SettingsPage: React.FC = () => {
 
         {/* Save button */}
         <div className="flex items-center justify-between pt-2">
-          <Button type="submit" variant="primary" size="md">
+          <Button type="submit" variant="primary" size="md" isLoading={isPending}>
             Зберегти зміни в налаштуваннях
           </Button>
 
@@ -326,6 +347,7 @@ export const SettingsPage: React.FC = () => {
             size="sm"
             leftIcon={<RotateCcw className="w-3.5 h-3.5 text-neutral-400" />}
             onClick={() => setIsResetConfirmOpen(true)}
+            disabled={isPending}
           >
             Скинути до типових
           </Button>
@@ -347,6 +369,7 @@ export const SettingsPage: React.FC = () => {
             size="sm"
             leftIcon={<FileDown className="w-3.5 h-3.5" />}
             onClick={handleExport}
+            disabled={isPending}
           >
             Експортувати налаштування
           </Button>
@@ -355,6 +378,7 @@ export const SettingsPage: React.FC = () => {
             size="sm"
             leftIcon={<FileUp className="w-3.5 h-3.5" />}
             onClick={() => setShowImportBox(!showImportBox)}
+            disabled={isPending}
           >
             Імпортувати з JSON
           </Button>
@@ -373,9 +397,9 @@ export const SettingsPage: React.FC = () => {
               className="w-full p-2.5 text-xs font-mono rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900"
             />
             {importError && (
-              <p className="text-xs text-rose-600 font-medium">{importError}</p>
+              <p role="alert" className="text-xs text-rose-600 font-medium">{importError}</p>
             )}
-            <Button variant="primary" size="sm" onClick={handleImport}>
+            <Button variant="primary" size="sm" onClick={handleImport} isLoading={isPending}>
               Застосувати імпортований JSON
             </Button>
           </div>
@@ -385,23 +409,23 @@ export const SettingsPage: React.FC = () => {
       {/* Confirmation Modal for Reset Settings */}
       <Modal
         isOpen={isResetConfirmOpen}
-        onClose={() => setIsResetConfirmOpen(false)}
+        onClose={() => { if (!isPending) setIsResetConfirmOpen(false); }}
         title="Скинути налаштування?"
-        description="Всі тарифи та правила округлення повертаються до демонстраційних значень."
+        description="Тарифи та правила ціноутворення повернуться до типових значень."
         maxWidth="sm"
         footer={
           <>
-            <Button variant="outline" size="sm" onClick={() => setIsResetConfirmOpen(false)}>
+            <Button variant="outline" size="sm" onClick={() => setIsResetConfirmOpen(false)} disabled={isPending}>
               Скасувати
             </Button>
-            <Button variant="danger" size="sm" onClick={handleConfirmReset}>
+            <Button variant="danger" size="sm" onClick={handleConfirmReset} isLoading={isPending}>
               Підтвердити скидання
             </Button>
           </>
         }
       >
         <p className="text-xs text-neutral-600 dark:text-neutral-400">
-          Ви впевнені, що хочете скинути всі налаштування ціноутворення до заводських демонстраційних параметрів?
+          Ви впевнені, що хочете скинути всі налаштування ціноутворення? Матеріали, принтери та розрахунки залишаться у вашому акаунті.
         </p>
       </Modal>
     </div>

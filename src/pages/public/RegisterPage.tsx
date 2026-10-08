@@ -5,6 +5,7 @@ import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
+import { authErrorMessage } from '../../services/authService.ts';
 
 export const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
@@ -37,18 +38,25 @@ export const RegisterPage: React.FC = () => {
     setIsSubmitting(true);
     try {
       await register(email, password);
-      // Direct new users into onboarding
-      navigate('/app/onboarding');
-    } catch {
-      setError('Помилка реєстрації. Спробуйте іншу адресу email.');
+      navigate('/auth/check-email', { state: { verificationSent: true } });
+    } catch (error) {
+      setError(authErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleDemoAccess = async () => {
-    await enableDemoSession();
-    navigate('/app/dashboard');
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await enableDemoSession();
+      navigate('/app/dashboard');
+    } catch (error) {
+      setError(authErrorMessage(error));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -68,7 +76,7 @@ export const RegisterPage: React.FC = () => {
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-white dark:bg-neutral-900 py-8 px-6 shadow-sm border border-neutral-200 dark:border-neutral-800 rounded-2xl space-y-6">
           {error && (
-            <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300 font-medium">
+            <div role="alert" className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300 font-medium">
               {error}
             </div>
           )}
@@ -158,6 +166,7 @@ export const RegisterPage: React.FC = () => {
             <button
               type="button"
               onClick={handleDemoAccess}
+              disabled={isSubmitting}
               className="text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center justify-center gap-1 mx-auto"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-500" />

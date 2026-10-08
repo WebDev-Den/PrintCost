@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext.tsx';
 import { AppDataProvider } from './context/AppDataContext.tsx';
@@ -18,15 +18,15 @@ import { FilamentsDirectoryPage } from './pages/public/FilamentsDirectoryPage.ts
 
 // App pages
 import { DashboardPage } from './pages/app/DashboardPage.tsx';
-import { CalculatorPage } from './pages/app/CalculatorPage.tsx';
+const CalculatorPage = lazy(() => import('./pages/app/CalculatorPage.tsx').then((m) => ({ default: m.CalculatorPage })));
 import { CalculationsHistoryPage } from './pages/app/CalculationsHistoryPage.tsx';
-import { CalculationDetailsPage } from './pages/app/CalculationDetailsPage.tsx';
+const CalculationDetailsPage = lazy(() => import('./pages/app/CalculationDetailsPage.tsx').then((m) => ({ default: m.CalculationDetailsPage })));
 import { MaterialsPage } from './pages/app/MaterialsPage.tsx';
 import { PrintersPage } from './pages/app/PrintersPage.tsx';
 import { SettingsPage } from './pages/app/SettingsPage.tsx';
 import { AccountPage } from './pages/app/AccountPage.tsx';
 import { OnboardingPage } from './pages/app/OnboardingPage.tsx';
-import { CatalogAdminPage } from './pages/app/CatalogAdminPage.tsx';
+const CatalogAdminPage = lazy(() => import('./pages/app/CatalogAdminPage.tsx').then((m) => ({ default: m.CatalogAdminPage })));
 
 // Fallback pages
 import { NotFoundPage } from './pages/NotFoundPage.tsx';
@@ -36,7 +36,7 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <AppDataProvider>
-          <Routes>
+          <Suspense fallback={<div role="status" className="p-12 text-center">Завантаження…</div>}><Routes>
             {/* Public Routes */}
             <Route path="/" element={<LandingPage />} />
             <Route path="/filaments" element={<FilamentsDirectoryPage />} />
@@ -64,7 +64,7 @@ export default function App() {
 
             {/* 404 Catch-All */}
             <Route path="*" element={<NotFoundPage />} />
-          </Routes>
+          </Routes></Suspense>
         </AppDataProvider>
       </AuthProvider>
     </BrowserRouter>

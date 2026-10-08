@@ -12,6 +12,8 @@ import {
   Zap,
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext.tsx';
+import { calculationRepository } from '../../services/calculationRepository.ts';
+import { Decimal } from 'decimal.js';
 import type { CalculationSnapshot } from '../../domain/types.ts';
 import { Button } from '../../components/common/Button.tsx';
 import { StatusBadge } from '../../components/common/StatusBadge.tsx';
@@ -28,20 +30,26 @@ export const CalculationDetailsPage: React.FC = () => {
   const [isClientQuoteOpen, setIsClientQuoteOpen] = useState(false);
   const [copiedPrice, setCopiedPrice] = useState(false);
   const [isRecalculating, setIsRecalculating] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (id) {
-      const found = calculations.find((c) => c.id === id);
-      if (found) {
-        setSnapshot(found);
-      }
-    }
+    let cancelled = false;
+    setSnapshot(null); setError(null); setIsLoading(true);
+    const found = calculations.find((c) => c.id === id);
+    if (found) { setSnapshot(found); setIsLoading(false); }
+    else if (id) {
+      calculationRepository.getById(id).then((value) => { if (!cancelled) setSnapshot(value); })
+        .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Не вдалося завантажити розрахунок.'); })
+        .finally(() => { if (!cancelled) setIsLoading(false); });
+    } else setIsLoading(false);
+    return () => { cancelled = true; };
   }, [id, calculations]);
 
-  if (!snapshot) {
+  if (!snapshot || snapshot.id !== id) {
     return (
       <div className="p-8 text-center space-y-3">
-        <p className="text-sm text-neutral-500">Розрахунок не знайдено або він був видалений.</p>
+        <p role={error ? 'alert' : 'status'} className="text-sm text-neutral-500">{error || (isLoading ? 'Завантаження розрахунку…' : 'Розрахунок не знайдено або він був видалений.')}</p>
         <Button variant="outline" size="sm" onClick={() => navigate('/app/calculations')}>
           Повернутися до історії
         </Button>
@@ -63,10 +71,10 @@ export const CalculationDetailsPage: React.FC = () => {
       // Update filament prices from current master catalog
       const updatedFilaments = input.filaments.map((f) => {
         const catalogMat = materials.find((m) => m.id === f.mappedMaterialId);
-        const currentPrice = catalogMat?.pricePerKgUah || f.pricePerKgUah;
-        let updatedCost = f.costUah;
+        const currentPrice = f.mappedMaterialId ? (catalogMat && !catalogMat.isArchived ? catalogMat.pricePerKgUah : null) : f.pricePerKgUah;
+        let updatedCost = null;
         if (currentPrice && parseFloat(f.weightGrams) > 0) {
-          updatedCost = ((parseFloat(f.weightGrams) / 1000) * parseFloat(currentPrice)).toFixed(2);
+          updatedCost = new Decimal(f.weightGrams).div(1000).mul(currentPrice).toFixed(2);
         }
         return {
           ...f,
@@ -78,11 +86,14 @@ export const CalculationDetailsPage: React.FC = () => {
       const updatedInput = {
         ...input,
         filaments: updatedFilaments,
+        selectedPrinterId: activePrinter?.id || null,
         averagePowerWatts: activePrinter?.averagePowerWatts || input.averagePowerWatts,
-        electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh || input.electricityTariffUahPerKwh,
+        electricityTariffUahPerKwh: settings.electricityTariffUahPerKwh,
         machineHourlyRateUah: activePrinter?.machineHourlyRateUah || input.machineHourlyRateUah,
         operatorFeeUah: settings.defaultOperatorFeeUah || input.operatorFeeUah,
         packagingFeeUah: settings.defaultPackagingFeeUah || input.packagingFeeUah,
+        postProcessingFeeUah: settings.defaultPostProcessingFeeUah,
+        otherFeeUah: settings.defaultOtherFeeUah,
         scrapReservePercent: settings.scrapReservePercent || input.scrapReservePercent,
         pricingMode: settings.pricingMode || input.pricingMode,
         markupPercent: settings.defaultMarkupPercent || input.markupPercent,
@@ -107,7 +118,8 @@ export const CalculationDetailsPage: React.FC = () => {
       });
 
       navigate(`/app/calculations/${newSnapshot.id}`);
-    } finally {
+    } catch { /* AppDataContext displays the error. */ }
+    finally {
       setIsRecalculating(false);
     }
   };
@@ -161,6 +173,7 @@ export const CalculationDetailsPage: React.FC = () => {
             size="sm"
             leftIcon={<Share2 className="w-3.5 h-3.5" />}
             onClick={() => setIsClientQuoteOpen(true)}
+            disabled={result.status !== 'complete'}
           >
             Пропозиція для клієнта
           </Button>
@@ -195,7 +208,7 @@ export const CalculationDetailsPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                  {input.filaments.map((f, i) => (
+                  {input.filaments.filter((f) => input.job.plates.some((p) => p.selected && p.plateIndex === f.plateIndex)).map((f, i) => (
                     <tr key={i} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/40">
                       <td className="py-2.5 px-3 font-medium">{f.plateName}</td>
                       <td className="py-2.5 px-3">
@@ -205,13 +218,13 @@ export const CalculationDetailsPage: React.FC = () => {
                         {f.mappedMaterialName || '—'}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums">
-                        {formatWeightUk(f.weightGrams)}
+                        {formatWeightUk(new Decimal(f.weightGrams).mul(input.job.plates.find((p) => p.plateIndex === f.plateIndex)?.repeatsCount || 1).toFixed(2))}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums">
                         {formatUah(f.pricePerKgUah)}/кг
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums font-semibold">
-                        {formatUah(f.costUah)}
+                        {formatUah(f.pricePerKgUah === null ? null : new Decimal(f.weightGrams).div(1000).mul(f.pricePerKgUah).mul(input.job.plates.find((p) => p.plateIndex === f.plateIndex)?.repeatsCount || 1).toFixed(2))}
                       </td>
                     </tr>
                   ))}
@@ -359,6 +372,7 @@ export const CalculationDetailsPage: React.FC = () => {
               className="w-full"
               leftIcon={<Copy className="w-3.5 h-3.5" />}
               onClick={handleCopyPrice}
+              disabled={result.status !== 'complete'}
             >
               {copiedPrice ? 'Ціну скопійовано' : 'Копіювати ціну'}
             </Button>
@@ -375,7 +389,7 @@ export const CalculationDetailsPage: React.FC = () => {
           sellingPriceUah: result.sellingPriceUah,
           totalWeightGrams: result.totalWeightGrams,
           totalDurationSeconds: result.totalDurationSeconds,
-          filaments: input.filaments,
+          filaments: input.filaments.filter((f) => input.job.plates.some((p) => p.selected && p.plateIndex === f.plateIndex)),
         }}
       />
     </div>

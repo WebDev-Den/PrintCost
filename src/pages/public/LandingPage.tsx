@@ -58,7 +58,7 @@ export const LandingPage: React.FC = () => {
             </h1>
 
             <p className="text-base sm:text-lg text-neutral-600 dark:text-neutral-300 max-w-2xl mx-auto leading-relaxed">
-              Особистий кабінет майстерні для миттєвого вилучення грамів, часу та філаментів із проєктів будь-яких FDM-слайсерів: <code className="text-xs font-mono font-bold bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-emerald-700 dark:text-emerald-300">Bambu Studio</code>, <code className="text-xs font-mono font-bold bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-emerald-700 dark:text-emerald-300">OrcaSlicer</code>, <code className="text-xs font-mono font-bold bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-emerald-700 dark:text-emerald-300">PrusaSlicer</code>, <code className="text-xs font-mono font-bold bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-emerald-700 dark:text-emerald-300">Creality Print</code>.
+              Особистий кабінет майстерні для розрахунку за часом і витратами філаментів із нарізаних архівів Bambu Studio та OrcaSlicer, а також текстових G-code із метаданими PrusaSlicer та OrcaSlicer.
             </p>
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
@@ -165,7 +165,7 @@ export const LandingPage: React.FC = () => {
                 Універсальний аналіз файлів .gcode.3mf
               </h3>
               <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                Формат <strong>.gcode.3mf</strong> є відкритим стандартом архіву, який експортують <strong>Bambu Studio</strong>, <strong>OrcaSlicer</strong>, <strong>PrusaSlicer</strong>, <strong>Creality Print</strong>, <strong>Elegoo Slicer</strong> та інші слайсери. Він містить повну геометрію нарізки, метадані тривалості кожної пластини, витрату філаменту в грамах та розкладку лотків.
+                Підтримуються нарізані архіви <strong>.3mf / .gcode.3mf</strong> із Bambu Studio та OrcaSlicer, а також текстові G-code з часом друку й витратами філаментів. Проєкти лише з геометрією, binary .bgcode та файли без потрібних метаданих не дають готового розрахунку. Файл аналізується у вашому браузері.
               </p>
               <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
                 Ваша 3D-модель не передається на сторонні сервери — до вашого простору KILO·G зберігається лише числовий паспорт замовлення.
