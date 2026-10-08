@@ -97,28 +97,21 @@ service cloud.firestore {
         && data.verified is bool && data.verified == request.auth.token.get('email_verified', false)
         && data.updatedAt == request.time;
     }
-    function verifiedTarget(target) {
-      return exists(/databases/$(database)/documents/userDirectory/$(target))
-        && get(/databases/$(database)/documents/userDirectory/$(target)).data.verified == true
-        && (!exists(/databases/$(database)/documents/accountAccess/$(target))
-          || get(/databases/$(database)/documents/accountAccess/$(target)).data.blocked == false);
-    }
     function membershipVersion(target, next) {
-      return (!exists(/databases/$(database)/documents/memberships/$(target)) && next.version == 1)
-        || (exists(/databases/$(database)/documents/memberships/$(target))
-          && next.version == get(/databases/$(database)/documents/memberships/$(target)).data.version + 1);
+      return next.version == (exists(/databases/$(database)/documents/memberships/$(target))
+        ? get(/databases/$(database)/documents/memberships/$(target)).data.version + 1 : 1);
     }
     function canonicalRole(target, audit, registry, access, membership) {
       return access.blocked == audit.blocked && access.updatedBy == audit.actorUid
         && membership.updatedBy == audit.actorUid && membershipVersion(target, membership)
-        && ((audit.role == 'admin' && target in registry.adminUids && audit.blocked == false
-              && audit.companyId == null && membership.companyId == null && membership.active == false)
-          || (audit.role == 'user' && !(target in registry.adminUids)
-              && audit.companyId == null && membership.companyId == null && membership.active == false)
-          || (audit.role == 'manager' && !(target in registry.adminUids) && audit.blocked == false
+        && (audit.role == 'manager'
+          ? (!(target in registry.adminUids) && audit.blocked == false
               && membership.active == true && membership.companyId == audit.companyId
               && audit.companyId != null
-              && getAfter(/databases/$(database)/documents/companies/$(audit.companyId)).data.status == 'active'));
+              && getAfter(/databases/$(database)/documents/companies/$(audit.companyId)).data.status == 'active')
+          : (audit.companyId == null && membership.companyId == null && membership.active == false
+              && (audit.role == 'admin' ? target in registry.adminUids && audit.blocked == false
+                : audit.role == 'user' && !(target in registry.adminUids))));
     }
     function bootstrapTransition(target, audit, next) {
       return !exists(/databases/$(database)/documents/system/authorization)
@@ -129,8 +122,10 @@ service cloud.firestore {
     }
     function registryTransition(target, audit, next) {
       let previous = get(/databases/$(database)/documents/system/authorization).data;
-      return admin() && audit.action in ['role', 'block']
-        && exists(/databases/$(database)/documents/userDirectory/$(target))
+      let directory = get(/databases/$(database)/documents/userDirectory/$(target)).data;
+      // Reuse the required prestate reads: grants already require unblocked target access below.
+      return verified() && unblocked() && request.auth.uid in previous.adminUids
+        && audit.action in ['role', 'block'] && directory is map
         && (audit.action != 'block' || audit.role == 'user')
         && (audit.action != 'block' || audit.blocked == true
           || (exists(/databases/$(database)/documents/accountAccess/$(target))
@@ -138,7 +133,7 @@ service cloud.firestore {
         && (audit.action != 'role' || (audit.blocked == false
           && (!exists(/databases/$(database)/documents/accountAccess/$(target))
             || get(/databases/$(database)/documents/accountAccess/$(target)).data.blocked == false)))
-        && (audit.role == 'user' || verifiedTarget(target))
+        && (audit.role == 'user' || directory.verified == true)
         && next.bootstrapUid == previous.bootstrapUid && next.initializedAt == previous.initializedAt
         && next.version == previous.version + 1
         && next.adminUids == previous.adminUids.removeAll([target]).concat(audit.role == 'admin' ? [target] : []);
@@ -154,7 +149,7 @@ service cloud.firestore {
         && access.updatedAt == request.time && access.changeId == id
         && membership.updatedAt == request.time && membership.changeId == id
         && canonicalRole(target, audit, registry, access, membership)
-        && (bootstrapTransition(target, audit, registry) || registryTransition(target, audit, registry));
+        && (audit.action == 'bootstrap' ? bootstrapTransition(target, audit, registry) : registryTransition(target, audit, registry));
     }
     function adminWriter() { return admin() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid)); }
     function validDeletion(data, target) {

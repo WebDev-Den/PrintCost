@@ -1,6 +1,6 @@
 # Запуск, резервні копії та відновлення KiloG
 
-Робочий Firebase-проєкт — **kilo-g**, база Firestore **(default), Standard**, тариф **Spark**. Сайт і API — Worker **kilo-g**, цільовий тариф **Cloudflare Free**; фактичний план акаунта треба підтвердити перед випуском, оскільки API subscriptions повернув 403. Зміна тарифу, Cloud Billing, Blaze, paid Workers, керовані backups/PITR або платні сервіси не входять до цього запуску.
+Робочий Firebase-проєкт — **kilo-g**, база Firestore **(default), Standard**, тариф **Spark**. Сайт і API — Worker **kilo-g**, тариф **Cloudflare Free**: 9 жовтня 2026 консоль Workers plans показала Free / $0 / Current plan. API subscriptions для CLI повернув 403, тому тариф підтверджено через консоль. Зміна тарифу, Cloud Billing, Blaze, paid Workers, керовані backups/PITR або платні сервіси не входять до цього запуску.
 
 ## Перед випуском
 
@@ -10,7 +10,7 @@
 
 Перевірити дозволені Firebase Auth домени, реальні листи підтвердження/відновлення, роботу прямого URL, bootstrap власника і ролей. Зберегти git SHA, версію Worker, стан Rules/indexes та ідентифікатор міграції D1. Відкат коду або Rules не відновлює дані автоматично.
 
-Локальний remote — [WebDev-Den/PrintCost](https://github.com/WebDev-Den/PrintCost), робоча гілка `codex/user-platform`. Read-only інвентаризація 8 жовтня 2026 підтвердила доступ до Worker API та наявні deployments із source `wrangler`. [Workers Builds trigger inventory](https://developers.cloudflare.com/api/resources/workers_builds/subresources/triggers/methods/list/) повернув **403 / 10000** для наявного CLI OAuth: його scopes не містять Workers CI Read/Write. Це не доводить відсутності Git connection. Перед випуском власник має перевірити в Cloudflare Builds підключений repository, production branch, root directory, build/deploy commands і відсутність небажаного автодеплою. Скрипти цього етапу не розширюють scopes, не створюють triggers і не запускають builds.
+Локальний remote — [WebDev-Den/PrintCost](https://github.com/WebDev-Den/PrintCost), робоча гілка `codex/user-platform`. [Workers Builds trigger inventory](https://developers.cloudflare.com/api/resources/workers_builds/subresources/triggers/methods/list/) повернув **403 / 10000** для наявного CLI OAuth, але консоль 9 жовтня 2026 підтвердила Git connection: repository `WebDev-Den/PrintCost`, production branch `main`, root `/`, build `npm run build`, deploy `npx wrangler deploy`. Перед випуском команди треба змінити на `npm run lint && npm test` та `npm run deploy:worker`, щоб застосовувався guard D1. Preview builds наразі ввімкнені з `npx wrangler preview` і падають через відсутній `previews` block; preview URLs вимкнені. Вимкнути preview builds для цього запуску: окремі ресурси Firebase/D1 для preview не налаштовані. У поточному production Worker лише static assets, bindings/cron ще немає; у D1 наразі 0 баз. Скрипти цього етапу не розширюють scopes, не створюють triggers і не запускають builds.
 
 ## Захищений локальний експорт
 

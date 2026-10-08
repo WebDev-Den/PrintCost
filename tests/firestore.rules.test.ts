@@ -11,6 +11,8 @@ import { CALCULATION_ALGORITHM_VERSION, extractTemplateParameters, validateCalcu
 import { createTaxPreset, TAX_SOURCE_URLS, type TaxSettings } from '../src/domain/taxes.ts';
 
 let environment: RulesTestEnvironment;
+// Each run owns an isolated emulator namespace; clearFirestore never touches browser fixtures.
+const testProjectId = `demo-kilog-rules-${crypto.randomUUID().slice(0, 8)}`;
 const profile = { email: 'alice@example.com', fullName: 'Alice', workshopName: 'Майстерня', createdAt: '2026-10-08T10:00:00.000Z' };
 const settings = { ...INITIAL_PRICING_SETTINGS, defaultPrinterId: null, filamentMappingPresets: {} };
 const material = { ...INITIAL_MATERIALS[0], id: 'material' };
@@ -50,6 +52,7 @@ type Role = 'user' | 'manager' | 'admin';
 type TestFirestore = ReturnType<RulesTestContext['firestore']>;
 type RoleOptions = {
   blocked?: boolean; companyId?: string | null; action?: 'role' | 'block'; auditId?: string;
+  reverseWrites?: boolean;
   omit?: 'registry' | 'access' | 'membership' | 'audit';
   registry?: Record<string, unknown>; access?: Record<string, unknown>; membership?: Record<string, unknown>; audit?: Record<string, unknown>;
 };
@@ -63,19 +66,21 @@ async function roleBatch(db: TestFirestore, actor: string, target: string, role:
   const blocked = options.blocked ?? false;
   const companyId = options.companyId ?? null;
   const batch = writeBatch(db);
-  if (options.omit !== 'registry') batch.set(registryRef, {
+  const writes: Array<() => void> = [];
+  if (options.omit !== 'registry') writes.push(() => batch.set(registryRef, {
     ...previous, version: previous.version + 1, lastChangeId: id,
     adminUids: [...previous.adminUids.filter((uid: string) => uid !== target), ...(role === 'admin' ? [target] : [])], ...options.registry,
-  });
-  if (options.omit !== 'access') batch.set(doc(db, `accountAccess/${target}`), { blocked, updatedAt: serverTimestamp(), updatedBy: actor, changeId: id, ...options.access });
-  if (options.omit !== 'membership') batch.set(membershipRef, {
+  }));
+  if (options.omit !== 'access') writes.push(() => batch.set(doc(db, `accountAccess/${target}`), { blocked, updatedAt: serverTimestamp(), updatedBy: actor, changeId: id, ...options.access }));
+  if (options.omit !== 'membership') writes.push(() => batch.set(membershipRef, {
     companyId, active: role === 'manager', version: (oldMembership.data()?.version ?? 0) + 1,
     updatedAt: serverTimestamp(), updatedBy: actor, changeId: id, ...options.membership,
-  });
-  if (options.omit !== 'audit') batch.set(doc(db, `accessAudit/${id}`), {
+  }));
+  if (options.omit !== 'audit') writes.push(() => batch.set(doc(db, `accessAudit/${id}`), {
     actorUid: actor, targetUid: target, action: options.action ?? 'role', role, companyId, blocked,
     createdAt: serverTimestamp(), registryVersion: previous.version + 1, ...options.audit,
-  });
+  }));
+  (options.reverseWrites ? writes.reverse() : writes).forEach(write => write());
   return batch;
 }
 
@@ -160,7 +165,7 @@ before(async () => {
   if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Run with npm run test:rules');
   const [host, port] = process.env.FIRESTORE_EMULATOR_HOST.split(':');
   environment = await initializeTestEnvironment({
-    projectId: 'demo-kilog',
+    projectId: testProjectId,
     firestore: { host, port: Number(port), rules: await readFile(new URL('../firestore.rules', import.meta.url), 'utf8') },
   });
 });
@@ -486,6 +491,59 @@ test('32 administrators stay within Rules expression limits and a 33rd grant is 
   await assertSucceeds((await companyBatch(administrator, 'administrator')).commit());
   await assertSucceeds((await roleBatch(administrator, 'administrator', 'alice', 'manager', { companyId: 'company-a' })).commit());
   assert.equal((await getDoc(doc(administrator, 'system/authorization'))).data()?.adminUids.length, 32);
+});
+
+test('32-admin role transitions with existing access and membership metadata retain budget headroom', async () => {
+  const admins = ['administrator', 'alice', ...Array.from({ length: 30 }, (_, index) => `admin-${index}`)];
+  await seedAuthorization(admins);
+  await seedDirectory('alice');
+  await seedUnblockedAccess('administrator');
+  await seedUnblockedAccess();
+  await environment.withSecurityRulesDisabled(async context => {
+    for (const id of ['administrator', 'alice']) await setDoc(doc(context.firestore(), `memberships/${id}`), {
+      companyId: null, active: false, version: 7, updatedAt: historicalTime, updatedBy: 'administrator', changeId: 'seed',
+    });
+  });
+  const administrator = user('administrator');
+  await (await companyBatch(administrator, 'administrator')).commit();
+  for (const reverseWrites of [false, true]) {
+    await assertSucceeds((await roleBatch(administrator, 'administrator', 'alice', 'manager', { companyId: 'company-a', reverseWrites })).commit());
+    await assertSucceeds((await roleBatch(administrator, 'administrator', 'alice', 'user', { reverseWrites })).commit());
+    await assertSucceeds((await roleBatch(administrator, 'administrator', 'alice', 'manager', { companyId: 'company-a', reverseWrites })).commit());
+    await assertSucceeds((await roleBatch(administrator, 'administrator', 'alice', 'admin', { reverseWrites })).commit());
+    const stale = await roleBatch(administrator, 'administrator', 'alice', 'user', { reverseWrites });
+    await assertSucceeds((await roleBatch(administrator, 'administrator', 'alice', 'user', { action: 'block', blocked: true, reverseWrites })).commit());
+    await assertFails(stale.commit());
+    await assertSucceeds((await roleBatch(administrator, 'administrator', 'alice', 'user', { action: 'block', blocked: false, reverseWrites })).commit());
+    await assertSucceeds((await roleBatch(administrator, 'administrator', 'alice', 'admin', { reverseWrites })).commit());
+  }
+  assert.equal((await getDoc(doc(administrator, 'system/authorization'))).data()?.adminUids.length, 32);
+});
+
+test('32-admin departures with existing metadata retain CAS and immutable bootstrap fields', async () => {
+  const admins = ['administrator', 'alice', ...Array.from({ length: 30 }, (_, index) => `admin-${index}`)];
+  await seedAuthorization(admins);
+  await environment.withSecurityRulesDisabled(async context => {
+    for (const id of ['alice', 'ordinary']) {
+      await setDoc(doc(context.firestore(), `accountAccess/${id}`), { blocked: false, updatedAt: historicalTime, updatedBy: 'administrator', changeId: 'seed' });
+      await setDoc(doc(context.firestore(), `memberships/${id}`), { companyId: null, active: false, version: 7, updatedAt: historicalTime, updatedBy: 'administrator', changeId: 'seed' });
+    }
+  });
+  const administrator = user('administrator');
+  const ordinary = recentUser('ordinary');
+  const admin = recentUser();
+  const stale = await deletionBatch(admin);
+  await assertSucceeds((await deletionBatch(ordinary, 'ordinary')).batch.commit());
+  assert.equal((await getDoc(doc(administrator, 'system/authorization'))).data()?.adminUids.length, 32);
+  await assertFails(stale.batch.commit());
+  await assertSucceeds((await deletionBatch(admin)).batch.commit());
+  const registry = (await getDoc(doc(administrator, 'system/authorization'))).data()!;
+  assert.equal(registry.adminUids.length, 31);
+  assert.equal(registry.version, 3);
+  assert.equal(registry.bootstrapUid, 'administrator');
+  assert.ok(registry.initializedAt.isEqual(historicalTime));
+  assert.equal(registry.adminUids.includes('alice'), false);
+  await assertFails((await deletionBatch(admin)).batch.commit());
 });
 
 test('a blocked designated bootstrap account cannot restore its own access', async () => {
