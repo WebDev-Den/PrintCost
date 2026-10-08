@@ -2,6 +2,8 @@
 
 Калькулятор витрат і ціни замовлення, матеріали, принтери, історія розрахунків та публічний каталог філаментів. Застосунок читає підтримувані метадані нарізки локально у браузері.
 
+[PROJECT_STATUS.md](./PROJECT_STATUS.md) — перевірений стан деплою, статус функціональних задач і наступні кроки для живого приймання.
+
 Поточний стек: React + TypeScript + Vite, **Cloudflare Workers Static Assets** для сайту, **Firebase Authentication** для акаунтів і **Cloud Firestore Standard** для даних. Worker **`kilo-g`** обслуговує статичну збірку `dist`; окремі `/api/*` маршрути працюють із **D1** для аналітики. Firebase Storage та Cloud Functions для цього запуску не потрібні. [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) містить актуальну архітектуру й статус перевірок; [SERVER_SPECIFICATION.md](./SERVER_SPECIFICATION.md) — попередня архітектура як історичний документ.
 
 ## Firebase Spark: початкове налаштування
