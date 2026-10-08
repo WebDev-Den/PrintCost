@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.tsx';
+import { useAppData } from '../../context/AppDataContext.tsx';
 import { Button } from '../common/Button.tsx';
 import { BrandLogo } from '../common/BrandLogo.tsx';
-import { Menu, X, BookOpen, Sparkles, Layers, Calculator } from 'lucide-react';
+import { Menu, X, BookOpen, Sparkles, Layers, Calculator, Sun, Moon } from 'lucide-react';
 
 export const PublicNavbar: React.FC = () => {
   const { user, enableDemoSession } = useAuth();
+  const { theme, setTheme } = useAppData();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -87,6 +89,21 @@ export const PublicNavbar: React.FC = () => {
           </NavLink>
         )}
 
+        {/* Theme Toggle Button */}
+        <button
+          type="button"
+          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          className="p-2 rounded-xl text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors border border-neutral-200 dark:border-neutral-700/80 flex items-center justify-center"
+          title={`Перемкнути на ${theme === 'dark' ? 'світлу' : 'темну'} тему`}
+          aria-label="Перемкнути тему оформлення"
+        >
+          {theme === 'dark' ? (
+            <Sun className="w-4 h-4 text-amber-400" />
+          ) : (
+            <Moon className="w-4 h-4 text-neutral-600 dark:text-neutral-300" />
+          )}
+        </button>
+
         <Button variant="outline" size="sm" onClick={handleOpenDemo} className="hidden sm:inline-flex">
           Демо
         </Button>
@@ -153,6 +170,39 @@ export const PublicNavbar: React.FC = () => {
               Універсальні файли .gcode.3mf
             </a>
           </nav>
+
+          {/* Theme switcher row in mobile menu */}
+          <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between px-1">
+            <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+              Тема оформлення
+            </span>
+            <div className="inline-flex rounded-lg border border-neutral-200 dark:border-neutral-700 p-0.5 bg-neutral-100 dark:bg-neutral-800">
+              <button
+                type="button"
+                onClick={() => setTheme('light')}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs rounded-md font-medium transition-colors ${
+                  theme === 'light'
+                    ? 'bg-white dark:bg-neutral-700 text-neutral-900 dark:text-white shadow-xs font-semibold'
+                    : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-900'
+                }`}
+              >
+                <Sun className="w-3.5 h-3.5 text-amber-500" />
+                <span>Світла</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTheme('dark')}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs rounded-md font-medium transition-colors ${
+                  theme === 'dark'
+                    ? 'bg-white dark:bg-neutral-700 text-neutral-900 dark:text-white shadow-xs font-semibold'
+                    : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-900'
+                }`}
+              >
+                <Moon className="w-3.5 h-3.5 text-neutral-600 dark:text-indigo-400" />
+                <span>Темна</span>
+              </button>
+            </div>
+          </div>
 
           <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 flex gap-2">
             <Button

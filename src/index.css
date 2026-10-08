@@ -1,21 +1,23 @@
 @import "tailwindcss";
 
+@variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
 @layer base {
   :root {
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, monospace;
   }
 
-  body {
+  html, body {
     font-family: var(--font-sans);
     background-color: #f8fafc;
     color: #0f172a;
   }
-}
 
-.dark body {
-  background-color: #0b0f17;
-  color: #f1f5f9;
+  html.dark, html.dark body, body.dark {
+    background-color: #0b0f17;
+    color: #f1f5f9;
+  }
 }
 
 /* Tabular figures for numbers */

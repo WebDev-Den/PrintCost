@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Calculator,
@@ -16,6 +16,9 @@ import {
   Compass,
   BookOpen,
   ShieldCheck,
+  PanelLeftClose,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useAppData } from '../../context/AppDataContext.tsx';
@@ -27,7 +30,42 @@ export const AppLayout: React.FC = () => {
   const { theme, setTheme } = useAppData();
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Mobile menu drawer state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Desktop sidebar collapsed state (persistent in localStorage)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('kilog_sidebar_collapsed');
+      if (saved !== null) return saved === 'true';
+      return localStorage.getItem('kilog_sidebar_hidden') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('kilog_sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  // Keyboard shortcut Ctrl+B or Cmd+B to toggle sidebar collapse
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const navItems = [
     { to: '/app/dashboard', label: 'Огляд', icon: LayoutDashboard },
@@ -57,93 +95,175 @@ export const AppLayout: React.FC = () => {
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col antialiased">
       <DemoBanner />
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Desktop Sidebar (250px) */}
-        <aside className="hidden lg:flex w-64 flex-col border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shrink-0">
-          {/* Logo & Brand Zone */}
-          <div className="h-14 px-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
-            <NavLink to="/app/dashboard">
-              <BrandLogo size="sm" />
-            </NavLink>
-          </div>
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Desktop Sidebar (Full w-64 or Collapsed Icon-only Rail w-16) */}
+        <aside
+          className={`hidden lg:flex flex-col border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shrink-0 transition-[width] duration-300 ease-in-out ${
+            sidebarCollapsed ? 'w-16' : 'w-64'
+          }`}
+        >
+          {/* Logo & Brand Zone + Collapse Button */}
+          {sidebarCollapsed ? (
+            <div className="h-14 px-2 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-center">
+              <NavLink to="/app/dashboard" title="KILO·G — На головну" className="flex items-center justify-center">
+                <BrandLogo size="sm" iconOnly />
+              </NavLink>
+            </div>
+          ) : (
+            <div className="h-14 px-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
+              <NavLink to="/app/dashboard" className="truncate">
+                <BrandLogo size="sm" />
+              </NavLink>
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                className="p-1.5 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors"
+                title="Згорнути меню (Ctrl+B)"
+                aria-label="Згорнути меню"
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
-          {/* Navigation Links */}
-          <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          {/* Navigation Links with visible icons always */}
+          <nav className={`flex-1 ${sidebarCollapsed ? 'px-2' : 'px-3'} py-3 space-y-1 overflow-y-auto overflow-x-hidden`}>
             {navItems.map((item) => {
               const Icon = item.icon;
               return (
                 <NavLink
                   key={item.to}
                   to={item.to}
+                  title={item.label}
                   className={({ isActive }) =>
-                    `flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+                    `flex items-center ${
+                      sidebarCollapsed ? 'justify-center h-10 w-10 mx-auto' : 'gap-3 px-3 py-2'
+                    } text-sm font-medium rounded-xl transition-all ${
                       isActive
-                        ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 font-semibold'
+                        ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 font-semibold shadow-2xs'
                         : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:text-neutral-100 dark:hover:bg-neutral-800/60'
                     }`
                   }
                 >
-                  <Icon className="w-4 h-4 shrink-0" />
-                  <span>{item.label}</span>
+                  <Icon className={`${sidebarCollapsed ? 'w-5 h-5' : 'w-4 h-4'} shrink-0`} />
+                  {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
                 </NavLink>
               );
             })}
 
-            <div className="pt-3 mt-3 border-t border-neutral-200 dark:border-neutral-800">
+            <div className={`pt-2 mt-2 border-t border-neutral-200 dark:border-neutral-800 ${sidebarCollapsed ? 'px-0' : ''}`}>
               <NavLink
                 to="/app/onboarding"
+                title="Майстер налаштування"
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                  `flex items-center ${
+                    sidebarCollapsed ? 'justify-center h-10 w-10 mx-auto' : 'gap-3 px-3 py-2'
+                  } text-xs font-medium rounded-xl transition-all ${
                     isActive
-                      ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-white'
+                      ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-white font-semibold'
                       : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-white'
                   }`
                 }
               >
-                <Compass className="w-4 h-4 shrink-0" />
-                <span>Майстер налаштування</span>
+                <Compass className={`${sidebarCollapsed ? 'w-5 h-5' : 'w-4 h-4'} shrink-0`} />
+                {!sidebarCollapsed && <span className="truncate">Майстер налаштування</span>}
               </NavLink>
             </div>
           </nav>
 
-          {/* User Profile & Theme Drawer in Sidebar */}
-          <div className="p-3 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/50">
-            <div className="flex items-center justify-between mb-2 px-1">
-              <div className="truncate pr-2">
-                <p className="text-xs font-medium text-neutral-900 dark:text-neutral-100 truncate">
-                  {user?.fullName || 'Майстерня'}
-                </p>
-                <p className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
-                  {user?.workshopName || user?.email}
-                </p>
-              </div>
+          {/* User Profile & Controls in Sidebar */}
+          {sidebarCollapsed ? (
+            <div className="p-2 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-900/60 flex flex-col items-center gap-1.5">
+              <NavLink
+                to="/app/account"
+                title={`Акаунт: ${user?.fullName || user?.email || 'Майстерня'}`}
+                className="flex items-center justify-center w-10 h-10 rounded-xl text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+              >
+                <User className="w-4 h-4" />
+              </NavLink>
 
               <button
                 type="button"
                 onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-                className="p-1.5 rounded-md text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                title="Перемкнути тему"
+                title={`Тема: ${theme === 'dark' ? 'Світла' : 'Темна'}`}
+                className="flex items-center justify-center w-10 h-10 rounded-xl text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
                 aria-label="Перемкнути тему"
               >
-                {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+                {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleLogout}
+                title="Вийти з акаунту"
+                className="flex items-center justify-center w-10 h-10 rounded-xl text-neutral-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                aria-label="Вийти"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                title="Розгорнути меню (Ctrl+B)"
+                className="flex items-center justify-center w-10 h-10 mt-1 rounded-xl text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 transition-colors"
+                aria-label="Розгорнути меню"
+              >
+                <ChevronRight className="w-4 h-4" />
               </button>
             </div>
+          ) : (
+            <div className="p-3 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/50">
+              <div className="flex items-center justify-between mb-2 px-1">
+                <NavLink to="/app/account" className="truncate pr-2 hover:opacity-80 transition-opacity block flex-1">
+                  <p className="text-xs font-medium text-neutral-900 dark:text-neutral-100 truncate">
+                    {user?.fullName || 'Майстерня'}
+                  </p>
+                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
+                    {user?.workshopName || user?.email}
+                  </p>
+                </NavLink>
 
-            <button
-              onClick={handleLogout}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-neutral-600 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-md transition-colors"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Вийти</span>
-            </button>
-          </div>
+                <button
+                  type="button"
+                  onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                  className="p-1.5 rounded-md text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
+                  title="Перемкнути тему"
+                  aria-label="Перемкнути тему"
+                >
+                  {theme === 'dark' ? <Sun className="w-3.5 h-3.5 text-amber-500" /> : <Moon className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleLogout}
+                  className="flex-1 flex items-center gap-2 px-2.5 py-1.5 text-xs text-neutral-600 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-md transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Вийти</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={toggleSidebar}
+                  className="p-1.5 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-md transition-colors"
+                  title="Згорнути меню (Ctrl+B)"
+                  aria-label="Згорнути меню"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
         </aside>
 
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
           {/* Top Bar Header */}
-          <header className="h-14 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 px-4 lg:px-8 flex items-center justify-between sticky top-0 z-30">
-            <div className="flex items-center gap-3">
+          <header className="h-14 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 px-3 sm:px-6 lg:px-8 flex items-center justify-between sticky top-0 z-30">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              {/* Mobile hamburger button */}
               <button
                 type="button"
                 className="lg:hidden p-1.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-md"
@@ -152,24 +272,51 @@ export const AppLayout: React.FC = () => {
               >
                 <Menu className="w-5 h-5" />
               </button>
-              <h1 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
+
+
+              <h1 className="text-sm sm:text-base font-semibold text-neutral-900 dark:text-neutral-100 truncate">
                 {getPageTitle()}
               </h1>
             </div>
 
             <div className="flex items-center gap-2">
+              {/* Quick Theme Switcher in Header */}
+              <button
+                type="button"
+                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors border border-neutral-200 dark:border-neutral-700"
+                title={`Перемкнути на ${theme === 'dark' ? 'світлу' : 'темну'} тему`}
+                aria-label="Перемкнути тему"
+              >
+                {theme === 'dark' ? (
+                  <Sun className="w-4 h-4 text-amber-500" />
+                ) : (
+                  <Moon className="w-4 h-4 text-neutral-600 dark:text-neutral-300" />
+                )}
+              </button>
+
+              <NavLink
+                to="/filaments"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors border border-neutral-200 dark:border-neutral-700"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-emerald-600" />
+                <span className="hidden sm:inline">Каталог пластиків</span>
+                <span className="sm:hidden">Каталог</span>
+              </NavLink>
+
               <NavLink
                 to="/app/calculator"
-                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs"
               >
                 <Calculator className="w-3.5 h-3.5" />
-                <span>Новий розрахунок</span>
+                <span className="hidden sm:inline">Новий розрахунок</span>
+                <span className="sm:hidden">Розрахунок</span>
               </NavLink>
             </div>
           </header>
 
-          {/* Page Content Viewport */}
-          <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+          {/* Page Content Viewport with Responsive Max-Width */}
+          <main className="flex-1 p-3 sm:p-5 lg:p-6 w-full mx-auto max-w-full">
             <Outlet />
           </main>
         </div>
@@ -179,7 +326,7 @@ export const AppLayout: React.FC = () => {
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 lg:hidden flex">
           <div
-            className="fixed inset-0 bg-neutral-900/50 backdrop-blur-xs"
+            className="fixed inset-0 bg-neutral-900/50 backdrop-blur-xs animate-in fade-in duration-200"
             onClick={() => setMobileMenuOpen(false)}
             aria-hidden="true"
           />
@@ -230,7 +377,15 @@ export const AppLayout: React.FC = () => {
               </div>
             </nav>
 
-            <div className="p-4 border-t border-neutral-200 dark:border-neutral-800">
+            <div className="p-4 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
+              <button
+                type="button"
+                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                className="w-full flex items-center justify-center gap-2 py-2 text-xs text-neutral-600 dark:text-neutral-300 bg-neutral-100 dark:bg-neutral-800 rounded-lg"
+              >
+                {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+                <span>{theme === 'dark' ? 'Світла тема' : 'Темна тема'}</span>
+              </button>
               <button
                 onClick={handleLogout}
                 className="w-full flex items-center justify-center gap-2 py-2 text-sm text-red-600 font-medium hover:bg-red-50 dark:hover:bg-red-950/20 rounded-lg"

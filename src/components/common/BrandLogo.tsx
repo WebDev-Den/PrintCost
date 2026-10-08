@@ -3,6 +3,7 @@ import React from 'react';
 interface BrandLogoProps {
   size?: 'sm' | 'md' | 'lg';
   showTagline?: boolean;
+  iconOnly?: boolean;
   className?: string;
 }
 
@@ -16,6 +17,7 @@ interface BrandLogoProps {
 export const BrandLogo: React.FC<BrandLogoProps> = ({
   size = 'md',
   showTagline = false,
+  iconOnly = false,
   className = '',
 }) => {
   const iconDimensions = {
@@ -73,24 +75,26 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
         </svg>
       </div>
 
-      <div className="flex flex-col">
-        <div className="flex items-center gap-1.5 leading-none">
-          <span
-            className={`font-extrabold tracking-tight text-neutral-900 dark:text-white ${textSizes[size]}`}
-          >
-            KILO<span className="text-emerald-600 dark:text-emerald-400">·G</span>
-          </span>
-          <span className="text-[10px] font-mono uppercase px-1 py-0.2 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-500 font-semibold border border-neutral-200 dark:border-neutral-700">
-            FDM
-          </span>
-        </div>
+      {!iconOnly && (
+        <div className="flex flex-col">
+          <div className="flex items-center gap-1.5 leading-none">
+            <span
+              className={`font-extrabold tracking-tight text-neutral-900 dark:text-white ${textSizes[size]}`}
+            >
+              KILO<span className="text-emerald-600 dark:text-emerald-400">·G</span>
+            </span>
+            <span className="text-[10px] font-mono uppercase px-1 py-0.2 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-500 font-semibold border border-neutral-200 dark:border-neutral-700">
+              FDM
+            </span>
+          </div>
 
-        {showTagline && (
-          <span className="text-[10px] text-neutral-500 dark:text-neutral-400 tracking-normal font-medium mt-0.5">
-            Кожен грам на своєму місці
-          </span>
-        )}
-      </div>
+          {showTagline && (
+            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 tracking-normal font-medium mt-0.5">
+              Кожен грам на своєму місці
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 };

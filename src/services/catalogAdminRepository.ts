@@ -6,11 +6,12 @@ import {
   ManufacturerBrand,
   TemperatureProfile,
 } from '../domain/filamentsDirectory.ts';
+import { api, STORAGE_KEYS } from './api.ts';
 
-const FILAMENTS_STORAGE_KEY = 'kilog_catalog_filaments_v2';
-const MANUFACTURERS_STORAGE_KEY = 'kilog_catalog_manufacturers_v2';
-const TEMPERATURES_STORAGE_KEY = 'kilog_catalog_temperatures_v2';
-const LIKES_STORAGE_KEY = 'kilog_catalog_likes_v1';
+const FILAMENTS_STORAGE_KEY = STORAGE_KEYS.CATALOG_FILAMENTS;
+const MANUFACTURERS_STORAGE_KEY = STORAGE_KEYS.CATALOG_MANUFACTURERS;
+const TEMPERATURES_STORAGE_KEY = STORAGE_KEYS.CATALOG_TEMPERATURES;
+const LIKES_STORAGE_KEY = STORAGE_KEYS.CATALOG_LIKES;
 
 class CatalogAdminRepository {
   // --- FILAMENTS ---
@@ -21,16 +22,20 @@ class CatalogAdminRepository {
         return JSON.parse(data);
       }
     } catch (e) {
-      console.warn('Failed reading filaments from localStorage', e);
+      console.warn('[CatalogAdmin] Failed reading filaments from localStorage', e);
     }
     return [...PUBLIC_FILAMENTS_CATALOG];
+  }
+
+  async fetchFilamentsAsync(): Promise<PublicFilamentItem[]> {
+    return api.filaments.getAll();
   }
 
   saveFilaments(items: PublicFilamentItem[]): void {
     try {
       localStorage.setItem(FILAMENTS_STORAGE_KEY, JSON.stringify(items));
     } catch (e) {
-      console.error('Failed saving filaments to localStorage', e);
+      console.error('[CatalogAdmin] Failed saving filaments to localStorage', e);
     }
   }
 
@@ -40,6 +45,8 @@ class CatalogAdminRepository {
     const newItem: PublicFilamentItem = { ...item, id };
     const updated = [newItem, ...filaments];
     this.saveFilaments(updated);
+    // Background sync to server API
+    api.filaments.create(newItem).catch((err) => console.debug('[API] Server sync queued:', err));
     return newItem;
   }
 
@@ -51,6 +58,8 @@ class CatalogAdminRepository {
     const updatedItem = { ...filaments[index], ...updates };
     filaments[index] = updatedItem;
     this.saveFilaments(filaments);
+    // Background sync to server API
+    api.filaments.update(id, updates).catch((err) => console.debug('[API] Server sync queued:', err));
     return updatedItem;
   }
 
@@ -58,6 +67,8 @@ class CatalogAdminRepository {
     const filaments = this.getFilaments();
     const filtered = filaments.filter((f) => f.id !== id);
     this.saveFilaments(filtered);
+    // Background sync to server API
+    api.filaments.delete(id).catch((err) => console.debug('[API] Server sync queued:', err));
   }
 
   // --- MANUFACTURERS ---
@@ -68,16 +79,20 @@ class CatalogAdminRepository {
         return JSON.parse(data);
       }
     } catch (e) {
-      console.warn('Failed reading manufacturers from localStorage', e);
+      console.warn('[CatalogAdmin] Failed reading manufacturers from localStorage', e);
     }
     return [...MANUFACTURERS_LIST];
+  }
+
+  async fetchManufacturersAsync(): Promise<ManufacturerBrand[]> {
+    return api.manufacturers.getAll();
   }
 
   saveManufacturers(items: ManufacturerBrand[]): void {
     try {
       localStorage.setItem(MANUFACTURERS_STORAGE_KEY, JSON.stringify(items));
     } catch (e) {
-      console.error('Failed saving manufacturers to localStorage', e);
+      console.error('[CatalogAdmin] Failed saving manufacturers to localStorage', e);
     }
   }
 
@@ -87,6 +102,7 @@ class CatalogAdminRepository {
     const newItem: ManufacturerBrand = { ...item, id };
     const updated = [newItem, ...list];
     this.saveManufacturers(updated);
+    api.manufacturers.create(newItem).catch((err) => console.debug('[API] Server sync queued:', err));
     return newItem;
   }
 
@@ -98,6 +114,7 @@ class CatalogAdminRepository {
     const updatedItem = { ...list[index], ...updates };
     list[index] = updatedItem;
     this.saveManufacturers(list);
+    api.manufacturers.update(id, updates).catch((err) => console.debug('[API] Server sync queued:', err));
     return updatedItem;
   }
 
@@ -105,6 +122,7 @@ class CatalogAdminRepository {
     const list = this.getManufacturers();
     const filtered = list.filter((m) => m.id !== id);
     this.saveManufacturers(filtered);
+    api.manufacturers.delete(id).catch((err) => console.debug('[API] Server sync queued:', err));
   }
 
   // --- TEMPERATURE PROFILES ---
@@ -115,7 +133,7 @@ class CatalogAdminRepository {
         return JSON.parse(data);
       }
     } catch (e) {
-      console.warn('Failed reading temperature profiles', e);
+      console.warn('[CatalogAdmin] Failed reading temperature profiles', e);
     }
     return { ...STANDARD_TEMPERATURE_PROFILES };
   }
@@ -124,7 +142,7 @@ class CatalogAdminRepository {
     try {
       localStorage.setItem(TEMPERATURES_STORAGE_KEY, JSON.stringify(profiles));
     } catch (e) {
-      console.error('Failed saving temperature profiles', e);
+      console.error('[CatalogAdmin] Failed saving temperature profiles', e);
     }
   }
 
@@ -132,6 +150,7 @@ class CatalogAdminRepository {
     const profiles = this.getTemperatureProfiles();
     profiles[type] = profile;
     this.saveTemperatureProfiles(profiles);
+    api.temperatures.update(type, profile).catch((err) => console.debug('[API] Server sync queued:', err));
   }
 
   deleteTemperatureProfile(type: string): void {
@@ -148,7 +167,7 @@ class CatalogAdminRepository {
         return JSON.parse(data);
       }
     } catch (e) {
-      console.warn('Failed reading likes', e);
+      console.warn('[CatalogAdmin] Failed reading likes', e);
     }
     return [];
   }
@@ -165,8 +184,9 @@ class CatalogAdminRepository {
     try {
       localStorage.setItem(LIKES_STORAGE_KEY, JSON.stringify(updated));
     } catch (e) {
-      console.error('Failed saving likes', e);
+      console.error('[CatalogAdmin] Failed saving likes', e);
     }
+    api.filaments.toggleLike(filamentId).catch((err) => console.debug('[API] Server sync queued:', err));
     return !exists;
   }
 
@@ -175,6 +195,7 @@ class CatalogAdminRepository {
     localStorage.removeItem(FILAMENTS_STORAGE_KEY);
     localStorage.removeItem(MANUFACTURERS_STORAGE_KEY);
     localStorage.removeItem(TEMPERATURES_STORAGE_KEY);
+    api.temperatures.reset().catch(() => {});
   }
 }
 

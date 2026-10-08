@@ -54,7 +54,13 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [settings, setSettings] = useState<PricingSettings>({} as PricingSettings);
   const [calculations, setCalculations] = useState<CalculationSnapshot[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [theme, setThemeState] = useState<'light' | 'dark' | 'system'>('light');
+  const [theme, setThemeState] = useState<'light' | 'dark' | 'system'>(() => {
+    try {
+      const stored = localStorage.getItem('kilog_theme') as 'light' | 'dark' | 'system';
+      if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
+    } catch {}
+    return 'light';
+  });
 
   const refreshAll = useCallback(async () => {
     try {
@@ -68,8 +74,20 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setPrinters(prns);
       setSettings(setts);
       setCalculations(calcs);
-      if (setts.theme) {
+      const storedTheme = (() => {
+        try {
+          return localStorage.getItem('kilog_theme') as 'light' | 'dark' | 'system' | null;
+        } catch {
+          return null;
+        }
+      })();
+      if (storedTheme) {
+        setThemeState(storedTheme);
+      } else if (setts.theme) {
         setThemeState(setts.theme);
+        try {
+          localStorage.setItem('kilog_theme', setts.theme);
+        } catch {}
       }
     } catch (err) {
       console.error('Failed to load application data', err);
@@ -82,24 +100,67 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     refreshAll();
   }, [refreshAll]);
 
-  // Apply dark mode class to document
+  // Apply dark mode class to documentElement (html) & body
   useEffect(() => {
     const root = document.documentElement;
-    if (theme === 'dark') {
-      root.classList.add('dark');
-    } else if (theme === 'light') {
-      root.classList.remove('dark');
-    } else {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      if (prefersDark) root.classList.add('dark');
-      else root.classList.remove('dark');
-    }
+    const updateThemeClasses = () => {
+      const isDark =
+        theme === 'dark' ||
+        (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+      if (isDark) {
+        root.classList.add('dark');
+        root.setAttribute('data-theme', 'dark');
+        document.body.classList.add('dark');
+      } else {
+        root.classList.remove('dark');
+        root.setAttribute('data-theme', 'light');
+        document.body.classList.remove('dark');
+      }
+    };
+
+    updateThemeClasses();
+    try {
+      localStorage.setItem('kilog_theme', theme);
+    } catch {}
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleMediaChange = () => {
+      if (theme === 'system') {
+        updateThemeClasses();
+      }
+    };
+    mediaQuery.addEventListener?.('change', handleMediaChange);
+    return () => mediaQuery.removeEventListener?.('change', handleMediaChange);
   }, [theme]);
 
   const setTheme = async (newTheme: 'light' | 'dark' | 'system') => {
     setThemeState(newTheme);
-    const updated = await settingsRepository.updateSettings({ theme: newTheme });
-    setSettings(updated);
+    try {
+      localStorage.setItem('kilog_theme', newTheme);
+    } catch {}
+
+    const root = document.documentElement;
+    const isDark =
+      newTheme === 'dark' ||
+      (newTheme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+    if (isDark) {
+      root.classList.add('dark');
+      root.setAttribute('data-theme', 'dark');
+      document.body.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+      root.setAttribute('data-theme', 'light');
+      document.body.classList.remove('dark');
+    }
+
+    try {
+      const updated = await settingsRepository.updateSettings({ theme: newTheme });
+      setSettings(updated);
+    } catch {
+      // Ignore API errors when unauthenticated/offline
+    }
   };
 
   const addMaterial = async (m: Omit<MaterialProfile, 'id' | 'createdAt'>) => {

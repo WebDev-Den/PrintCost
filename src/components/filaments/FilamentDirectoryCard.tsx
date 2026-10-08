@@ -1,387 +1,232 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React from 'react';
 import {
-  ExternalLink,
   Heart,
-  Globe,
-  Thermometer,
-  ShoppingCart,
-  Plus,
-  Check,
-  Calculator,
+  Scale,
+  Palette,
+  Disc,
+  RefreshCw,
   CheckCircle2,
   XCircle,
-  Tag,
-  Disc,
+  Eye,
+  Plus,
+  Check,
 } from 'lucide-react';
 import type {
-  PublicFilamentItem,
+  ConcreteFilamentSku,
   ManufacturerBrand,
-  PopularColorItem,
-  FilamentStoreLink,
 } from '../../domain/filamentsDirectory.ts';
-import { getFilamentEffectiveTemp } from '../../domain/filamentsDirectory.ts';
 import { formatUah } from '../../domain/formatters.ts';
 import { Button } from '../common/Button.tsx';
+import { FilamentColorVisual } from './FilamentColorVisual.tsx';
 
-interface FilamentDirectoryCardProps {
-  filament: PublicFilamentItem;
+export interface FilamentDirectoryCardProps {
+  item: ConcreteFilamentSku;
   manufacturer?: ManufacturerBrand;
   isLiked: boolean;
   onToggleLike: (id: string) => void;
-  onAddToWorkshop: (f: PublicFilamentItem, colorName?: string, colorHex?: string) => void;
+  onAddToWorkshop: (item: ConcreteFilamentSku) => void;
   isAdded: boolean;
-  activeColorToneFilter: string;
-  onCalculatePrint: (f: PublicFilamentItem, selectedColor?: PopularColorItem) => void;
+  onCalculatePrint: (item: ConcreteFilamentSku) => void;
   onSelectType: (type: string) => void;
+  onOpenDetails: (item: ConcreteFilamentSku) => void;
 }
 
 export const FilamentDirectoryCard: React.FC<FilamentDirectoryCardProps> = ({
-  filament: f,
+  item,
   manufacturer,
   isLiked,
   onToggleLike,
   onAddToWorkshop,
   isAdded,
-  activeColorToneFilter,
-  onCalculatePrint,
   onSelectType,
+  onOpenDetails,
 }) => {
-  // Determine initial color index based on active filter or default to 0
-  const colors = f.popularColors || [];
-  const defaultIdx = useMemo(() => {
-    if (activeColorToneFilter !== 'all' && colors.length > 0) {
-      const idx = colors.findIndex((c) => c.colorTone === activeColorToneFilter);
-      if (idx !== -1) return idx;
-    }
-    return 0;
-  }, [activeColorToneFilter, colors]);
-
-  const [selectedColorIdx, setSelectedColorIdx] = useState<number>(defaultIdx);
-
-  // Sync when activeColorToneFilter changes
-  useEffect(() => {
-    if (activeColorToneFilter !== 'all' && colors.length > 0) {
-      const idx = colors.findIndex((c) => c.colorTone === activeColorToneFilter);
-      if (idx !== -1) setSelectedColorIdx(idx);
-    }
-  }, [activeColorToneFilter, colors]);
-
-  const selectedColor: PopularColorItem | undefined = colors[selectedColorIdx] || colors[0];
-  const tempInfo = getFilamentEffectiveTemp(f);
-
-  // Store links for this exact selected color and manufacturer
-  const effectiveStoreLinks: FilamentStoreLink[] = useMemo(() => {
-    if (selectedColor && selectedColor.stores && selectedColor.stores.length > 0) {
-      return selectedColor.stores;
-    }
-    // If color-specific stores not directly attached, generate specific links for this color
-    return f.stores.map((st) => {
-      const colorLabel = selectedColor ? selectedColor.name : 'Стандартний';
-      return {
-        ...st,
-        productTitle: st.productTitle || `${f.brand} ${f.type} ${colorLabel} (${f.spoolWeightGrams} г)`,
-        colorName: colorLabel,
-        spoolWeightGrams: st.spoolWeightGrams || f.spoolWeightGrams,
-      };
-    });
-  }, [selectedColor, f]);
-
-  // Primary store price for summary display
-  const primaryStore = effectiveStoreLinks[0];
-  const spoolPrice = primaryStore?.priceUah || Math.round((f.approxPricePerKgUah * f.spoolWeightGrams) / 1000);
-  const spoolGrams = primaryStore?.spoolWeightGrams || f.spoolWeightGrams;
-  const calculatedPricePerKg = (spoolPrice / spoolGrams) * 1000;
-  const pricePerGram = spoolPrice / spoolGrams;
+  const isRefill = item.packagingType === 'refill';
 
   return (
-    <div className="bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-5 space-y-4 shadow-2xs flex flex-col justify-between hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors relative">
+    <div
+      onClick={() => onOpenDetails(item)}
+      className="bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4 sm:p-5 flex flex-col justify-between shadow-2xs hover:shadow-md hover:border-emerald-300 dark:hover:border-emerald-700/70 transition-all cursor-pointer relative group"
+    >
       <div className="space-y-3.5">
-        {/* Row 1: 1 Manufacturer Header + Website + Like Button */}
-        <div className="flex items-center justify-between pb-2.5 border-b border-neutral-100 dark:border-neutral-800">
+        {/* ROW 1: ВИРОБНИК + ТИП ПЛАСТИКУ + LIKE BUTTON */}
+        <div className="flex items-center justify-between pb-2.5 border-b border-neutral-100 dark:border-neutral-800 gap-2">
+          {/* 1. ВИРОБНИК */}
           {manufacturer ? (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <div
                 className={`w-7 h-7 rounded-md ${manufacturer.logoBg} flex items-center justify-center font-black text-[10px] ${manufacturer.logoTextColor} tracking-tighter shrink-0`}
               >
                 {manufacturer.logoText}
               </div>
-              <div>
-                <span className="text-xs font-bold text-neutral-900 dark:text-white block leading-tight">
+              <div className="min-w-0">
+                <span className="text-xs font-bold text-neutral-900 dark:text-white block leading-tight truncate">
                   {manufacturer.name}
                 </span>
-                <span className="text-[10px] text-neutral-400 block leading-none">
+                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block leading-none truncate">
                   {manufacturer.country}
                 </span>
               </div>
             </div>
           ) : (
-            <span className="text-xs font-bold text-neutral-800 dark:text-neutral-200">
-              {f.brand}
-            </span>
+            <div className="min-w-0">
+              <span className="text-xs font-bold text-neutral-900 dark:text-white truncate block">
+                {item.brand}
+              </span>
+            </div>
           )}
 
-          <div className="flex items-center gap-2">
-            {/* Manufacturer Website */}
-            {manufacturer?.website && (
-              <a
-                href={manufacturer.website}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] text-neutral-500 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1 font-medium transition-colors"
-                title={`Офіційний сайт виробника ${manufacturer.name}`}
-              >
-                <Globe className="w-3 h-3 text-neutral-400" />
-                <span>Сайт бренду</span>
-                <ExternalLink className="w-2.5 h-2.5 opacity-70" />
-              </a>
-            )}
-
-            {/* Like / Favorite Button */}
+          <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+            {/* 2. ТИП ПЛАСТИКУ */}
             <button
               type="button"
-              onClick={() => onToggleLike(f.id)}
+              onClick={() => onSelectType(item.type)}
+              className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 border border-neutral-200 dark:border-neutral-700 hover:border-emerald-500 shrink-0 cursor-pointer transition-colors"
+              title={`Фільтрувати за типом ${item.type}`}
+            >
+              {item.type}
+            </button>
+
+            {/* Like button */}
+            <button
+              type="button"
+              onClick={() => onToggleLike(item.id)}
               className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
                 isLiked
                   ? 'bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400'
                   : 'text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800'
               }`}
-              title={isLiked ? 'Видалити з обраного' : 'Додати в обране (відстежувати)'}
+              title={isLiked ? 'Видалити з обраного' : 'Додати в обране (❤️)'}
+              aria-label={isLiked ? 'Видалити з обраного' : 'Додати в обране'}
             >
               <Heart className={`w-4 h-4 ${isLiked ? 'fill-rose-500' : ''}`} />
             </button>
           </div>
         </div>
 
-        {/* Row 2: Title, Stock Status & Filterable Plastic Type Badge */}
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <h3 className="text-base font-bold text-neutral-900 dark:text-white leading-tight">
-              {f.name}
-            </h3>
+        {/* ROW 2: НАЗВА ТОВАРУ ТА НАЯВНІСТЬ/ВІДСУТНІСТЬ */}
+        <div className="space-y-1.5">
+          <h3 className="text-sm sm:text-base font-bold text-neutral-900 dark:text-white leading-tight break-words group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
+            {item.name}
+          </h3>
 
-            {/* In Stock or Out of Stock Badge */}
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-              {f.inStock ? (
-                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
-                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                  <span>{f.stockStatusLabel || 'В наявності'}</span>
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-800 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 px-2 py-0.5 rounded border border-rose-200 dark:border-rose-800">
-                  <XCircle className="w-3 h-3 text-rose-600" />
-                  <span>{f.stockStatusLabel || 'Немає в наявності'}</span>
-                </span>
-              )}
+          {/* 3. НАЯВНІСТЬ / ВІДСУТНІСТЬ */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {item.inStock ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
+                <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                <span>{item.stockStatusLabel || 'В наявності'}</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-800 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 px-2 py-0.5 rounded border border-rose-200 dark:border-rose-800">
+                <XCircle className="w-3 h-3 text-rose-600 shrink-0" />
+                <span>{item.stockStatusLabel || 'Немає в наявності'}</span>
+              </span>
+            )}
 
-              {f.badge && (
-                <span className="text-[10px] text-neutral-600 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded font-medium">
-                  {f.badge}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Filterable Plastic Type Badge */}
-          <button
-            type="button"
-            onClick={() => onSelectType(f.type)}
-            className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 border border-neutral-200 dark:border-neutral-700 hover:border-emerald-500 shrink-0 cursor-pointer"
-            title={`Фільтрувати за типом ${f.type}`}
-          >
-            {f.type}
-          </button>
-        </div>
-
-        <p className="text-xs text-neutral-600 dark:text-neutral-400 line-clamp-2 leading-relaxed">
-          {f.description}
-        </p>
-
-        {/* Row 3: 1 Color Selection Interactive Bar */}
-        <div className="p-2.5 bg-neutral-50 dark:bg-neutral-800/40 rounded-xl space-y-2 border border-neutral-100 dark:border-neutral-800">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-[11px] font-semibold text-neutral-700 dark:text-neutral-300 flex items-center gap-1.5">
-              <span>Виберіть колір (1 колір):</span>
-            </span>
-            {selectedColor && (
-              <span className="text-[11px] font-bold text-neutral-900 dark:text-white flex items-center gap-1.5">
-                <span
-                  className="w-3 h-3 rounded-full border border-neutral-300 dark:border-neutral-600 inline-block shadow-2xs"
-                  style={{ backgroundColor: selectedColor.hex }}
-                />
-                <span>{selectedColor.name}</span>
+            {/* 4. З КОТУШКОЮ АБО БЕЗ */}
+            {isRefill ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-violet-800 dark:text-violet-300 bg-violet-50 dark:bg-violet-950/50 px-2 py-0.5 rounded border border-violet-200 dark:border-violet-800">
+                <RefreshCw className="w-3 h-3 text-violet-600 dark:text-violet-400 shrink-0" />
+                <span>Без котушки (Рефіл)</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-800 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/50 px-2 py-0.5 rounded border border-sky-200 dark:border-sky-800">
+                <Disc className="w-3 h-3 text-sky-600 dark:text-sky-400 shrink-0" />
+                <span>З котушкою</span>
               </span>
             )}
           </div>
-
-          {/* Color Chips with Click to Select */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {colors.map((c, idx) => {
-              const isSelected = selectedColorIdx === idx;
-              return (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => setSelectedColorIdx(idx)}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer border ${
-                    isSelected
-                      ? 'border-emerald-600 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white font-bold ring-2 ring-emerald-500/30 shadow-2xs'
-                      : 'border-transparent bg-neutral-200/60 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200'
-                  }`}
-                  title={`Вибрати ${c.name} для перегляду прямих цін і посилань`}
-                >
-                  <span
-                    className="w-3 h-3 rounded-full border border-neutral-400/80 dark:border-neutral-600 shrink-0 shadow-2xs"
-                    style={{ backgroundColor: c.hex }}
-                  />
-                  <span>{c.name.split(' ')[0]}</span>
-                </button>
-              );
-            })}
-          </div>
         </div>
 
-        {/* Row 4: Temperature Profiles */}
-        <div className="p-2.5 bg-neutral-50 dark:bg-neutral-800/40 rounded-xl space-y-1.5 border border-neutral-100 dark:border-neutral-800">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="text-neutral-500 font-medium flex items-center gap-1">
-              <Thermometer className="w-3.5 h-3.5 text-red-500" />
-              <span>Температури друку:</span>
-            </span>
-            <span
-              className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                tempInfo.isCustom
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
-                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
-              }`}
-            >
-              {tempInfo.isCustom ? 'Профіль бренду' : 'Стандартний профіль'}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 text-xs pt-0.5">
-            <div className="bg-white dark:bg-neutral-900/80 p-1.5 rounded-lg border border-neutral-200/60 dark:border-neutral-700/60">
-              <span className="text-[10px] text-neutral-400 block">Сопло (Nozzle):</span>
-              <span className="font-mono font-bold text-neutral-900 dark:text-white">
-                {tempInfo.nozzle}
+        {/* ROW 3: ПАРАМЕТРИ КАТАЛОГУ (КОЛІР + ВАГА КОТУШКИ) */}
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          {/* 5. КОЛІР (іконка з кольором та назва, підтримка мультиколору/веселки/дуалу) */}
+          <div className="p-2.5 bg-neutral-50 dark:bg-neutral-800/50 rounded-xl border border-neutral-100 dark:border-neutral-800 flex items-center gap-2 min-w-0">
+            <FilamentColorVisual
+              colorHex={item.colorHex}
+              colorHexList={item.colorHexList}
+              colorType={item.colorType}
+              colorName={item.colorName}
+              size="md"
+            />
+            <div className="min-w-0 leading-tight">
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-neutral-400 font-medium">Колір:</span>
+                {item.isMulticolor && (
+                  <span className="text-[9px] font-bold px-1 rounded bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950/60 dark:text-fuchsia-300">
+                    Мульті
+                  </span>
+                )}
+              </div>
+              <span
+                className="text-xs font-bold text-neutral-900 dark:text-white truncate block"
+                title={item.colorName}
+              >
+                {item.colorName}
               </span>
             </div>
-            <div className="bg-white dark:bg-neutral-900/80 p-1.5 rounded-lg border border-neutral-200/60 dark:border-neutral-700/60">
-              <span className="text-[10px] text-neutral-400 block">Стіл (Bed):</span>
-              <span className="font-mono font-bold text-neutral-900 dark:text-white">
-                {tempInfo.bed}
+          </div>
+
+          {/* 6. ВАГА КОТУШКИ */}
+          <div className="p-2.5 bg-neutral-50 dark:bg-neutral-800/50 rounded-xl border border-neutral-100 dark:border-neutral-800 flex items-center gap-2 min-w-0">
+            <div className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0">
+              <Scale className="w-3 h-3" />
+            </div>
+            <div className="min-w-0 leading-tight">
+              <span className="text-[10px] text-neutral-400 block font-medium">Вага:</span>
+              <span className="text-xs font-bold text-neutral-900 dark:text-white truncate block">
+                {item.weightKgDisplay} ({item.spoolWeightGrams} г)
               </span>
             </div>
           </div>
         </div>
 
-        {/* Row 5: Spool & Per Kg Calculation Highlight */}
-        <div className="p-3 bg-emerald-50/60 dark:bg-emerald-950/20 rounded-xl border border-emerald-200/70 dark:border-emerald-800/60 flex items-center justify-between">
-          <div className="space-y-0.5">
-            <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider block flex items-center gap-1">
-              <Disc className="w-3 h-3 text-emerald-600" />
-              <span>Котушка {spoolGrams} г ({spoolGrams >= 1000 ? `${spoolGrams / 1000} кг` : `${spoolGrams}г`})</span>
+        {/* ЦІНА ТА ЕКОНОМІКА */}
+        <div className="p-2.5 bg-emerald-50/70 dark:bg-emerald-950/30 rounded-xl border border-emerald-200/70 dark:border-emerald-800/60 flex items-center justify-between">
+          <div>
+            <span className="text-[10px] text-neutral-500 block">Ціна за котушку:</span>
+            <span className="text-base font-black font-mono text-neutral-900 dark:text-white leading-none">
+              {formatUah(item.priceUah)}
             </span>
-            <div className="text-xs text-neutral-600 dark:text-neutral-400">
-              Ціна котушки: <span className="font-mono font-bold text-neutral-900 dark:text-white">{formatUah(spoolPrice)}</span>
-            </div>
-            <div className="text-[11px] text-neutral-500">
-              За 1 грам: <span className="font-mono font-semibold">{pricePerGram.toFixed(2)} грн/г</span>
-            </div>
           </div>
 
           <div className="text-right">
-            <span className="text-[10px] text-neutral-500 block">Розрахунок за кг:</span>
-            <span className="text-xl font-black font-mono tabular-nums text-emerald-700 dark:text-emerald-300">
-              {formatUah(calculatedPricePerKg)}
+            <span className="text-[10px] text-neutral-500 block">За 1 кг:</span>
+            <span className="text-xs font-bold font-mono text-emerald-700 dark:text-emerald-300">
+              {formatUah(item.calculatedPricePerKg)} / кг
             </span>
-            <span className="text-[11px] text-neutral-500 font-medium block">/ 1 кг</span>
-          </div>
-        </div>
-
-        {/* Row 6: 1 Product Page per Seller (1 колір · 1 виробник · Сторінка товару продавця) */}
-        <div className="space-y-2 pt-1">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="font-bold text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
-              <ShoppingCart className="w-3.5 h-3.5 text-neutral-400" />
-              <span>Сторінка товару продавця:</span>
-            </span>
-            <span className="text-[10px] text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-1.5 py-0.5 rounded font-medium">
-              1 колір · 1 виробник
-            </span>
-          </div>
-
-          <div className="space-y-1.5">
-            {effectiveStoreLinks.map((st, i) => {
-              const stPrice = st.priceUah;
-              const stGrams = st.spoolWeightGrams || spoolGrams;
-              const stPerKg = (stPrice / stGrams) * 1000;
-
-              return (
-                <a
-                  key={i}
-                  href={st.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block p-2 rounded-xl bg-neutral-50 dark:bg-neutral-800/50 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/30 border border-neutral-200/70 dark:border-neutral-700/70 hover:border-emerald-300 dark:hover:border-emerald-700 transition-colors group"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-neutral-800 dark:text-neutral-100 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 flex items-center gap-1">
-                      <span>{st.storeName}</span>
-                      {st.isOfficialDistributor && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 font-normal">
-                          Офіційний
-                        </span>
-                      )}
-                    </span>
-                    <span className="font-mono tabular-nums text-sm font-bold text-neutral-900 dark:text-white shrink-0">
-                      {stPrice} грн
-                    </span>
-                  </div>
-
-                  {/* Direct Product Title */}
-                  <div className="text-[11px] text-neutral-600 dark:text-neutral-400 truncate mt-0.5">
-                    {st.productTitle || `${f.brand} ${f.type} ${selectedColor?.name || ''}`}
-                  </div>
-
-                  {/* Calculated per-kg rate and direct product page action */}
-                  <div className="flex items-center justify-between text-[10px] pt-1 text-neutral-500">
-                    <span className="font-mono">
-                      Розрахунок: <strong className="text-emerald-700 dark:text-emerald-400">{stPerKg.toFixed(2)} грн/кг</strong>
-                    </span>
-
-                    <span className="text-emerald-600 dark:text-emerald-400 group-hover:underline flex items-center gap-0.5 font-semibold">
-                      <span>Перейти до товару</span>
-                      <ExternalLink className="w-2.5 h-2.5" />
-                    </span>
-                  </div>
-                </a>
-              );
-            })}
           </div>
         </div>
       </div>
 
-      {/* Card Actions */}
-      <div className="pt-3 border-t border-neutral-100 dark:border-neutral-800 flex items-center gap-2">
+      {/* КНОПКИ ДІЙ: ДЕТАЛЬНІШЕ (ПОПАП) ТА В КАБІНЕТ */}
+      <div
+        className="pt-3 mt-3 border-t border-neutral-100 dark:border-neutral-800 flex items-center gap-2"
+        onClick={(e) => e.stopPropagation()}
+      >
         <Button
-          variant={isAdded ? 'primary' : 'outline'}
+          variant="outline"
           size="sm"
-          className="w-full text-xs font-semibold"
-          leftIcon={isAdded ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-          onClick={() => onAddToWorkshop(f, selectedColor?.name, selectedColor?.hex)}
+          className="flex-1 text-xs font-semibold justify-center bg-white dark:bg-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-700"
+          leftIcon={<Eye className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />}
+          onClick={() => onOpenDetails(item)}
         >
-          {isAdded ? 'Додано у кабінет!' : 'Додати у мій кабінет'}
+          Детальніше
         </Button>
 
         <Button
-          variant="ghost"
+          variant={isAdded ? 'primary' : 'outline'}
           size="sm"
-          className="text-xs shrink-0 font-bold text-emerald-700 dark:text-emerald-400"
-          onClick={() => onCalculatePrint(f, selectedColor)}
-          title="Відкрити калькулятор собівартості з цим філаментом"
-          leftIcon={<Calculator className="w-3.5 h-3.5" />}
+          className="text-xs font-medium justify-center shrink-0 px-2.5"
+          onClick={() => onAddToWorkshop(item)}
+          title={isAdded ? 'Додано у кабінет' : 'Додати у мій кабінет'}
         >
-          Розрахунок FDM
+          {isAdded ? (
+            <Check className="w-3.5 h-3.5 text-white" />
+          ) : (
+            <Plus className="w-3.5 h-3.5" />
+          )}
         </Button>
       </div>
     </div>

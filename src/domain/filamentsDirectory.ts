@@ -30,13 +30,30 @@ export type ColorTone =
   | 'yellow'
   | 'orange'
   | 'purple'
+  | 'multicolor'
   | 'special';
+
+export type ColorType =
+  | 'solid' // Звичайний однорідний колір
+  | 'dual' // Co-extrusion 2 кольори (Silk Dual)
+  | 'tri' // Tri-extrusion 3 кольори
+  | 'rainbow' // Веселка / Градієнтний перехід
+  | 'gradient' // Омбре або двотональний градієнт
+  | 'glow' // Люмінесцентний (світиться в темряві)
+  | 'marble' // Мармуровий з вкрапленнями
+  | 'glitter' // З блискітками / іскрами
+  | 'transparent'; // Напівпрозорий
+
+export type PackagingType = 'spool' | 'refill';
 
 export interface PopularColorItem {
   name: string;
   hex: string;
+  hexList?: string[]; // Список кольорів для мультиколорів/dual/tri/rainbow
+  colorType?: ColorType; // Тип: solid, dual, tri, rainbow, marble тощо
   colorTone?: ColorTone;
   sku?: string;
+  packagingType?: PackagingType; // 'spool' (з котушкою) або 'refill' (рефіл / без котушки)
   stores?: FilamentStoreLink[]; // Індивідуальні посилання продавця саме на цей колір
 }
 
@@ -60,6 +77,7 @@ export interface PublicFilamentItem {
   densityGPerCm3: number;
   description: string;
   badge?: string;
+  packagingType?: PackagingType; // 'spool' (з котушкою) або 'refill' (рефіл / без котушки)
   primaryColorTone: ColorTone; // Для сортування та фільтрації за кольором
   popularColors: PopularColorItem[];
   stores: FilamentStoreLink[];
@@ -174,6 +192,7 @@ export const COLOR_TONES_CONFIG: Record<
   green: { label: 'Зелені', bgClass: 'bg-emerald-600', textClass: 'text-white', hex: '#059669' },
   blue: { label: 'Сині', bgClass: 'bg-blue-600', textClass: 'text-white', hex: '#2563eb' },
   purple: { label: 'Фіолетові', bgClass: 'bg-purple-600', textClass: 'text-white', hex: '#9333ea' },
+  multicolor: { label: 'Мультиколір / Веселка', bgClass: 'bg-gradient-to-r from-pink-500 via-yellow-500 to-cyan-500', textClass: 'text-white', hex: '#ec4899' },
   special: { label: 'Композитні/Спеціальні', bgClass: 'bg-amber-700', textClass: 'text-white', hex: '#b45309' },
 };
 
@@ -238,6 +257,16 @@ export const MANUFACTURERS_LIST: ManufacturerBrand[] = [
     logoBg: 'bg-sky-600',
     logoTextColor: 'text-white',
     description: 'Масовий виробник високошвидкісних лінійок пластику High-Speed, сушарок FilaDryer та інженерних ниток.',
+  },
+  {
+    id: 'monofilament',
+    name: 'Monofilament',
+    country: 'Україна 🇺🇦 (Київ / Луцьк)',
+    website: 'https://monofilament.com.ua',
+    logoText: 'MONO',
+    logoBg: 'bg-emerald-700',
+    logoTextColor: 'text-white',
+    description: 'Провідний український виробник сертифікованого філаменту (PETG, PLA, CoPET, ABS, Elastan). Лабораторні стандарти контролю допусків.',
   },
 ];
 
@@ -1174,6 +1203,541 @@ export const PUBLIC_FILAMENTS_CATALOG: PublicFilamentItem[] = [
       },
     ],
   },
+  {
+    id: 'monofilament-petg-075',
+    name: 'Monofilament PETG (Made in Ukraine)',
+    brand: 'Monofilament',
+    manufacturerId: 'monofilament',
+    type: 'PETG',
+    family: 'Стандартні',
+    approxPricePerKgUah: 507,
+    spoolWeightGrams: 750,
+    diameterMm: 1.75,
+    inStock: true,
+    stockStatusLabel: 'В наявності',
+    primaryColorTone: 'black',
+    printTempNozzle: '225–245 °C',
+    printTempBed: '70–80 °C',
+    recommendedSpeedMmS: 'до 180 мм/с',
+    densityGPerCm3: 1.27,
+    description: 'Сертифікований український PETG на зручній котушці 0.75 кг. Висока геометрична точність ±0.03 мм, мінімальна усадка, чудова адгезія між шарами.',
+    badge: 'Українське виробництво 🇺🇦 · 0.75 кг',
+    popularColors: [
+      {
+        name: 'Чорний (Black)',
+        hex: '#18181b',
+        colorTone: 'black',
+        sku: 'MONO-PETG-BLK-075',
+        stores: [
+          {
+            storeName: 'Monofilament Офіційний магазин',
+            url: 'https://monofilament.com.ua/products/petg-black-075/',
+            productTitle: 'Філамент Monofilament PETG Чорний 1.75мм 0.75кг',
+            colorName: 'Чорний (Black)',
+            spoolWeightGrams: 750,
+            priceUah: 380,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+      {
+        name: 'Білий (White)',
+        hex: '#f8fafc',
+        colorTone: 'white',
+        sku: 'MONO-PETG-WHT-075',
+        stores: [
+          {
+            storeName: 'Monofilament Офіційний магазин',
+            url: 'https://monofilament.com.ua/products/petg-white-075/',
+            productTitle: 'Філамент Monofilament PETG Білий 1.75мм 0.75кг',
+            colorName: 'Білий (White)',
+            spoolWeightGrams: 750,
+            priceUah: 380,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+    ],
+    stores: [
+      {
+        storeName: 'Monofilament Офіційний магазин',
+        url: 'https://monofilament.com.ua/products/petg-black-075/',
+        productTitle: 'Monofilament PETG Чорний 0.75 кг',
+        colorName: 'Чорний (Black)',
+        spoolWeightGrams: 750,
+        priceUah: 380,
+        inStock: true,
+        isOfficialDistributor: true,
+      },
+    ],
+  },
+  {
+    id: 'monofilament-pla-075',
+    name: 'Monofilament PLA Яскравий',
+    brand: 'Monofilament',
+    manufacturerId: 'monofilament',
+    type: 'PLA',
+    family: 'Стандартні',
+    approxPricePerKgUah: 520,
+    spoolWeightGrams: 750,
+    diameterMm: 1.75,
+    inStock: true,
+    stockStatusLabel: 'В наявності',
+    primaryColorTone: 'yellow',
+    printTempNozzle: '195–215 °C',
+    printTempBed: '50–60 °C',
+    recommendedSpeedMmS: '80–200 мм/с',
+    densityGPerCm3: 1.24,
+    description: 'Екологічний полілактид українського заводу Monofilament. Ідеальний для художнього та технічного прототипування.',
+    badge: 'Український виробник 🇺🇦 · 0.75 кг',
+    popularColors: [
+      {
+        name: 'Яскраво-жовтий',
+        hex: '#facc15',
+        colorTone: 'yellow',
+        sku: 'MONO-PLA-YEL-075',
+        stores: [
+          {
+            storeName: 'Monofilament Офіційний магазин',
+            url: 'https://monofilament.com.ua/products/pla-yellow-075/',
+            productTitle: 'Філамент Monofilament PLA Жовтий 1.75мм 0.75кг',
+            colorName: 'Яскраво-жовтий',
+            spoolWeightGrams: 750,
+            priceUah: 390,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+    ],
+    stores: [
+      {
+        storeName: 'Monofilament Офіційний магазин',
+        url: 'https://monofilament.com.ua/products/pla-yellow-075/',
+        productTitle: 'Monofilament PLA Жовтий 0.75 кг',
+        colorName: 'Яскраво-жовтий',
+        spoolWeightGrams: 750,
+        priceUah: 390,
+        inStock: true,
+        isOfficialDistributor: true,
+      },
+    ],
+  },
+  {
+    id: 'devil-design-tpu-033',
+    name: 'Devil Design TPU 55D Flex',
+    brand: 'Devil Design',
+    manufacturerId: 'devil-design',
+    type: 'TPU',
+    family: 'Гнучкі',
+    approxPricePerKgUah: 1273,
+    spoolWeightGrams: 330,
+    diameterMm: 1.75,
+    inStock: true,
+    stockStatusLabel: 'В наявності',
+    primaryColorTone: 'black',
+    printTempNozzle: '210–235 °C',
+    printTempBed: '30–50 °C',
+    recommendedSpeedMmS: '25–45 мм/с',
+    densityGPerCm3: 1.22,
+    description: 'Європейський термополіуретан високої твердості 55D (Польща). Компактна котушка 0.33 кг ідеальна для одиничних еластичних виробів.',
+    badge: 'Європейський TPU · 0.33 кг',
+    popularColors: [
+      {
+        name: 'Super Black (Чорний)',
+        hex: '#1f2937',
+        colorTone: 'black',
+        sku: 'DEVIL-TPU-BLK-033',
+        stores: [
+          {
+            storeName: 'Devil Design UA',
+            url: 'https://devildesign.com.ua/shop/tpu-55d-black-033kg/',
+            productTitle: 'Devil Design TPU 55D Чорний 1.75мм 0.33кг',
+            colorName: 'Super Black (Чорний)',
+            spoolWeightGrams: 330,
+            priceUah: 420,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+    ],
+    stores: [
+      {
+        storeName: 'Devil Design UA',
+        url: 'https://devildesign.com.ua/shop/tpu-55d-black-033kg/',
+        productTitle: 'Devil Design TPU 55D Black 0.33кг',
+        colorName: 'Super Black (Чорний)',
+        spoolWeightGrams: 330,
+        priceUah: 420,
+        inStock: true,
+        isOfficialDistributor: true,
+      },
+    ],
+  },
+  {
+    id: 'bambu-pla-basic-refill',
+    name: 'Bambu Lab PLA Basic Refill (без котушки)',
+    brand: 'Bambu Lab',
+    manufacturerId: 'bambu-lab',
+    type: 'PLA',
+    family: 'Стандартні',
+    approxPricePerKgUah: 560,
+    spoolWeightGrams: 1000,
+    diameterMm: 1.75,
+    packagingType: 'refill',
+    inStock: true,
+    stockStatusLabel: 'В наявності',
+    primaryColorTone: 'black',
+    printTempNozzle: '190–230 °C',
+    printTempBed: '50–60 °C',
+    chamberTemp: 'Кімнатна',
+    coolingFan: '100%',
+    recommendedSpeedMmS: 'до 300 мм/с',
+    densityGPerCm3: 1.24,
+    description: 'Оригінальний змінний моток (Refill) для багаторазової котушки Bambu Reusable Spool з RFID міткою. Екологічно та дешевше ніж із пластиковою котушкою.',
+    badge: 'Оригінальний Refill (RFID) · Еко-фасування',
+    popularColors: [
+      {
+        name: 'Чорний (Black)',
+        hex: '#1e293b',
+        colorTone: 'black',
+        sku: 'BAMBU-PLA-REFILL-BLK',
+        packagingType: 'refill',
+        stores: [
+          {
+            storeName: '3D-Format Ukraine',
+            url: 'https://3d-format.com.ua/product/filament-bambu-lab-pla-basic-refill-black-1kg/',
+            productTitle: 'Філамент Bambu Lab PLA Basic Refill Чорний 1.75мм 1кг',
+            colorName: 'Чорний (Black)',
+            spoolWeightGrams: 1000,
+            priceUah: 560,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+      {
+        name: 'Білий (White)',
+        hex: '#f8fafc',
+        colorTone: 'white',
+        sku: 'BAMBU-PLA-REFILL-WHT',
+        packagingType: 'refill',
+        stores: [
+          {
+            storeName: '3D-Format Ukraine',
+            url: 'https://3d-format.com.ua/product/filament-bambu-lab-pla-basic-refill-white-1kg/',
+            productTitle: 'Філамент Bambu Lab PLA Basic Refill Білий 1.75мм 1кг',
+            colorName: 'Білий (White)',
+            spoolWeightGrams: 1000,
+            priceUah: 560,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+    ],
+    stores: [
+      {
+        storeName: '3D-Format Ukraine',
+        url: 'https://3d-format.com.ua/product/filament-bambu-lab-pla-basic-refill-black-1kg/',
+        productTitle: 'Bambu Lab PLA Basic Refill 1кг',
+        colorName: 'Чорний (Black)',
+        spoolWeightGrams: 1000,
+        priceUah: 560,
+        inStock: true,
+        isOfficialDistributor: true,
+      },
+    ],
+  },
+  {
+    id: 'bambu-petg-basic-refill',
+    name: 'Bambu Lab PETG Basic Refill (без котушки)',
+    brand: 'Bambu Lab',
+    manufacturerId: 'bambu-lab',
+    type: 'PETG',
+    family: 'Стандартні',
+    approxPricePerKgUah: 580,
+    spoolWeightGrams: 1000,
+    diameterMm: 1.75,
+    packagingType: 'refill',
+    inStock: true,
+    stockStatusLabel: 'В наявності',
+    primaryColorTone: 'black',
+    printTempNozzle: '230–260 °C',
+    printTempBed: '70–80 °C',
+    chamberTemp: 'Кімнатна або пасивна',
+    coolingFan: '30–50%',
+    recommendedSpeedMmS: 'до 300 мм/с',
+    densityGPerCm3: 1.25,
+    description: 'Змінний моток PETG для багаторазової котушки Bambu Lab з RFID-чіпом. Висока ударостійкість, температурна витривалість, збереження бюджету.',
+    badge: 'Оригінальний Refill для багаторазової котушки',
+    popularColors: [
+      {
+        name: 'Чорний (Black)',
+        hex: '#1e293b',
+        colorTone: 'black',
+        sku: 'BAMBU-PETG-REFILL-BLK',
+        packagingType: 'refill',
+        stores: [
+          {
+            storeName: '3D-Format Ukraine',
+            url: 'https://3d-format.com.ua/product/filament-bambu-lab-petg-basic-refill-black-1kg/',
+            productTitle: 'Філамент Bambu Lab PETG Basic Refill Чорний 1.75мм 1кг',
+            colorName: 'Чорний (Black)',
+            spoolWeightGrams: 1000,
+            priceUah: 580,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+      {
+        name: 'Сірий (Grey)',
+        hex: '#64748b',
+        colorTone: 'grey',
+        sku: 'BAMBU-PETG-REFILL-GRY',
+        packagingType: 'refill',
+        stores: [
+          {
+            storeName: '3D-Format Ukraine',
+            url: 'https://3d-format.com.ua/product/filament-bambu-lab-petg-basic-refill-grey-1kg/',
+            productTitle: 'Філамент Bambu Lab PETG Basic Refill Сірий 1.75мм 1кг',
+            colorName: 'Сірий (Grey)',
+            spoolWeightGrams: 1000,
+            priceUah: 580,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+    ],
+    stores: [
+      {
+        storeName: '3D-Format Ukraine',
+        url: 'https://3d-format.com.ua/product/filament-bambu-lab-petg-basic-refill-black-1kg/',
+        productTitle: 'Bambu Lab PETG Basic Refill 1кг',
+        colorName: 'Чорний (Black)',
+        spoolWeightGrams: 1000,
+        priceUah: 580,
+        inStock: true,
+        isOfficialDistributor: true,
+      },
+    ],
+  },
+  {
+    id: 'sunlu-pla-plus-refill',
+    name: 'Sunlu PLA+ High Speed Refill',
+    brand: 'Sunlu',
+    manufacturerId: 'sunlu',
+    type: 'PLA',
+    family: 'Стандартні',
+    approxPricePerKgUah: 520,
+    spoolWeightGrams: 1000,
+    diameterMm: 1.75,
+    packagingType: 'refill',
+    inStock: true,
+    stockStatusLabel: 'В наявності',
+    primaryColorTone: 'black',
+    printTempNozzle: '205–215 °C',
+    printTempBed: '50–60 °C',
+    chamberTemp: 'Кімнатна',
+    coolingFan: '100%',
+    recommendedSpeedMmS: '100–350 мм/с',
+    densityGPerCm3: 1.24,
+    description: 'Еко-рефіл Sunlu PLA+ без пластикової котушки. Підходить під стандартні розбірні котушки Sunlu MasterSpool та Bambu Lab.',
+    badge: 'Eco-Refill без котушки · Швидкісний',
+    popularColors: [
+      {
+        name: 'Чорний (Black)',
+        hex: '#18181b',
+        colorTone: 'black',
+        sku: 'SUNLU-PLA-PLUS-REFILL-BLK',
+        packagingType: 'refill',
+        stores: [
+          {
+            storeName: 'Sunlu Україна Офіційний',
+            url: 'https://sunlu.in.ua/shop/filaments/sunlu-pla-plus-refill-black/',
+            productTitle: 'Філамент Sunlu PLA+ Refill Чорний 1.75мм 1кг',
+            colorName: 'Чорний (Black)',
+            spoolWeightGrams: 1000,
+            priceUah: 520,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+      {
+        name: 'Холодний білий',
+        hex: '#ffffff',
+        colorTone: 'white',
+        sku: 'SUNLU-PLA-PLUS-REFILL-WHT',
+        packagingType: 'refill',
+        stores: [
+          {
+            storeName: 'Sunlu Україна Офіційний',
+            url: 'https://sunlu.in.ua/shop/filaments/sunlu-pla-plus-refill-white/',
+            productTitle: 'Філамент Sunlu PLA+ Refill Білий 1.75мм 1кг',
+            colorName: 'Холодний білий',
+            spoolWeightGrams: 1000,
+            priceUah: 520,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+    ],
+    stores: [
+      {
+        storeName: 'Sunlu Україна Офіційний',
+        url: 'https://sunlu.in.ua/shop/filaments/sunlu-pla-plus-refill-black/',
+        productTitle: 'Sunlu PLA+ Refill Чорний 1кг',
+        colorName: 'Чорний (Black)',
+        spoolWeightGrams: 1000,
+        priceUah: 520,
+        inStock: true,
+        isOfficialDistributor: true,
+      },
+    ],
+  },
+  {
+    id: 'bambu-pla-silk-dual',
+    name: 'Bambu Lab PLA Silk Dual Color',
+    brand: 'Bambu Lab',
+    manufacturerId: 'bambu-lab',
+    type: 'PLA',
+    family: 'Стандартні',
+    approxPricePerKgUah: 850,
+    spoolWeightGrams: 1000,
+    diameterMm: 1.75,
+    packagingType: 'spool',
+    inStock: true,
+    stockStatusLabel: 'В наявності',
+    primaryColorTone: 'multicolor',
+    printTempNozzle: '210–230 °C',
+    printTempBed: '55–65 °C',
+    chamberTemp: 'Кімнатна',
+    coolingFan: '100%',
+    recommendedSpeedMmS: '100–300 мм/с',
+    densityGPerCm3: 1.24,
+    description: 'Двоколірний ко-екструдований шовковий Silk PLA. Створює дивовижний переливчастий ефект під різними кутами огляду без зміни нитки.',
+    badge: 'Co-Extrusion 2-Колірний · Шовковий глянець',
+    popularColors: [
+      {
+        name: 'Золото-Синій (Gold & Blue)',
+        hex: '#f59e0b',
+        hexList: ['#f59e0b', '#2563eb'],
+        colorType: 'dual',
+        colorTone: 'multicolor',
+        sku: 'BAMBU-SILK-DUAL-GLD-BLU',
+        packagingType: 'spool',
+        stores: [
+          {
+            storeName: '3D-Format Ukraine',
+            url: 'https://3d-format.com.ua/product/bambu-lab-pla-silk-dual-gold-blue-1kg/',
+            productTitle: 'Bambu Lab PLA Silk Dual Color Золото-Синій 1кг',
+            colorName: 'Золото-Синій (Gold & Blue)',
+            spoolWeightGrams: 1000,
+            priceUah: 850,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+      {
+        name: 'Смарагдово-Малиновий (Emerald & Magenta)',
+        hex: '#059669',
+        hexList: ['#059669', '#db2777'],
+        colorType: 'dual',
+        colorTone: 'multicolor',
+        sku: 'BAMBU-SILK-DUAL-EMR-MAG',
+        packagingType: 'spool',
+        stores: [
+          {
+            storeName: 'Litye 3D',
+            url: 'https://litye3d.com.ua/shop/filaments/bambu-lab/pla-silk-dual-magenta-emerald/',
+            productTitle: 'Bambu Lab PLA Silk Dual Emerald-Magenta 1кг',
+            colorName: 'Смарагдово-Малиновий',
+            spoolWeightGrams: 1000,
+            priceUah: 870,
+            inStock: true,
+          },
+        ],
+      },
+    ],
+    stores: [
+      {
+        storeName: '3D-Format Ukraine',
+        url: 'https://3d-format.com.ua/product/bambu-lab-pla-silk-dual-gold-blue-1kg/',
+        productTitle: 'Bambu Lab PLA Silk Dual Color 1кг',
+        colorName: 'Золото-Синій',
+        spoolWeightGrams: 1000,
+        priceUah: 850,
+        inStock: true,
+        isOfficialDistributor: true,
+      },
+    ],
+  },
+  {
+    id: 'esun-pla-rainbow-multi',
+    name: 'eSUN ePLA-Silk Rainbow (Веселка)',
+    brand: 'eSUN',
+    manufacturerId: 'esun',
+    type: 'PLA',
+    family: 'Стандартні',
+    approxPricePerKgUah: 780,
+    spoolWeightGrams: 1000,
+    diameterMm: 1.75,
+    packagingType: 'spool',
+    inStock: true,
+    stockStatusLabel: 'В наявності',
+    primaryColorTone: 'multicolor',
+    printTempNozzle: '200–225 °C',
+    printTempBed: '50–60 °C',
+    chamberTemp: 'Кімнатна',
+    coolingFan: '100%',
+    recommendedSpeedMmS: '60–250 мм/с',
+    densityGPerCm3: 1.24,
+    description: 'Багатоколірний шовковий філамент з плавним градієнтним переходом веселки кожні 15 метрів. Ідеально підходить для ваз, іграшок та статуеток.',
+    badge: 'Rainbow Мультиколір · Градієнт Веселка',
+    popularColors: [
+      {
+        name: 'Мультиколір Веселка (Rainbow Gradient)',
+        hex: '#ec4899',
+        hexList: ['#ef4444', '#f97316', '#eab308', '#10b981', '#06b6d4', '#3b82f6', '#a855f7'],
+        colorType: 'rainbow',
+        colorTone: 'multicolor',
+        sku: 'ESUN-PLA-RAINBOW-1KG',
+        packagingType: 'spool',
+        stores: [
+          {
+            storeName: '3D-Format Ukraine',
+            url: 'https://3d-format.com.ua/product/esun-epla-silk-rainbow-1kg/',
+            productTitle: 'Філамент eSUN ePLA-Silk Rainbow (Веселка) 1.75мм 1кг',
+            colorName: 'Мультиколір Веселка',
+            spoolWeightGrams: 1000,
+            priceUah: 780,
+            inStock: true,
+            isOfficialDistributor: true,
+          },
+        ],
+      },
+    ],
+    stores: [
+      {
+        storeName: '3D-Format Ukraine',
+        url: 'https://3d-format.com.ua/product/esun-epla-silk-rainbow-1kg/',
+        productTitle: 'eSUN ePLA-Silk Rainbow 1кг',
+        colorName: 'Мультиколір Веселка',
+        spoolWeightGrams: 1000,
+        priceUah: 780,
+        inStock: true,
+        isOfficialDistributor: true,
+      },
+    ],
+  },
 ];
 
 // Helper функція для отримання температурного профілю
@@ -1205,3 +1769,171 @@ export function getFilamentEffectiveTemp(filament: PublicFilamentItem): {
     dryingInfo: std.dryingTempTime,
   };
 }
+
+// ============================================================================
+// КОНКРЕТНА КАРТКА ТОВАРУ (1 КАРТОЧКА = 1 ВАГА, 1 КОЛІР, 1 ВИРОБНИК, 1 ПРОФІЛЬ, 1 СИЛКА)
+// ============================================================================
+export interface ConcreteFilamentSku {
+  id: string; // Унікальний ID карточки
+  parentFilamentId: string;
+  name: string; // e.g. "Plexiwire PLA Глибокий чорний 1.0 кг (З котушкою)"
+  brand: string; // e.g. "Plexiwire"
+  manufacturerId: string;
+  type: string; // "PLA", "PETG", etc.
+  family: 'Стандартні' | 'Інженерні' | 'Гнучкі' | 'Композитні' | 'Підтримки';
+  spoolWeightGrams: number; // e.g. 1000, 750, 330
+  weightKgDisplay: string; // e.g. "1.0 кг", "0.75 кг", "0.33 кг"
+  diameterMm: number; // 1.75
+  // Фасування (З котушкою чи Рефіл)
+  packagingType: PackagingType; // 'spool' або 'refill'
+  packagingLabel: string; // 'З котушкою' або 'Рефіл (Refill)'
+  inStock: boolean;
+  stockStatusLabel?: string;
+  badge?: string;
+  // 1 Колір (або мультиколір / дуал / градієнт)
+  colorName: string; // e.g. "Глибокий чорний", "Silk Dual Gold-Blue", "Веселка (Rainbow)"
+  colorHex: string; // e.g. "#0a0a0a" (основний або перший hex)
+  colorHexList?: string[]; // e.g. ["#f59e0b", "#3b82f6"] для dual/tri/rainbow
+  colorType?: ColorType; // 'solid' | 'dual' | 'tri' | 'rainbow' | 'gradient' | 'glow' | 'marble' | 'glitter'
+  colorTone: ColorTone; // e.g. "black", "multicolor", "blue"
+  isMulticolor?: boolean;
+  // Ціна та авто-розрахунок
+  priceUah: number; // Ціна за цю конкретну котушку
+  calculatedPricePerKg: number; // Авто-розрахунок за 1 кг
+  pricePerGram: number; // Ціна за 1 грам
+  // 1 Профіль друку
+  profileNozzle: string; // e.g. "190–225 °C"
+  profileBed: string; // e.g. "50–60 °C"
+  profileChamber?: string;
+  profileFan?: string;
+  profileSpeed?: string;
+  profileIsCustom: boolean;
+  profileNotes?: string;
+  // 1 Силка (Одне пряме посилання на сторінку товару у продавця)
+  storeName: string; // e.g. "Plexiwire Офіційний магазин"
+  storeUrl: string; // e.g. "https://plexiwire.com.ua/pla-1-75-chorniy-1-kg/"
+  isOfficialDistributor?: boolean;
+  description: string;
+}
+
+/**
+ * Перетворює сирий каталог у список конкретних одиничних карток:
+ * 1 карточка = 1 вага + 1 колір + 1 виробник + 1 профіль + 1 пряма силка + точне фасування (З котушкою або Рефіл)
+ */
+export function buildConcreteFilamentSkus(catalog: PublicFilamentItem[]): ConcreteFilamentSku[] {
+  const skus: ConcreteFilamentSku[] = [];
+
+  for (const f of catalog) {
+    const tempInfo = getFilamentEffectiveTemp(f);
+    const colors =
+      f.popularColors && f.popularColors.length > 0
+        ? f.popularColors
+        : [
+            {
+              name: 'Стандартний',
+              hex: '#334155',
+              colorTone: f.primaryColorTone || 'black',
+            },
+          ];
+
+    for (let cIdx = 0; cIdx < colors.length; cIdx++) {
+      const color = colors[cIdx];
+      // 1 Силка: Отримуємо пряме посилання конкретно на цей колір або єдиний стор
+      const directStore =
+        color.stores && color.stores.length > 0
+          ? color.stores[0]
+          : f.stores && f.stores.length > 0
+          ? f.stores[0]
+          : null;
+
+      const spoolGrams = directStore?.spoolWeightGrams || f.spoolWeightGrams || 1000;
+      const price = directStore?.priceUah || Math.round((f.approxPricePerKgUah * spoolGrams) / 1000);
+      const calculatedPricePerKg = Math.round((price / spoolGrams) * 1000);
+      const pricePerGram = price / spoolGrams;
+
+      let weightDisplay = `${spoolGrams} г`;
+      if (spoolGrams >= 1000) {
+        weightDisplay = `${(spoolGrams / 1000).toFixed(spoolGrams % 1000 === 0 ? 1 : 2)} кг`;
+      } else if (spoolGrams === 750) {
+        weightDisplay = '0.75 кг';
+      } else if (spoolGrams === 500) {
+        weightDisplay = '0.5 кг';
+      } else if (spoolGrams === 330) {
+        weightDisplay = '0.33 кг';
+      }
+
+      // Визначаємо фасування: чи це Рефіл (Refill без котушки) чи З котушкою
+      const isRefill =
+        color.packagingType === 'refill' ||
+        f.packagingType === 'refill' ||
+        f.name.toLowerCase().includes('refill') ||
+        f.name.toLowerCase().includes('рефіл') ||
+        Boolean(f.badge && (f.badge.toLowerCase().includes('refill') || f.badge.toLowerCase().includes('рефіл'))) ||
+        Boolean(
+          directStore?.productTitle &&
+            (directStore.productTitle.toLowerCase().includes('refill') ||
+              directStore.productTitle.toLowerCase().includes('рефіл') ||
+              directStore.productTitle.toLowerCase().includes('без котушки'))
+        );
+
+      const packagingType: PackagingType = isRefill ? 'refill' : 'spool';
+      const packagingLabel = isRefill ? 'Рефіл (Refill)' : 'З котушкою';
+      const packagingNameSuffix = isRefill ? ' · Рефіл' : ' · З котушкою';
+
+      const skuName = `${f.brand} ${f.type} ${color.name} ${weightDisplay}${packagingNameSuffix}`;
+      const colorSlug = `${color.colorTone || 'col'}-${cIdx}${isRefill ? '-refill' : ''}`;
+      const skuId = `${f.id}-${colorSlug}`;
+
+      const storeName = directStore?.storeName || 'Офіційний магазин';
+      const storeUrl = directStore?.url || '#';
+      const isOfficial = directStore?.isOfficialDistributor ?? true;
+
+      skus.push({
+        id: skuId,
+        parentFilamentId: f.id,
+        name: skuName,
+        brand: f.brand,
+        manufacturerId: f.manufacturerId,
+        type: f.type,
+        family: f.family,
+        spoolWeightGrams: spoolGrams,
+        weightKgDisplay: weightDisplay,
+        diameterMm: f.diameterMm || 1.75,
+        packagingType,
+        packagingLabel,
+        inStock: directStore?.inStock ?? f.inStock,
+        stockStatusLabel: f.stockStatusLabel || (f.inStock ? 'В наявності' : 'Немає в наявності'),
+        badge: f.badge,
+        colorName: color.name,
+        colorHex: color.hex,
+        colorHexList: color.hexList,
+        colorType: color.colorType || (color.colorTone === 'multicolor' ? 'rainbow' : 'solid'),
+        colorTone: color.colorTone || f.primaryColorTone || 'black',
+        isMulticolor:
+          color.colorTone === 'multicolor' ||
+          color.colorType === 'rainbow' ||
+          color.colorType === 'dual' ||
+          color.colorType === 'tri' ||
+          color.colorType === 'gradient' ||
+          (color.hexList && color.hexList.length > 1),
+        priceUah: price,
+        calculatedPricePerKg,
+        pricePerGram,
+        profileNozzle: tempInfo.nozzle,
+        profileBed: tempInfo.bed,
+        profileChamber: tempInfo.chamber,
+        profileFan: tempInfo.fanSpeed,
+        profileSpeed: f.recommendedSpeedMmS,
+        profileIsCustom: tempInfo.isCustom,
+        profileNotes: STANDARD_TEMPERATURE_PROFILES[f.type]?.notes,
+        storeName,
+        storeUrl,
+        isOfficialDistributor: isOfficial,
+        description: f.description,
+      });
+    }
+  }
+
+  return skus;
+}
+
