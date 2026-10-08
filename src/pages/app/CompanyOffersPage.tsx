@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Navigate, NavLink } from 'react-router-dom';
+import { Navigate, NavLink, useSearchParams } from 'react-router-dom';
 import type { QueryDocumentSnapshot } from 'firebase/firestore';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { Button } from '../../components/common/Button.tsx';
@@ -12,6 +12,7 @@ import { companyOfferRepository } from '../../services/companyOfferRepository.ts
 import { organizationRepository } from '../../services/organizationRepository.ts';
 import { authErrorMessage, authService } from '../../services/authService.ts';
 import { formatUah } from '../../domain/formatters.ts';
+import { CompanyLogoEditor } from '../../components/companies/CompanyLogoEditor.tsx';
 
 const statusLabels = { published: 'Опубліковано', hidden: 'Приховано', blocked: 'Заблоковано адміністратором' };
 const selectClass = 'w-full px-3 py-2 text-sm rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white disabled:opacity-50';
@@ -19,6 +20,8 @@ const initialOffer: CompanyOfferInput = { name: '', brand: '', type: 'PLA', fami
 
 export const CompanyOffersPage: React.FC = () => {
   const { user, isDemoSession } = useAuth();
+  const [searchParams] = useSearchParams();
+  const requestedCompanyId = searchParams.get('companyId') || '';
   const isAdmin = user?.role === 'admin';
   const [companies, setCompanies] = useState<Company[]>([]);
   const [companyId, setCompanyId] = useState('');
@@ -45,13 +48,13 @@ export const CompanyOffersPage: React.FC = () => {
         const available = isAdmin ? await organizationRepository.listCompanies() : user?.companyId ? [await organizationRepository.getCompany(user.companyId)].filter((company): company is Company => !!company) : [];
         authService.assertSession(identity);
         if (version !== companyRequest.current) return;
-        setCompanies(available); setCompanyId(available[0]?.id || '');
+        setCompanies(available); setCompanyId(isAdmin && available.some(company => company.id === requestedCompanyId) ? requestedCompanyId : available[0]?.id || '');
       } catch (error) { if (version === companyRequest.current) setError(authErrorMessage(error)); }
       finally { if (version === companyRequest.current) setLoading(false); }
     };
     if (!isDemoSession && (isAdmin || user?.role === 'manager')) void load();
     return () => { ++companyRequest.current; ++offerRequest.current; };
-  }, [user?.id, user?.role, user?.companyId, isDemoSession]);
+  }, [user?.id, user?.role, user?.companyId, isDemoSession, requestedCompanyId]);
 
   const loadOffers = async (more = false) => {
     if (!companyId) return;
@@ -130,6 +133,7 @@ export const CompanyOffersPage: React.FC = () => {
     {company && <>
       <div className="flex flex-wrap justify-between items-center gap-3"><div><h3 className="font-semibold">{company.name}</h3><p className="text-xs text-neutral-500">Дозволені магазини: {company.allowedDomains.join(', ')}</p></div><div className="flex gap-2"><Button variant="outline" size="sm" disabled={loading || busy} onClick={() => { void loadOffers(); }}>Оновити пропозиції</Button><Button size="sm" onClick={() => openEditor(null)} disabled={loading || busy || !canEditCompany}>Додати пластик</Button></div></div>
       {company.status === 'disabled' && <p role="status" className="text-sm text-amber-700 dark:text-amber-400">Компанію призупинено. Її пропозиції не показуються у публічному каталозі. Адміністратор може редагувати дані.</p>}
+      <CompanyLogoEditor key={`${company.id}:${user.id}`} company={company} />
       <Input id="company-offer-search" label="Пошук власних пропозицій" value={search} onChange={event => setSearch(event.target.value)} helperText={`Серед ${offers.length} завантажених записів${cursor ? '; наступні доступні нижче' : ''}.`} />
       <div className="space-y-3">{visible.map(offer => <article key={offer.id} className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
         <div className="flex flex-wrap justify-between gap-3"><div><h4 className="font-semibold">{offer.name}</h4><p className="text-xs text-neutral-500 mt-1">{offer.brand} · {offer.type} · {offer.colorName} · {offer.spoolWeightGrams} г · {offer.packagingType === 'refill' ? 'Рефіл' : 'З котушкою'}</p><p className="text-sm mt-2">{formatUah(offer.priceUah)} за упаковку · {formatUah(offer.priceUah / offer.spoolWeightGrams * 1000)} / кг</p><p className="text-xs mt-1">{statusLabels[offer.status]} · {offer.inStock ? 'В наявності' : 'Немає в наявності'}</p><a href={offer.productUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-emerald-600 underline">Сторінка товару</a></div>

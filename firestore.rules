@@ -26,6 +26,10 @@ rules_version = '2';
 //   blocked, timestamp createdAt, registryVersion; append-only administrator log.
 // companies/{id}: public id/name/https website/allowedDomains/status/version,
 //   immutable createdBy/createdAt, updatedAt/updatedBy/changeId. No private PII.
+// companyLogos/{companyId}: companyId, nullable canonical PNG data URL (128x128,
+//   <=98,304 decoded bytes), version, immutable createdBy/createdAt, updatedBy,
+//   server updatedAt. Active-company logos are public by ID; collection lists
+//   and deletes are denied. Image decoding is validated by the application.
 // companyOffers/{id}: one bounded material/color/packaging/shop-price variant;
 //   immutable id/companyId/createdBy/createdAt; exact allowed HTTPS product host,
 //   published/hidden/blocked status, integer version and server updatedAt.
@@ -218,6 +222,21 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/memberships/$(request.auth.uid)).data.active == true
         && get(/databases/$(database)/documents/memberships/$(request.auth.uid)).data.companyId == id
         && activeCompany(id);
+    }
+    function companyLogoWriter(id) {
+      return exists(/databases/$(database)/documents/companies/$(id))
+        && (adminWriter() || (companyManager(id)
+          && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid))));
+    }
+    function validCompanyLogo(data, id) {
+      return data.keys().hasAll(['companyId', 'imageDataUrl', 'version', 'createdBy', 'createdAt', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['companyId', 'imageDataUrl', 'version', 'createdBy', 'createdAt', 'updatedBy', 'updatedAt'])
+        && data.companyId == id && uid(data.companyId)
+        && (data.imageDataUrl == null || (text(data.imageDataUrl, 131094) && data.imageDataUrl.size() >= 82
+          && data.imageDataUrl.matches('^data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACA([A-Za-z0-9+/]{4})*([A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$')))
+        && data.version is int && data.version >= 1 && data.version <= 9007199254740991
+        && uid(data.createdBy) && data.createdAt is timestamp
+        && data.updatedBy == request.auth.uid && uid(data.updatedBy) && data.updatedAt == request.time;
     }
     function offerReader(data) {
       return admin() || companyManager(data.companyId) || (data.status == 'published' && activeCompany(data.companyId));
@@ -553,6 +572,16 @@ service cloud.firestore {
           || (adminWriter() && request.resource.data.status == 'blocked' && request.resource.data.productUrl == resource.data.productUrl))
         && (adminWriter() || (companyManager(resource.data.companyId) && resource.data.status != 'blocked' && request.resource.data.status != 'blocked'
           && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid))));
+    }
+    match /companyLogos/{id} {
+      allow get: if admin() || activeCompany(id);
+      allow create: if companyLogoWriter(id) && validCompanyLogo(request.resource.data, id)
+        && request.resource.data.version == 1 && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow update: if companyLogoWriter(id) && validCompanyLogo(request.resource.data, id)
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.version == resource.data.version + 1;
     }
     match /filaments/{id} {
       allow get: if true;

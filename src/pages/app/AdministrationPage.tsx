@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, NavLink } from 'react-router-dom';
 import type { QueryDocumentSnapshot } from 'firebase/firestore';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { Button } from '../../components/common/Button.tsx';
@@ -148,7 +148,7 @@ export const AdministrationPage: React.FC = () => {
 
     <section className={panelClass} aria-labelledby="companies-title">
       <div className="flex flex-wrap items-center justify-between gap-3"><h3 id="companies-title" className="font-semibold">Компанії</h3><Button variant="outline" size="sm" onClick={() => editCompany(null)} disabled={busy}>Нова компанія</Button></div>
-      <div className="flex flex-wrap gap-2">{companies.map(company => <Button key={company.id} variant={editingCompany?.id === company.id ? 'secondary' : 'outline'} size="sm" onClick={() => editCompany(company)} disabled={busy}>{company.name}{company.status === 'disabled' ? ' · призупинено' : ''}</Button>)}</div>
+      <div className="flex flex-wrap gap-3">{companies.map(company => <div key={company.id} className="flex flex-wrap items-center gap-2"><Button variant={editingCompany?.id === company.id ? 'secondary' : 'outline'} size="sm" onClick={() => editCompany(company)} disabled={busy}>{company.name}{company.status === 'disabled' ? ' · призупинено' : ''}</Button><NavLink to={`/app/company/offers?companyId=${encodeURIComponent(company.id)}`} className="text-xs text-emerald-700 dark:text-emerald-400 underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500" aria-label={`Логотип і пропозиції: ${company.name}`}>Логотип і пропозиції</NavLink></div>)}</div>
       <form className="space-y-3" onSubmit={submitCompany}>
         <h4 className="text-sm font-medium">{editingCompany ? `Редагування: ${editingCompany.name}` : 'Створення компанії'}</h4>
         <div className="grid sm:grid-cols-2 gap-3">

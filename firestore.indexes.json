@@ -18,6 +18,7 @@
     { "collectionGroup": "calculations", "fieldPath": "input", "indexes": [] },
     { "collectionGroup": "calculations", "fieldPath": "result", "indexes": [] },
     { "collectionGroup": "filaments", "fieldPath": "popularColors", "indexes": [] },
-    { "collectionGroup": "filaments", "fieldPath": "stores", "indexes": [] }
+    { "collectionGroup": "filaments", "fieldPath": "stores", "indexes": [] },
+    { "collectionGroup": "companyLogos", "fieldPath": "imageDataUrl", "indexes": [] }
   ]
 }

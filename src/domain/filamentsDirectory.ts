@@ -1777,6 +1777,7 @@ export interface ConcreteFilamentSku {
   offerId?: string;
   companyId?: string;
   companyName?: string;
+  companyLogoDataUrl?: string;
   id: string; // Унікальний ID карточки
   parentFilamentId: string;
   name: string; // e.g. "Plexiwire PLA Глибокий чорний 1.0 кг (З котушкою)"

@@ -56,6 +56,7 @@ import type { Company } from '../../domain/organizations.ts';
 import type { CompanyOffer } from '../../domain/companyOffers.ts';
 import { toConcreteCompanyOffer } from '../../domain/companyOffers.ts';
 import { companyOfferRepository } from '../../services/companyOfferRepository.ts';
+import { companyLogoRepository } from '../../services/companyLogoRepository.ts';
 import { analyticsMaterialCategory, analyticsOptedOut, analyticsService, type AnalyticsDimensions } from '../../services/analyticsService.ts';
 
 export const FilamentsDirectoryPage: React.FC = () => {
@@ -76,6 +77,10 @@ export const FilamentsDirectoryPage: React.FC = () => {
   const [sellerCompanies, setSellerCompanies] = useState<Company[]>([]);
   const [companyCursor, setCompanyCursor] = useState<QueryDocumentSnapshot | null>(null);
   const [companyOffers, setCompanyOffers] = useState<Record<string, CompanyOffer[]>>({});
+  const [companyLogos, setCompanyLogos] = useState<Record<string, string | null>>({});
+  const [logoErrors, setLogoErrors] = useState<string[]>([]);
+  const requestedLogos = useRef(new Set<string>());
+  const pendingLogos = useRef(new Set<string>());
   const [offerCursors, setOfferCursors] = useState<Record<string, QueryDocumentSnapshot | null>>({});
   const [companiesLoading, setCompaniesLoading] = useState(false);
   const [offersLoading, setOffersLoading] = useState<string[]>([]);
@@ -171,6 +176,20 @@ export const FilamentsDirectoryPage: React.FC = () => {
     return () => { active = false; };
   }, [user?.id, user?.emailVerified, user?.isBlocked, isDemoSession]);
 
+  const loadSellerLogo = async (companyId: string, generation = companyGeneration.current) => {
+    if (isDemoSession || requestedLogos.current.has(companyId) || pendingLogos.current.has(companyId)) return;
+    requestedLogos.current.add(companyId);
+    pendingLogos.current.add(companyId);
+    try {
+      const logo = await companyLogoRepository.get(companyId);
+      if (generation !== companyGeneration.current) return;
+      setCompanyLogos(previous => ({ ...previous, [companyId]: logo?.imageDataUrl ?? null }));
+      setLogoErrors(previous => previous.filter(id => id !== companyId));
+    } catch {
+      if (generation === companyGeneration.current) setLogoErrors(previous => previous.includes(companyId) ? previous : [...previous, companyId]);
+    } finally { if (generation === companyGeneration.current) pendingLogos.current.delete(companyId); }
+  };
+
   const loadSellerOffers = async (company: Company, more = false, generation = companyGeneration.current) => {
     setOffersLoading(previous => [...previous, company.id]);
     setOffersError(null);
@@ -179,6 +198,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
       if (generation !== companyGeneration.current) return;
       setCompanyOffers(previous => ({ ...previous, [company.id]: more ? [...(previous[company.id] || []), ...page.items.filter(item => !(previous[company.id] || []).some(existing => existing.id === item.id))] : page.items }));
       setOfferCursors(previous => ({ ...previous, [company.id]: page.nextCursor }));
+      void loadSellerLogo(company.id, generation);
     } catch (error) { if (generation === companyGeneration.current) setOffersError(authErrorMessage(error)); }
     finally { if (generation === companyGeneration.current) setOffersLoading(previous => previous.filter(id => id !== company.id)); }
   };
@@ -198,6 +218,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
   useEffect(() => {
     const generation = ++companyGeneration.current;
     setSellerCompanies([]); setCompanyOffers({}); setOfferCursors({}); setCompanyCursor(null);
+    setCompanyLogos({}); setLogoErrors([]); requestedLogos.current.clear(); pendingLogos.current.clear();
     setOffersLoading([]); setCompaniesLoading(false); setOffersError(null); setSelectedSeller('all');
     if (firebaseConfigured && !isDemoSession) void loadSellerCompanies(false, generation);
     return () => { ++companyGeneration.current; };
@@ -221,10 +242,10 @@ export const FilamentsDirectoryPage: React.FC = () => {
     const sellerSkus = sellerCompanies.flatMap(company => (companyOffers[company.id] || []).map(offer => {
       const sku = toConcreteCompanyOffer(offer, company, tempProfiles);
       const knownBrand = manufacturers.find(manufacturer => manufacturer.name.toLocaleLowerCase('uk') === offer.brand.toLocaleLowerCase('uk'));
-      return knownBrand ? { ...sku, manufacturerId: knownBrand.id } : sku;
+      return { ...sku, ...(knownBrand ? { manufacturerId: knownBrand.id } : {}), ...(companyLogos[company.id] ? { companyLogoDataUrl: companyLogos[company.id]! } : {}) };
     }));
     return [...globalSkus, ...sellerSkus];
-  }, [filaments, tempProfiles, sellerCompanies, companyOffers, manufacturers]);
+  }, [filaments, tempProfiles, sellerCompanies, companyOffers, companyLogos, manufacturers]);
 
   const manufacturerChoices = useMemo(() => {
     const choices = new Map(manufacturers.map(manufacturer => [manufacturer.id, manufacturer.name]));
@@ -543,6 +564,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
               <p className="text-xs text-neutral-500">Пошук, фільтри й сортування працюють серед завантажених позицій. Пропозиції компаній завантажуються частинами по 50.</p>
               {(companiesLoading || offersLoading.length > 0) && <p role="status" className="text-xs text-neutral-500">Завантаження пропозицій компаній…</p>}
               {offersError && <p role="alert" className="text-xs text-red-600">Не вдалося завантажити частину пропозицій. {offersError}</p>}
+              {logoErrors.length > 0 && <p role="status" className="text-xs text-neutral-500">Частину логотипів компаній не вдалося завантажити. Пропозиції доступні. <button type="button" className="underline hover:text-emerald-600" onClick={() => { logoErrors.slice(0, 3).forEach(id => { if (pendingLogos.current.has(id)) return; requestedLogos.current.delete(id); void loadSellerLogo(id); }); }}>Повторити завантаження логотипів</button></p>}
               <div className="flex flex-wrap gap-2">
                 {sellerCompanies.some(company => !(company.id in companyOffers)) && <Button variant="outline" size="sm" disabled={companiesLoading || offersLoading.length > 0} onClick={() => {
                   void Promise.all(sellerCompanies.filter(company => !(company.id in companyOffers)).slice(0, 3).map(company => loadSellerOffers(company)));
@@ -1125,7 +1147,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
         onSellerClick={sku => analyticsService.track('seller_click', analyticsDimensions(sku))}
         isOpen={isDetailsModalOpen}
         onClose={handleCloseDetails}
-        sku={selectedSkuForModal}
+        sku={selectedSkuForModal?.companyId ? { ...selectedSkuForModal, companyLogoDataUrl: companyLogos[selectedSkuForModal.companyId] || undefined } : selectedSkuForModal}
         manufacturer={
           selectedSkuForModal
             ? manufacturerMap.get(selectedSkuForModal.manufacturerId)

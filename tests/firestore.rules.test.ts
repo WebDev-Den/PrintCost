@@ -1,6 +1,7 @@
 import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { deflateSync } from 'node:zlib';
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestContext, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
 import { collection, deleteDoc, deleteField, doc, documentId, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc, startAfter, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { INITIAL_MATERIALS, INITIAL_PRINTERS, INITIAL_PRICING_SETTINGS, getInitialCalculationSnapshots } from '../src/domain/defaultData.ts';
@@ -29,6 +30,33 @@ function writeNewSnapshot(value: Record<string, unknown>) {
 let changeCounter = 0;
 const nextChange = () => `change-${++changeCounter}`;
 const historicalTime = Timestamp.fromDate(new Date('2026-10-08T00:00:00Z'));
+
+function logoPng(width = 128, height = 128, padding = 0): Buffer {
+  const chunk = (type: string, bytes: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type), bytes]);
+    let crc = 0xffffffff;
+    for (const byte of body) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    const length = Buffer.alloc(4), checksum = Buffer.alloc(4);
+    length.writeUInt32BE(bytes.length); checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    return Buffer.concat([length, body, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 6;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header),
+    chunk('IDAT', deflateSync(Buffer.alloc((width * 4 + 1) * height))),
+    ...(padding ? [chunk('tEXt', Buffer.from(`pad\0${'a'.repeat(padding)}`))] : []), chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+const pngUrl = (bytes: Buffer) => `data:image/png;base64,${bytes.toString('base64')}`;
+const logoImage = pngUrl(logoPng());
+function logoData(actor = 'alice', companyId = 'company-a', overrides: Record<string, unknown> = {}) {
+  return { companyId, imageDataUrl: logoImage, version: 1, createdBy: actor, createdAt: serverTimestamp(),
+    updatedBy: actor, updatedAt: serverTimestamp(), ...overrides };
+}
 
 async function seedAuthorization(adminUids = ['administrator']) {
   await environment.withSecurityRulesDisabled(async context => {
@@ -699,6 +727,119 @@ test('manager role revocation, blocking or unverified token immediately denies o
   await (await roleBatch(administrator, 'administrator', 'alice', 'user', { action: 'block', blocked: true })).commit();
   await assertFails(getDoc(doc(manager, 'companyOffers/offer-a')));
   await assertFails(updateDoc(doc(manager, 'companyOffers/offer-a'), { name: 'Blocked edit', version: 2, updatedAt: serverTimestamp(), updatedBy: 'alice' }));
+});
+
+test('company logos support own-company managers, administrator moderation and public get for legacy active companies', async () => {
+  const { manager, administrator, anonymous } = await setupOffers();
+  const ref = doc(manager, 'companyLogos/company-a');
+  assert.equal((await assertSucceeds(getDoc(doc(anonymous, 'companyLogos/company-a')))).exists(), false);
+  await assertSucceeds(setDoc(ref, logoData()));
+  assert.equal((await assertSucceeds(getDoc(doc(anonymous, 'companyLogos/company-a')))).data()?.imageDataUrl, logoImage);
+  await assertSucceeds(updateDoc(ref, { imageDataUrl: null, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  assert.equal((await getDoc(ref)).data()?.imageDataUrl, null);
+  await assertSucceeds(updateDoc(doc(administrator, 'companyLogos/company-a'), { imageDataUrl: logoImage, version: 3, updatedBy: 'administrator', updatedAt: serverTimestamp() }));
+  await assertSucceeds(setDoc(doc(administrator, 'companyLogos/company-b'), logoData('administrator', 'company-b')));
+  const company = (await getDoc(doc(anonymous, 'companies/company-a'))).data()!;
+  assert.equal('imageDataUrl' in company, false);
+  assert.equal(company.name, 'Компанія A');
+});
+
+test('company logo writes reject foreign managers, ordinary users, unverified and blocked accounts', async () => {
+  const { manager, otherManager, administrator, anonymous } = await setupOffers();
+  await assertFails(setDoc(doc(otherManager, 'companyLogos/company-a'), logoData('bob')));
+  await assertFails(setDoc(doc(manager, 'companyLogos/company-b'), logoData('alice', 'company-b')));
+  await assertFails(setDoc(doc(user('ordinary'), 'companyLogos/company-a'), logoData('ordinary')));
+  await assertFails(setDoc(doc(anonymous, 'companyLogos/company-a'), logoData()));
+  await assertSucceeds(setDoc(doc(manager, 'companyLogos/company-a'), logoData()));
+  await assertFails(updateDoc(doc(otherManager, 'companyLogos/company-a'), { imageDataUrl: null, version: 2, updatedBy: 'bob', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(user('alice', { email_verified: false }), 'companyLogos/company-a'), { imageDataUrl: null, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  await (await roleBatch(administrator, 'administrator', 'alice', 'user', { action: 'block', blocked: true })).commit();
+  await assertFails(updateDoc(doc(manager, 'companyLogos/company-a'), { imageDataUrl: null, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  await environment.withSecurityRulesDisabled(context => setDoc(doc(context.firestore(), 'accountAccess/administrator'), { blocked: true, updatedAt: historicalTime, updatedBy: 'external-recovery', changeId: 'seed' }));
+  await assertFails(updateDoc(doc(administrator, 'companyLogos/company-a'), { imageDataUrl: null, version: 2, updatedBy: 'administrator', updatedAt: serverTimestamp() }));
+});
+
+test('disabled companies hide logos and stop managers while administrators can clear logos; missing companies cannot receive uploads', async () => {
+  const { manager, administrator, anonymous } = await setupOffers();
+  await setDoc(doc(manager, 'companyLogos/company-a'), logoData());
+  await (await companyBatch(administrator, 'administrator', 'company-a', { status: 'disabled' })).commit();
+  await assertFails(getDoc(doc(anonymous, 'companyLogos/company-a')));
+  await assertFails(getDoc(doc(manager, 'companyLogos/company-a')));
+  await assertFails(updateDoc(doc(manager, 'companyLogos/company-a'), { imageDataUrl: null, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  await assertSucceeds(getDoc(doc(administrator, 'companyLogos/company-a')));
+  await assertSucceeds(updateDoc(doc(administrator, 'companyLogos/company-a'), { imageDataUrl: null, version: 2, updatedBy: 'administrator', updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(administrator, 'companyLogos/missing-company'), logoData('administrator', 'missing-company')));
+  await assertFails(getDoc(doc(anonymous, 'companyLogos/missing-company')));
+  for (const db of [manager, administrator, anonymous]) {
+    await assertFails(getDocs(query(collection(db, 'companyLogos'), limit(1))));
+    await assertFails(getDocs(query(collection(db, 'companyLogos'), where('companyId', '==', 'company-a'), limit(1))));
+    await assertFails(deleteDoc(doc(db, 'companyLogos/company-a')));
+  }
+});
+
+test('company logo create and update reject invalid PNG headers, dimensions, base64, field types and schemas', async () => {
+  const { manager } = await setupOffers();
+  const ref = doc(manager, 'companyLogos/company-a');
+  const invalidImages: unknown[] = [
+    '', true, 1, {}, [], 'https://shop.example.com/logo.png', 'data:image/svg+xml;base64,PHN2Zy8+',
+    'data:image/jpeg;base64,/9j/4AAQSkZJRg==', pngUrl(logoPng(1, 1)), pngUrl(logoPng(127, 128)), pngUrl(logoPng(128, 127)),
+    logoImage.replace('image/png', 'IMAGE/PNG'), logoImage + '\n', logoImage + '=', logoImage.slice(0, -1),
+    logoImage.replace('base64,', 'base64, '), logoImage.replace('ACA', 'AC_'),
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACA',
+  ];
+  for (const padding of [1, 2, 3]) {
+    const valid = pngUrl(logoPng(128, 128, padding));
+    if (valid.endsWith('==')) invalidImages.push(valid.slice(0, -3) + 'B==');
+    else if (valid.endsWith('=')) invalidImages.push(valid.slice(0, -2) + 'B=');
+  }
+  for (const imageDataUrl of invalidImages) await assertFails(setDoc(ref, logoData('alice', 'company-a', { imageDataUrl })));
+  const invalidFields = [
+    { companyId: 'company-b' }, { createdBy: 'bob' }, { updatedBy: 'bob' }, { createdAt: historicalTime }, { updatedAt: historicalTime },
+    { version: 0 }, { version: 2 }, { version: 1.5 }, { version: '1' }, { version: 9007199254740992 }, { extra: true },
+  ];
+  for (const fields of invalidFields) await assertFails(setDoc(ref, logoData('alice', 'company-a', fields)));
+  for (const field of Object.keys(logoData())) {
+    const incomplete = logoData();
+    Reflect.deleteProperty(incomplete, field);
+    await assertFails(setDoc(ref, incomplete));
+    await assertFails(setDoc(ref, { ...incomplete, forgedField: true }));
+  }
+  await assertSucceeds(setDoc(ref, logoData()));
+  for (const imageDataUrl of invalidImages) await assertFails(updateDoc(ref, { imageDataUrl, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  for (const fields of invalidFields.filter(value => !('version' in value))) await assertFails(updateDoc(ref, { version: 2, updatedBy: 'alice', updatedAt: serverTimestamp(), ...fields }));
+  await assertFails(updateDoc(ref, { imageDataUrl: deleteField(), version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(ref, { imageDataUrl: null, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(ref, { imageDataUrl: logoImage, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(ref, { imageDataUrl: logoImage, version: 4, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+});
+
+test('company logo size bounds admit valid 128px PNGs through 98304 bytes and reject larger uploads', async () => {
+  const { manager } = await setupOffers();
+  const baseLength = logoPng().length;
+  const maximum = logoPng(128, 128, 98304 - baseLength - 16);
+  const oversized = logoPng(128, 128, 98305 - baseLength - 16);
+  assert.equal(maximum.length, 98304);
+  assert.equal(pngUrl(maximum).length, 131094);
+  const ref = doc(manager, 'companyLogos/company-a');
+  await assertSucceeds(setDoc(ref, logoData('alice', 'company-a', { imageDataUrl: pngUrl(maximum) })));
+  await assertFails(updateDoc(ref, { imageDataUrl: pngUrl(oversized), version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  for (const [index, padding] of [1, 2, 3].entries()) await assertSucceeds(updateDoc(ref, {
+    imageDataUrl: pngUrl(logoPng(128, 128, padding)), version: index + 2, updatedBy: 'alice', updatedAt: serverTimestamp(),
+  }));
+});
+
+for (const role of ['manager', 'admin'] as const) test(`a ${role} cannot change a company logo in or after its own deletion transaction`, async () => {
+  const { manager, administrator } = await setupOffers();
+  await setDoc(doc(manager, 'companyLogos/company-a'), logoData());
+  if (role === 'admin') await (await roleBatch(administrator, 'administrator', 'alice', 'admin')).commit();
+  const db = recentUser();
+  const pending = await deletionBatch(db);
+  pending.batch.update(doc(db, 'companyLogos/company-a'), { imageDataUrl: null, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() });
+  await assertFails(pending.batch.commit());
+  await assertSucceeds((await deletionBatch(db)).batch.commit());
+  await assertFails(updateDoc(doc(db, 'companyLogos/company-a'), { imageDataUrl: null, version: 2, updatedBy: 'alice', updatedAt: serverTimestamp() }));
+  assert.equal((await getDoc(doc(administrator, 'companyLogos/company-a'))).data()?.imageDataUrl, logoImage);
+  assert.equal((await getDoc(doc(administrator, 'companyLogos/company-a'))).data()?.createdBy, 'alice');
 });
 
 test('private material VAT metadata is optional, strict and owner-only', async () => {

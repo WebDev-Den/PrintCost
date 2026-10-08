@@ -30,6 +30,7 @@ import { formatUah } from '../../domain/formatters.ts';
 import { Button } from '../common/Button.tsx';
 import { FilamentColorVisual } from './FilamentColorVisual.tsx';
 import { useDialogFocus } from '../common/useDialogFocus.ts';
+import { CompanyLogo } from '../companies/CompanyLogo.tsx';
 
 interface FilamentDetailsModalProps {
   sku: ConcreteFilamentSku | null;
@@ -431,13 +432,16 @@ export const FilamentDetailsModal: React.FC<FilamentDetailsModalProps> = ({
             </div>
 
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-1">
-              <div>
-                <span className="text-sm font-bold block">
-                  {sku.storeName}
-                </span>
-                <span className="text-xs text-neutral-400 block mt-0.5">
-                  Пряма сторінка товару: {sku.weightKgDisplay}, {sku.colorName}
-                </span>
+              <div className="flex items-center gap-3">
+                {sku.companyId && <CompanyLogo name={sku.companyName || sku.storeName} imageDataUrl={sku.companyLogoDataUrl} />}
+                <div>
+                  <span className="text-sm font-bold block">
+                    {sku.storeName}
+                  </span>
+                  <span className="text-xs text-neutral-400 block mt-0.5">
+                    Пряма сторінка товару: {sku.weightKgDisplay}, {sku.colorName}
+                  </span>
+                </div>
               </div>
 
               <a
