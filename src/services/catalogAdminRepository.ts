@@ -12,10 +12,9 @@ export const catalogAdminRepository = {
   updateManufacturer: (id: string, updates: Partial<ManufacturerBrand>) => api.manufacturers.update(id, updates),
   deleteManufacturer: (id: string) => api.manufacturers.delete(id),
   getTemperatureProfiles: () => api.temperatures.getAll(),
-  updateTemperatureProfile: (type: string, profile: TemperatureProfile) => api.temperatures.update(type, profile),
   deleteTemperatureProfile: (type: string) => api.temperatures.delete(type),
   getLikedFilamentIds: () => api.filaments.getLikedIds(),
   toggleLike: (id: string) => api.filaments.toggleLike(id),
-  renamePlasticType: (original: string, name: string, family: PublicFilamentItem['family'], density: number, notes: string) => api.catalog.renamePlasticType(original, name, family, density, notes),
+  savePlasticType: (original: string | null, name: string, profile: TemperatureProfile) => api.catalog.savePlasticType(original, name, profile),
   resetAllToFactory: () => api.catalog.reset(),
 };

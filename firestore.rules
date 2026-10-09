@@ -36,6 +36,8 @@ rules_version = '2';
 //   Public visibility requires published status and an active company.
 // filaments, manufacturers, temperatureProfiles: explicitly public catalog;
 //   mutations require the current authorization registry, never custom claims.
+// temperatureProfiles: optional family enum and positive densityGPerCm3 <=100;
+//   legacy profiles without those fields remain valid.
 service cloud.firestore {
   match /databases/{database}/documents {
     function owner(uid) { return request.auth != null && request.auth.uid == uid; }
@@ -448,9 +450,11 @@ service cloud.firestore {
     }
     function validTemperature(data) {
       return (data.keys().hasOnly(['deleted']) && data.deleted == true) || (data.keys().hasAll(['plasticType', 'nozzleRange', 'bedRange', 'chamberRange', 'fanSpeed', 'notes', 'enclosureRequired', 'dryingTempTime'])
-        && data.keys().hasOnly(['plasticType', 'nozzleRange', 'bedRange', 'chamberRange', 'fanSpeed', 'notes', 'enclosureRequired', 'dryingTempTime'])
+        && data.keys().hasOnly(['plasticType', 'nozzleRange', 'bedRange', 'chamberRange', 'fanSpeed', 'notes', 'enclosureRequired', 'dryingTempTime', 'family', 'densityGPerCm3'])
         && text(data.plasticType, 200) && text(data.nozzleRange, 200) && text(data.bedRange, 200) && text(data.chamberRange, 300) && text(data.fanSpeed, 300)
-        && text(data.notes, 10000) && data.enclosureRequired is bool && text(data.dryingTempTime, 300));
+        && text(data.notes, 10000) && data.enclosureRequired is bool && text(data.dryingTempTime, 300)
+        && (!('family' in data) || data.family in ['Стандартні', 'Інженерні', 'Гнучкі', 'Композитні', 'Підтримки'])
+        && (!('densityGPerCm3' in data) || (data.densityGPerCm3 is number && data.densityGPerCm3 > 0 && data.densityGPerCm3 <= 100)));
     }
     match /users/{uid} {
       allow get: if owner(uid);

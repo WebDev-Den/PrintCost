@@ -11,7 +11,6 @@ import {
   RotateCcw,
   Check,
   ExternalLink,
-  Flame,
   Globe,
   Coins,
   CheckCircle2,
@@ -42,11 +41,16 @@ import { FilamentColorVisual } from '../../components/filaments/FilamentColorVis
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
 
+const EMPTY_TEMPERATURE_PROFILE: TemperatureProfile = {
+  plasticType: '', nozzleRange: '', bedRange: '', chamberRange: '', fanSpeed: '',
+  notes: '', enclosureRequired: false, dryingTempTime: '',
+};
+
 export const CatalogAdminPage: React.FC = () => {
   const { user, isDemoSession } = useAuth();
   const canEdit = !isDemoSession && user?.isAdmin === true;
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'filaments' | 'manufacturers' | 'plastic_types' | 'temperatures'>('filaments');
+  const [activeTab, setActiveTab] = useState<'filaments' | 'manufacturers' | 'plastic_types'>('filaments');
 
   // Loaded data
   const [filaments, setFilaments] = useState<PublicFilamentItem[]>([]);
@@ -122,29 +126,15 @@ export const CatalogAdminPage: React.FC = () => {
     description: '',
   });
 
-  // Temperature profile & plastic types modal & editing state
-  const [isTempModalOpen, setIsTempModalOpen] = useState(false);
-  const [isCreatingNewTemp, setIsCreatingNewTemp] = useState(false);
-  const [editingTempType, setEditingTempType] = useState<string | null>(null);
-  const [newTempTypeKey, setNewTempTypeKey] = useState('');
-  const [tempForm, setTempForm] = useState<Partial<TemperatureProfile>>({
-    plasticType: 'PLA',
-    nozzleRange: '190–220 °C',
-    bedRange: '50–60 °C',
-    chamberRange: 'Кімнатна',
-    fanSpeed: '100%',
-    notes: '',
-    enclosureRequired: false,
-    dryingTempTime: '50 °C (4 год)',
-  });
-
   // Plastic Type Create/Edit modal state
   const [isPlasticTypeModalOpen, setIsPlasticTypeModalOpen] = useState(false);
   const [editingPlasticTypeOriginal, setEditingPlasticTypeOriginal] = useState<string | null>(null);
   const [plasticTypeFormName, setPlasticTypeFormName] = useState('');
   const [plasticTypeFormFamily, setPlasticTypeFormFamily] = useState<'Стандартні' | 'Інженерні' | 'Гнучкі' | 'Композитні' | 'Підтримки'>('Стандартні');
   const [plasticTypeFormDensity, setPlasticTypeFormDensity] = useState(1.24);
-  const [plasticTypeFormDescription, setPlasticTypeFormDescription] = useState('');
+  const [tempForm, setTempForm] = useState<TemperatureProfile>(EMPTY_TEMPERATURE_PROFILE);
+  const [isSavingPlasticType, setIsSavingPlasticType] = useState(false);
+  const plasticTypes = Array.from(new Set([...Object.keys(temperatures), ...filaments.map(item => item.type)]));
 
   // Load from repository
   const reloadData = async () => {
@@ -439,82 +429,15 @@ export const CatalogAdminPage: React.FC = () => {
     });
   };
 
-  // --- TEMPERATURE PROFILE CRUD ACTIONS ---
-  const handleOpenAddTemp = () => {
-    setIsCreatingNewTemp(true);
-    setEditingTempType(null);
-    setNewTempTypeKey('');
-    setTempForm({
-      plasticType: '',
-      nozzleRange: '200–230 °C',
-      bedRange: '50–70 °C',
-      chamberRange: 'Кімнатна',
-      fanSpeed: '100%',
-      notes: '',
-      enclosureRequired: false,
-      dryingTempTime: '50 °C (4 год)',
-    });
-    setIsTempModalOpen(true);
-  };
-
-  const handleOpenEditTemp = (type: string, profile: TemperatureProfile) => {
-    setIsCreatingNewTemp(false);
-    setEditingTempType(type);
-    setNewTempTypeKey(type);
-    setTempForm({ ...profile });
-    setIsTempModalOpen(true);
-  };
-
-  const handleSaveTemp = () => runAction(async () => {
-    const finalKey = isCreatingNewTemp ? newTempTypeKey.trim().toUpperCase() : editingTempType;
-    if (!finalKey) {
-      notify('Вкажіть унікальний ідентифікатор типу (наприклад, PETG, ABS, PC)');
-      return;
-    }
-    if (!tempForm.nozzleRange) {
-      notify('Вкажіть робочу температуру сопла');
-      return;
-    }
-
-    const payload: TemperatureProfile = {
-      plasticType: tempForm.plasticType || finalKey,
-      nozzleRange: tempForm.nozzleRange || '200–230 °C',
-      bedRange: tempForm.bedRange || '50–70 °C',
-      chamberRange: tempForm.chamberRange || 'Кімнатна',
-      fanSpeed: tempForm.fanSpeed || '100%',
-      notes: tempForm.notes || '',
-      enclosureRequired: tempForm.enclosureRequired || false,
-      dryingTempTime: tempForm.dryingTempTime || '50 °C (4 год)',
-    };
-
-    await catalogAdminRepository.updateTemperatureProfile(finalKey, payload);
-    notify(isCreatingNewTemp ? `Створено новий температурний профіль "${finalKey}"` : `Температурний профіль для "${finalKey}" збережено`);
-    setIsTempModalOpen(false);
-    await reloadData();
-  });
-
-  const handleDeleteTemp = (typeKey: string) => {
-    setConfirmDialog({
-      isOpen: true,
-      title: 'Видалити температурний стандарт?',
-      message: `Видалити стандарт температур для типу "${typeKey}"?`,
-      actionText: 'Видалити',
-      onConfirm: () => runAction(async () => {
-        await catalogAdminRepository.deleteTemperatureProfile(typeKey);
-        notify(`Температурний стандарт "${typeKey}" видалено`);
-        await reloadData();
-        setConfirmDialog(null);
-      }),
-    });
-  };
-
   // --- PLASTIC TYPES CRUD ACTIONS ---
   const handleOpenAddPlasticType = () => {
     setEditingPlasticTypeOriginal(null);
     setPlasticTypeFormName('');
     setPlasticTypeFormFamily('Стандартні');
     setPlasticTypeFormDensity(1.24);
-    setPlasticTypeFormDescription('');
+    setFormError(null);
+    setSaveError(null);
+    setTempForm({ ...EMPTY_TEMPERATURE_PROFILE });
     setIsPlasticTypeModalOpen(true);
   };
 
@@ -523,48 +446,41 @@ export const CatalogAdminPage: React.FC = () => {
     setPlasticTypeFormName(typeName);
     const existingTemp = temperatures[typeName];
     const relatedFilament = filaments.find((f) => f.type.toLowerCase() === typeName.toLowerCase());
-    setPlasticTypeFormFamily(relatedFilament?.family || 'Стандартні');
-    setPlasticTypeFormDensity(relatedFilament?.densityGPerCm3 || 1.24);
-    setPlasticTypeFormDescription(existingTemp?.notes || relatedFilament?.description || '');
+    setFormError(null);
+    setSaveError(null);
+    setPlasticTypeFormFamily(existingTemp?.family || relatedFilament?.family || 'Стандартні');
+    setPlasticTypeFormDensity(existingTemp?.densityGPerCm3 || relatedFilament?.densityGPerCm3 || 1.24);
+    setTempForm(existingTemp ? { ...existingTemp } : { ...EMPTY_TEMPERATURE_PROFILE, plasticType: typeName, notes: relatedFilament?.description || '' });
     setIsPlasticTypeModalOpen(true);
   };
 
-  const handleSavePlasticType = () => runAction(async () => {
-    const cleanName = plasticTypeFormName.trim().toUpperCase();
-    if (!cleanName) {
-      notify('Вкажіть назву типу пластику');
-      return;
-    }
-
-    // 1. If renaming, update all existing filaments of this type
-    if (editingPlasticTypeOriginal) {
-      await catalogAdminRepository.renamePlasticType(editingPlasticTypeOriginal, cleanName, plasticTypeFormFamily, plasticTypeFormDensity, plasticTypeFormDescription);
-    } else {
-      // 2. Ensure matching temperature standard profile exists
-      if (!temperatures[cleanName]) {
-        await catalogAdminRepository.updateTemperatureProfile(cleanName, {
-          plasticType: cleanName,
-          nozzleRange: '210–235 °C',
-          bedRange: '60–80 °C',
-          chamberRange: 'Кімнатна',
-          fanSpeed: '80%',
-          notes: plasticTypeFormDescription || `Інженерний пластик ${cleanName}`,
-          enclosureRequired: false,
-          dryingTempTime: '50 °C (4 год)',
+  const handleSavePlasticType = async () => {
+    if (isSavingPlasticType) return;
+    setIsSavingPlasticType(true);
+    try {
+      await runAction(async () => {
+        const cleanName = plasticTypeFormName.trim().toUpperCase();
+        if (!cleanName) throw new Error('Вкажіть назву типу пластику.');
+        await catalogAdminRepository.savePlasticType(editingPlasticTypeOriginal, cleanName, {
+          ...tempForm, plasticType: tempForm.plasticType.trim() || cleanName,
+          family: plasticTypeFormFamily, densityGPerCm3: plasticTypeFormDensity,
         });
-      }
-    }
-
-    notify(`Тип пластику "${cleanName}" успішно збережено`);
-    setIsPlasticTypeModalOpen(false);
-    await reloadData();
-  });
+        notify(`Тип і профіль "${cleanName}" збережено`);
+        await reloadData();
+        setIsPlasticTypeModalOpen(false);
+      });
+    } finally { setIsSavingPlasticType(false); }
+  };
 
   const handleDeletePlasticType = (typeName: string) => {
+    if (filaments.some(item => item.type.toUpperCase() === typeName.toUpperCase())) {
+      notify('Спочатку змініть тип у пов’язаних філаментах.');
+      return;
+    }
     setConfirmDialog({
       isOpen: true,
-      title: 'Видалити тип пластику?',
-      message: `Видалити тип "${typeName}"? Пов'язані позиції товарів у каталозі залишаться, але потребуватимуть оновлення.`,
+      title: 'Видалити тип і профіль?',
+      message: `Видалити тип "${typeName}" разом зі стандартним профілем друку?`,
       actionText: 'Видалити тип',
       onConfirm: () => runAction(async () => {
         await catalogAdminRepository.deleteTemperatureProfile(typeName);
@@ -610,7 +526,7 @@ export const CatalogAdminPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
           <Button
             variant="outline"
             size="sm"
@@ -679,21 +595,9 @@ export const CatalogAdminPage: React.FC = () => {
           }`}
         >
           <Sparkles className="w-4 h-4 text-purple-600" />
-          <span>Типи пластику ({Array.from(new Set(filaments.map((f) => f.type))).length})</span>
+          <span>Типи пластику та профілі ({plasticTypes.length})</span>
         </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveTab('temperatures')}
-          className={`px-4 py-2 rounded-xl transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
-            activeTab === 'temperatures'
-              ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white shadow-2xs font-bold'
-              : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900'
-          }`}
-        >
-          <Flame className="w-4 h-4 text-amber-500" />
-          <span>Температурні стандарти ({Object.keys(temperatures).length})</span>
-        </button>
       </div>
 
       {/* TAB 1: FILAMENTS MANAGEMENT */}
@@ -929,10 +833,10 @@ export const CatalogAdminPage: React.FC = () => {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-neutral-100 dark:border-neutral-800 pb-4">
             <div>
               <h2 className="text-base font-bold text-neutral-900 dark:text-white">
-                Типи пластику для 3D-друку (PLA, PETG, ABS, TPU, PC, тощо)
+                Типи пластику та стандартні профілі друку
               </h2>
               <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                Керуйте номенклатурою типів полімерів, групами складності, густиною (г/см³) та пов'язаними профілями.
+                Тип, група, густина й параметри друку в одному місці. Стандарт застосовується, якщо товар не має власного профілю.
               </p>
             </div>
 
@@ -947,11 +851,11 @@ export const CatalogAdminPage: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {Array.from(new Set([...Object.keys(temperatures), ...filaments.map((f) => f.type)])).map((typeKey) => {
+            {plasticTypes.map((typeKey) => {
               const matchedFilaments = filaments.filter((f) => f.type.toLowerCase() === typeKey.toLowerCase());
               const tempProfile = temperatures[typeKey];
-              const family = matchedFilaments[0]?.family || 'Стандартні';
-              const density = matchedFilaments[0]?.densityGPerCm3 || 1.24;
+              const family = tempProfile?.family || matchedFilaments[0]?.family || 'Стандартні';
+              const density = tempProfile?.densityGPerCm3 || matchedFilaments[0]?.densityGPerCm3 || 1.24;
 
               return (
                 <div
@@ -959,12 +863,12 @@ export const CatalogAdminPage: React.FC = () => {
                   className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/40 space-y-3 flex flex-col justify-between"
                 >
                   <div className="space-y-2">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-black text-sm px-2.5 py-1 rounded bg-neutral-900 text-white dark:bg-purple-600 dark:text-white shadow-2xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono font-black text-sm px-2.5 py-1 rounded bg-neutral-900 text-white dark:bg-purple-600 dark:text-white shadow-2xs min-w-0 break-all">
                           {typeKey}
                         </span>
-                        <div>
+                        <div className="min-w-0 break-words">
                           <span className="text-xs font-bold text-neutral-900 dark:text-white block">
                             {tempProfile?.plasticType || typeKey}
                           </span>
@@ -974,13 +878,14 @@ export const CatalogAdminPage: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 shrink-0">
                         <Button
                           variant="ghost"
                           size="sm"
                           className="p-1"
                           onClick={() => handleOpenEditPlasticType(typeKey)}
-                          title="Редагувати тип пластику"
+                          aria-label={`Редагувати тип і профіль ${typeKey}`}
+                          title="Редагувати тип і профіль"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </Button>
@@ -989,7 +894,9 @@ export const CatalogAdminPage: React.FC = () => {
                           size="sm"
                           className="p-1 text-red-600 hover:text-red-700"
                           onClick={() => handleDeletePlasticType(typeKey)}
-                          title="Видалити тип пластику"
+                          disabled={matchedFilaments.length > 0 || !tempProfile}
+                          aria-label={`Видалити тип і профіль ${typeKey}`}
+                          title={matchedFilaments.length > 0 ? 'Тип використовується у філаментах' : 'Видалити тип і профіль'}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </Button>
@@ -1011,6 +918,15 @@ export const CatalogAdminPage: React.FC = () => {
                       </div>
                     </div>
 
+                    <div className="grid grid-cols-2 gap-1.5 text-[11px] text-neutral-600 dark:text-neutral-400">
+                      <span>Стіл: {tempProfile?.bedRange || 'Не задано'}</span>
+                      <span>Камера: {tempProfile?.chamberRange || 'Не задано'}</span>
+                      <span>Обдув: {tempProfile?.fanSpeed || 'Не задано'}</span>
+                      <span>Сушіння: {tempProfile?.dryingTempTime || 'Не задано'}</span>
+                    </div>
+                    <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                      {tempProfile ? (tempProfile.enclosureRequired ? 'Потрібна закрита камера' : 'Закрита камера не обов’язкова') : 'Стандартний профіль ще не задано'}
+                    </p>
                     <p className="text-xs text-neutral-600 dark:text-neutral-400 line-clamp-2 pt-1">
                       {tempProfile?.notes || `Полімер для 3D друку типу ${typeKey}`}
                     </p>
@@ -1018,92 +934,6 @@ export const CatalogAdminPage: React.FC = () => {
                 </div>
               );
             })}
-          </div>
-        </div>
-      )}
-
-      {/* TAB 4: TEMPERATURE STANDARDS MANAGEMENT */}
-      {activeTab === 'temperatures' && (
-        <div className="bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 overflow-hidden shadow-2xs space-y-4 p-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-neutral-100 dark:border-neutral-800 pb-4">
-            <div>
-              <h2 className="text-base font-bold text-neutral-900 dark:text-white">
-                Стандартні температурні профілі (Fallback за замовчуванням)
-              </h2>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                Якщо конкретний виробник або котушка не має заданих температур, KILO·G автоматично використовує ці налаштування.
-              </p>
-            </div>
-
-            <Button
-              variant="primary"
-              size="sm"
-              leftIcon={<Plus className="w-4 h-4" />}
-              onClick={handleOpenAddTemp}
-            >
-              Додати температурний стандарт
-            </Button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {Object.entries(temperatures).map(([typeKey, prof]) => (
-              <div
-                key={typeKey}
-                className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/40 space-y-3"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-black text-sm px-2.5 py-1 rounded bg-neutral-900 text-white dark:bg-emerald-600 dark:text-white">
-                      {typeKey}
-                    </span>
-                    <span className="font-semibold text-xs text-neutral-800 dark:text-neutral-200">
-                      {prof.plasticType}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-xs"
-                      leftIcon={<Edit2 className="w-3 h-3" />}
-                      onClick={() => handleOpenEditTemp(typeKey, prof)}
-                      title="Редагувати профіль"
-                    >
-                      Редагувати
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="p-1.5 text-red-600 hover:text-red-700"
-                      onClick={() => handleDeleteTemp(typeKey)}
-                      title="Видалити температурний стандарт"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-2 bg-white dark:bg-neutral-900 rounded-lg border border-neutral-200 dark:border-neutral-700">
-                    <span className="text-[10px] text-neutral-400 block">Сопло (Nozzle):</span>
-                    <span className="font-mono font-bold text-neutral-900 dark:text-white">
-                      {prof.nozzleRange}
-                    </span>
-                  </div>
-                  <div className="p-2 bg-white dark:bg-neutral-900 rounded-lg border border-neutral-200 dark:border-neutral-700">
-                    <span className="text-[10px] text-neutral-400 block">Стіл (Bed):</span>
-                    <span className="font-mono font-bold text-neutral-900 dark:text-white">
-                      {prof.bedRange}
-                    </span>
-                  </div>
-                </div>
-
-                <p className="text-xs text-neutral-600 dark:text-neutral-400">
-                  {prof.notes}
-                </p>
-              </div>
-            ))}
           </div>
         </div>
       )}
@@ -1832,108 +1662,25 @@ export const CatalogAdminPage: React.FC = () => {
         </div>
       </Modal>
 
-      {/* MODAL: ADD / EDIT TEMPERATURE PROFILE */}
-      <Modal
-        isOpen={isTempModalOpen}
-        onClose={() => setIsTempModalOpen(false)}
-        title={isCreatingNewTemp ? 'Додати новий температурний стандарт' : `Редагування стандарту: ${editingTempType}`}
-        description="Параметри температур за замовчуванням для розрахунку та каталогу."
-        maxWidth="md"
-        footer={
-          <>
-            <Button variant="outline" size="sm" onClick={() => setIsTempModalOpen(false)}>
-              Скасувати
-            </Button>
-            <Button variant="primary" size="sm" leftIcon={<Save className="w-4 h-4" />} onClick={handleSaveTemp}>
-              {isCreatingNewTemp ? 'Створити стандарт' : 'Зберегти профіль'}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          {saveError && <p role="alert" className="text-sm text-red-700">{saveError}</p>}
-          {isCreatingNewTemp && (
-            <div className="grid grid-cols-2 gap-3">
-              <Input
-                label="Ключ типу пластику (e.g. PETG, PC, PVA) *"
-                value={newTempTypeKey}
-                onChange={(e) => setNewTempTypeKey(e.target.value.toUpperCase())}
-                placeholder="PC"
-                required
-              />
-              <Input
-                label="Повна назва матеріалу"
-                value={tempForm.plasticType || ''}
-                onChange={(e) => setTempForm({ ...tempForm, plasticType: e.target.value })}
-                placeholder="PC (Полікарбонат)"
-              />
-            </div>
-          )}
-
-          <Input
-            label="Діапазон сопла (°C) *"
-            value={tempForm.nozzleRange || ''}
-            onChange={(e) => setTempForm({ ...tempForm, nozzleRange: e.target.value })}
-            placeholder="190–225 °C"
-            required
-          />
-
-          <Input
-            label="Діапазон столу (°C)"
-            value={tempForm.bedRange || ''}
-            onChange={(e) => setTempForm({ ...tempForm, bedRange: e.target.value })}
-            placeholder="50–60 °C"
-          />
-
-          <Input
-            label="Термокамера"
-            value={tempForm.chamberRange || ''}
-            onChange={(e) => setTempForm({ ...tempForm, chamberRange: e.target.value })}
-            placeholder="Кімнатна / 50 °C"
-          />
-
-          <Input
-            label="Обдув деталі (Fan)"
-            value={tempForm.fanSpeed || ''}
-            onChange={(e) => setTempForm({ ...tempForm, fanSpeed: e.target.value })}
-            placeholder="100%"
-          />
-
-          <Input
-            label="Сушіння перед друком"
-            value={tempForm.dryingTempTime || ''}
-            onChange={(e) => setTempForm({ ...tempForm, dryingTempTime: e.target.value })}
-            placeholder="50 °C (4 год)"
-          />
-
-          <Input
-            label="Примітки технології друку"
-            value={tempForm.notes || ''}
-            onChange={(e) => setTempForm({ ...tempForm, notes: e.target.value })}
-            placeholder="Рекомендації щодо усадки, адгезії тощо"
-          />
-        </div>
-      </Modal>
-
       {/* MODAL: ADD / EDIT PLASTIC TYPE */}
       <Modal
         isOpen={isPlasticTypeModalOpen}
-        onClose={() => setIsPlasticTypeModalOpen(false)}
-        title={editingPlasticTypeOriginal ? `Редагувати тип пластику: ${editingPlasticTypeOriginal}` : 'Додати новий тип пластику'}
-        description="Тип полімеру для класифікації у калькуляторі та фільтрації каталогу."
-        maxWidth="md"
+        onClose={() => { if (!isSavingPlasticType) setIsPlasticTypeModalOpen(false); }}
+        title={editingPlasticTypeOriginal ? `Редагувати тип і профіль: ${editingPlasticTypeOriginal}` : 'Додати тип і профіль'}
+        description="Класифікація матеріалу та його стандартний профіль друку. Зміни зберігаються разом."
+        maxWidth="lg"
         footer={
           <>
-            <Button variant="outline" size="sm" onClick={() => setIsPlasticTypeModalOpen(false)}>
+            <Button variant="outline" size="sm" disabled={isSavingPlasticType} onClick={() => setIsPlasticTypeModalOpen(false)}>
               Скасувати
             </Button>
-            <Button variant="primary" size="sm" leftIcon={<Save className="w-4 h-4" />} onClick={handleSavePlasticType}>
+            <Button variant="primary" size="sm" isLoading={isSavingPlasticType} leftIcon={<Save className="w-4 h-4" />} onClick={handleSavePlasticType}>
               {editingPlasticTypeOriginal ? 'Зберегти зміни' : 'Створити тип'}
             </Button>
           </>
         }
       >
-        <div className="space-y-3">
+        <fieldset className="space-y-3" disabled={isSavingPlasticType}>
           {saveError && <p role="alert" className="text-sm text-red-700">{saveError}</p>}
           <Input
             label="Назва типу пластику (e.g. PLA, PETG, ABS, PC, ASA) *"
@@ -1943,14 +1690,17 @@ export const CatalogAdminPage: React.FC = () => {
             required
           />
 
-          <div className="grid grid-cols-2 gap-3">
+          <Input label="Повна назва матеріалу" value={tempForm.plasticType} onChange={event => setTempForm({ ...tempForm, plasticType: event.target.value })} placeholder="PLA / PLA+" />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+              <label htmlFor="plastic-type-family" className="block text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
                 Група складності
               </label>
               <select
+                id="plastic-type-family"
                 value={plasticTypeFormFamily}
-                onChange={(e) => setPlasticTypeFormFamily(e.target.value as any)}
+                onChange={(e) => setPlasticTypeFormFamily(e.target.value as PublicFilamentItem['family'])}
                 className="w-full py-2 px-3 text-xs rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 font-medium"
               >
                 <option value="Стандартні">Стандартні</option>
@@ -1965,19 +1715,27 @@ export const CatalogAdminPage: React.FC = () => {
               label="Густина полімеру (г/см³)"
               type="number"
               step="0.01"
-              value={plasticTypeFormDensity}
-              onChange={(e) => setPlasticTypeFormDensity(parseFloat(e.target.value) || 1.24)}
+              min="0.01"
+              max="100"
+              value={Number.isNaN(plasticTypeFormDensity) ? '' : plasticTypeFormDensity}
+              onChange={(e) => setPlasticTypeFormDensity(e.target.valueAsNumber)}
               placeholder="1.24"
             />
           </div>
 
-          <Input
-            label="Опис та властивості"
-            value={plasticTypeFormDescription}
-            onChange={(e) => setPlasticTypeFormDescription(e.target.value)}
-            placeholder="Короткий опис для підказок у калькуляторі"
-          />
-        </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input label="Діапазон сопла (°C) *" value={tempForm.nozzleRange} onChange={event => setTempForm({ ...tempForm, nozzleRange: event.target.value })} placeholder="190–225 °C" required />
+            <Input label="Діапазон столу (°C)" value={tempForm.bedRange} onChange={event => setTempForm({ ...tempForm, bedRange: event.target.value })} placeholder="50–60 °C" />
+            <Input label="Термокамера" value={tempForm.chamberRange} onChange={event => setTempForm({ ...tempForm, chamberRange: event.target.value })} placeholder="Кімнатна / 50 °C" />
+            <Input label="Обдув деталі (Fan)" value={tempForm.fanSpeed} onChange={event => setTempForm({ ...tempForm, fanSpeed: event.target.value })} placeholder="100%" />
+            <Input label="Сушіння перед друком" value={tempForm.dryingTempTime} onChange={event => setTempForm({ ...tempForm, dryingTempTime: event.target.value })} placeholder="50 °C (4 год)" />
+          </div>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={tempForm.enclosureRequired} onChange={event => setTempForm({ ...tempForm, enclosureRequired: event.target.checked })} />
+            Потрібна закрита камера
+          </label>
+          <Input label="Опис та рекомендації друку" value={tempForm.notes} onChange={event => setTempForm({ ...tempForm, notes: event.target.value })} placeholder="Усадка, адгезія та особливості матеріалу" />
+        </fieldset>
       </Modal>
 
       {/* CONFIRMATION DIALOG MODAL */}

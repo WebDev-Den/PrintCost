@@ -84,6 +84,8 @@ export interface PublicFilamentItem {
 }
 
 export interface TemperatureProfile {
+  family?: PublicFilamentItem['family'];
+  densityGPerCm3?: number;
   plasticType: string;
   nozzleRange: string;
   bedRange: string;

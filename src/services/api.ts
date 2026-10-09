@@ -333,34 +333,46 @@ export const catalogApi = {
       refs.forEach((ref) => transaction.delete(ref));
     });
   },
-  async renamePlasticType(original: string, name: string, family: PublicFilamentItem['family'], density: number, notes: string): Promise<void> {
-    validId(original); validId(name);
+  async savePlasticType(original: string | null, name: string, profile: TemperatureProfile): Promise<void> {
+    if (original !== null) validId(original);
+    validId(name);
+    if (!['Стандартні', 'Інженерні', 'Гнучкі', 'Композитні', 'Підтримки'].includes(profile.family || '') ||
+        !Number.isFinite(profile.densityGPerCm3) || profile.densityGPerCm3! <= 0 || profile.densityGPerCm3! > 100) throw new Error('Вкажіть групу та густину полімеру більше 0 й до 100 г/см³.');
+    for (const [field, maximum] of Object.entries({ plasticType: 200, nozzleRange: 200, bedRange: 200, chamberRange: 300, fanSpeed: 300, notes: 10000, dryingTempTime: 300 })) {
+      const value = profile[field as keyof TemperatureProfile];
+      if (typeof value !== 'string' || value.length > maximum) throw new Error('Перевірте текстові параметри профілю друку.');
+    }
+    if (!profile.plasticType.trim() || !profile.nozzleRange.trim() || typeof profile.enclosureRequired !== 'boolean') throw new Error('Вкажіть назву матеріалу та діапазон сопла.');
+    const identity = sessionIdentity();
     const [filaments, temperatures] = await Promise.all([filamentsApi.getAll(), temperatureProfilesApi.getAll()]);
-    if (original !== name && temperatures[name]) throw new Error('Тип з такою назвою вже існує.');
-    const changed = filaments.filter((item) => item.type.toUpperCase() === original.toUpperCase());
-    const profile = temperatures[original] ? { ...temperatures[original], plasticType: name, notes: notes || temperatures[original].notes } : null;
+    requireSameSession(identity);
+    if (original !== name && [...Object.keys(temperatures), ...filaments.map(item => item.type)].some(type => type.toUpperCase() === name.toUpperCase())) throw new Error('Тип з такою назвою вже існує.');
+    const changed = original === null ? [] : filaments.filter((item) => item.type.toUpperCase() === original.toUpperCase());
+    const payload = clean(profile);
     if (authService.isDemoSession()) {
-      writeDemo(STORAGE_KEYS.CATALOG_FILAMENTS, filaments.map((item) => changed.some((old) => old.id === item.id) ? { ...item, type: name, family, densityGPerCm3: density } : item));
-      if (profile) { delete temperatures[original]; temperatures[name] = profile; writeDemo(STORAGE_KEYS.CATALOG_TEMPERATURES, temperatures); }
+      writeDemo(STORAGE_KEYS.CATALOG_FILAMENTS, filaments.map((item) => changed.some((old) => old.id === item.id) ? { ...item, type: name, family: profile.family!, densityGPerCm3: profile.densityGPerCm3! } : item));
+      if (original !== null && original !== name) delete temperatures[original];
+      temperatures[name] = payload;
+      writeDemo(STORAGE_KEYS.CATALOG_TEMPERATURES, temperatures);
       return;
     }
-    if (changed.length > 448) throw new Error('За один раз можна перейменувати тип у 448 позиціях.');
+    if (changed.length > 448) throw new Error('За один раз можна змінити тип у 448 позиціях.');
     const refs = changed.map((item) => doc(db(), 'filaments', item.id));
-    const oldRef = doc(db(), 'temperatureProfiles', original);
+    const oldRef = original === null ? null : doc(db(), 'temperatureProfiles', original);
     const newRef = doc(db(), 'temperatureProfiles', name);
     await runTransaction(db(), async (transaction) => {
+      requireSameSession(identity);
       const stored = await Promise.all(refs.map((ref) => transaction.get(ref)));
-      const [oldProfile, newProfile] = await Promise.all([transaction.get(oldRef), transaction.get(newRef)]);
+      const [oldProfile, newProfile] = await Promise.all([oldRef ? transaction.get(oldRef) : null, transaction.get(newRef)]);
+      if (oldProfile?.data()?.deleted) throw new Error('Тип змінено або видалено. Оновіть каталог.');
       if (original !== name && newProfile.exists() && !newProfile.data().deleted) throw new Error('Тип з такою назвою вже існує.');
       changed.forEach((item, index) => {
         const current: DocumentData = stored[index].exists() ? stored[index].data()! : item;
-        if (!current.deleted) transaction.set(refs[index], clean({ ...current, id: item.id, type: name, family, densityGPerCm3: density }));
+        if (current.deleted || current.type.toUpperCase() !== original!.toUpperCase()) throw new Error('Пов’язані філаменти змінено. Оновіть каталог.');
+        transaction.set(refs[index], clean({ ...current, id: item.id, type: name, family: profile.family, densityGPerCm3: profile.densityGPerCm3 }));
       });
-      if (profile) {
-        const current = oldProfile.exists() && !oldProfile.data().deleted ? oldProfile.data() as TemperatureProfile : profile;
-        transaction.set(newRef, { ...current, plasticType: name, notes: notes || current.notes });
-        if (original !== name) transaction.set(oldRef, { deleted: true });
-      }
+      transaction.set(newRef, payload);
+      if (oldRef && original !== name) transaction.set(oldRef, { deleted: true });
     });
   },
 };

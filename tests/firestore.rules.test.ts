@@ -287,6 +287,21 @@ test('only verified unblocked registry administrators permit catalog mutations, 
   await assertSucceeds(deleteDoc(doc(admin, 'filaments/filament')));
 });
 
+test('type metadata preserves legacy profiles and rejects invalid density, family and nonadmin writes', async () => {
+  await seedAuthorization();
+  const admin = user('administrator');
+  const ref = doc(admin, 'temperatureProfiles/CUSTOM');
+  const value = { ...STANDARD_TEMPERATURE_PROFILES.PLA, family: 'Композитні', densityGPerCm3: 1.37 };
+  await assertSucceeds(setDoc(ref, value));
+  assert.equal((await getDoc(ref)).data()?.densityGPerCm3, 1.37);
+  for (const patch of [{ family: 'invalid' }, { family: null }, { densityGPerCm3: '1.37' }, { densityGPerCm3: 0 }, { densityGPerCm3: -1 }, { densityGPerCm3: 101 }, { densityGPerCm3: NaN }, { unexpected: true }]) {
+    await assertFails(setDoc(ref, { ...value, ...patch }));
+  }
+  await assertFails(setDoc(doc(alice(), 'temperatureProfiles/CUSTOM'), value));
+  await assertFails(setDoc(doc(environment.unauthenticatedContext().firestore(), 'temperatureProfiles/CUSTOM'), value));
+  await assertSucceeds(setDoc(ref, STANDARD_TEMPERATURE_PROFILES.PLA));
+});
+
 test('queries must carry bounded limits and only the owner can list private collections', async () => {
   const user = alice();
   await assertFails(getDocs(collection(user, 'users/alice/calculations')));
