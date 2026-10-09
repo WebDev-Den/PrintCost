@@ -2,7 +2,11 @@
 
 ## Поточний результат після виправлень і live-приймання
 
-Оновлено **9 жовтня 2026**. Використано той самий скіл security-best-practices; наступні перевірки виконані після відновлення роботи й дозволеного релізу, без атакувального навантаження. Source `9f2d8baebb22e2365465141f26e3b16e07705c1e` пройшов [чистий CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37959585046): 137 app + 100 emulator/integration tests, lint/build/dry-run PASS.
+Оновлено **9 жовтня 2026**. Для нового CRUD використано `firestore-rules-creation`, проведено окреме незалежне рев’ю diff. Source `309b00c624b03fd5e0480d0beba8314aab941a41` пройшов [чистий CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37963808991): **138 app + 110 emulator/integration = 248 PASS**, lint/build/dry-run. Worker `5a53fa33-3b92-4486-82e4-c373494fddbb` і Rules `e141cf6b-3eb8-4278-9321-50fc317d3647` опубліковані; тариф і App Check не змінювалися. Це перевірка змінених шляхів, а не новий повний аудит усіх сервісів.
+
+Нові перевірки прав: чужі та заблоковані пропозиції недоступні для змін менеджеру; відкликані, заблоковані й видалювані акаунти не отримують CRUD. Публікація потребує активної компанії, дозволеного URL і актуальної версії; зміни глобальних довідників лишаються admin-only, читання публічне. 100 публікацій/повернень у чернетки/видалень пройшли на справжньому емуляторі Rules, одночасні зміни приймають одну версію. Відсутній або недоступний обраний запис менеджера відхиляє всю транзакцію без витоку його існування. Помилка читання після commit зберігає звіт про вже виконані зміни.
+
+Імпорт `published` примусово стає `hidden`; legacy queued payload теж не обходить ручну публікацію. Наявне блокування адміністратора не знімається імпортом. Живий job `dc569995-27a6-4de0-85d0-23617741bd96` completed 1/1 підтвердив чернетку version 5 після JSON із published. Чернетки не входять у публічні запити. Прототип Rules пройшов ці перевірки; незалежне рев’ю перед широким використанням усе ще доцільне.
 
 | Питання | Чинний стан |
 | --- | --- |
@@ -12,7 +16,7 @@
 | SEC-004, CSP | **Виправлено й опубліковано**. Строгий заголовок, external theme script, без script unsafe-inline/unsafe-eval. Дозволений фактичний content-firebaseappcheck origin встановленого SDK; regression захищає від drift залежності. |
 | SEC-005, CLI dependencies | **Частково виправлено**. Scoped `get-uri → basic-ftp 6.2.3`, чистий npm ci й CLI/emulator tests PASS. Production audit 0; залишилося 7 dev-only entries (3 high / 4 moderate) у сторонньому CLI, без сліпих major substitutions. |
 
-Live infrastructure перевірена: dedicated `kilog-import-worker` має лише `roles/datastore.user` + `roles/firebaseauth.viewer`; ключ у Worker Secret, private JSON поза Git з ACL власника/SYSTEM. Правила Firestore не послаблені. Queue producer/consumer активні, міграцій pending немає, billing false. OAuth обходить Rules, тому поточні права читаються перед запитом і кожною порцією; authorization batchGet перевіряє exact names, unordered/missing/duplicate/foreign rows і закриває доступ при неповній відповіді.
+Live infrastructure перевірена: dedicated `kilog-import-worker` має лише `roles/datastore.user` + `roles/firebaseauth.viewer`; ключ у Worker Secret, private JSON поза Git з ACL власника/SYSTEM. Рольові обмеження Firestore збережені; менеджеру дозволено видаляти лише власні незаблоковані пропозиції активної компанії. Queue producer/consumer активні, міграцій pending немає, billing false. OAuth обходить Rules, тому поточні права читаються перед запитом і кожною порцією; authorization batchGet перевіряє exact names, unordered/missing/duplicate/foreign rows і закриває доступ при неповній відповіді.
 
 Контрольні live imports: зовнішній ключ completed 1/1, idempotency без дубля; кабінет completed 2/2, company JSON, ціна 600 → 610, ID/опис збережені, профіль PLA підібраний. Контрольний товар hidden і відсутній у публічному каталозі. Ключ, який власник надіслав у чат, оновлений ним після завершення jobs; D1 readback підтверджує, що старий hash більше не активний. Жодних plaintext ключів у Git/звітових файлах.
 

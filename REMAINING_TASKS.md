@@ -5,7 +5,10 @@
 ## Виконано та опубліковано
 
 - [x] REST API `/api/v1`: ключі адміністратора/менеджера, створення/ротація/відкликання зі свіжим входом; JSON-імпорт, статуси й результати; вкладка `/app/api` з документацією. Звичайний користувач доступу не має.
-- [x] Стабільний upsert за `externalId` у межах компанії; збереження пропущених необов'язкових полів; компанії адміністратора через JSON і автоматично за точним доменом HTTPS URL; менеджер лише своєї активної компанії та її дозволених доменів.
+- [x] Стабільний upsert за `externalId` у межах компанії; збереження пропущених необов'язкових полів, крім статусу публікації; компанії адміністратора через JSON і автоматично за точним доменом HTTPS URL; менеджер лише своєї активної компанії та її дозволених доменів.
+- [x] Нові товари та оновлення після імпорту — чернетки (`hidden`) навіть із `status: published` або без статусу. Повторний імпорт опублікованої позиції вимагає повторної явної публікації; наявне або явно задане адміністратором блокування `blocked` збережене. Масової зміни статусу вже наявних даних не було.
+- [x] Єдина `/app/admin/catalog`: manager CRUD виключно своєї активної компанії; адміністратору доступний вибір компаній і окремий загальний каталог/довідники. Менеджер не завантажує загальні admin-дані. Прибрано зайвий пункт «Пропозиції компанії»; старий URL перенаправляє зі збереженням `companyId`, логотип компанії доступний у спільному керуванні.
+- [x] Фільтр чернеток, масові публікація/повернення в чернетки/видалення до 100 обраних позицій однієї компанії; підтвердження видалення, поточні права і CAS, окремі помилки застарілих/непридатних записів. Успішно записані зміни не подаються як невиконані при помилці подальшого перечитування.
 - [x] Актуальний стандартний/власний профіль пластику без дублювання температур у товарі; перевірка поточної ролі, блокування, видалення та відкликаної сесії перед запитом і кожною порцією.
 - [x] D1 backup зроблено до міграцій; `0002_import_api.sql` і `0003_import_access_limits.sql` застосовані, pending migrations немає. Queue `kilog-imports` створено, retention 24 години, producer/consumer `kilo-g` підключені.
 - [x] Окремий `kilog-import-worker@kilo-g.iam.gserviceaccount.com`: тільки `roles/datastore.user` і `roles/firebaseauth.viewer`. Секрет Worker активований разом із сумісним кодом, наявний Turnstile збережений. JSON credentials поза Git із перевіреним приватним ACL.
@@ -16,18 +19,21 @@
 - [x] `recoverEmail` callback завершений і опублікований; mode перевіряється перед застосуванням, replay/invalid code відхиляються. Листи автоматично під час тестів не надсилалися.
 - [x] Production dependency audit — 0. Виправлений `get-uri → basic-ftp 6.2.3`, відтворюваний чистий `npm ci`. Залишилося 7 development-only advisory entries (3 high / 4 moderate); unsafe major overrides не застосовані.
 
-Поточний source: `9f2d8baebb22e2365465141f26e3b16e07705c1e`, Worker `d7f4f6aa-e18e-45d0-9365-f7296f5de87d`, **100% traffic**, remote readback після публікації **16:33 UTC**, [основний сайт](https://web-dev.pp.ua), [резервний домен](https://kilo-g.web-developer-den.workers.dev). Сумісний попередній реліз — `712e603` / `0c99f93f-e0bc-4213-9db0-5fb44612510d`. Гілка `codex/user-platform`, draft [PR #1](https://github.com/WebDev-Den/PrintCost/pull/1). `main` не змінювався.
+Поточний source: `309b00c624b03fd5e0480d0beba8314aab941a41`, Worker `5a53fa33-3b92-4486-82e4-c373494fddbb`, **100% traffic**, [основний сайт](https://web-dev.pp.ua), [резервний домен](https://kilo-g.web-developer-den.workers.dev). Опубліковані Rules `e141cf6b-3eb8-4278-9321-50fc317d3647`, SHA-256 `8312fcfef2507265a65ed72a873354a5f27566fe031d4957ab48a32670427508`, індекси **3/3 READY**, Spark billing false. Backup перед Rules — захищений ігнорований `output/backups/firebase-release-before-2026-10-09T17-01-02-858Z`. Попередній `9f2d8ba` / `d7f4f6aa-e18e-45d0-9365-f7296f5de87d` сумісний із Firestore App Check, але при відкаті поверне автоматичну публікацію імпорту; він не зберігає новий контракт чернеток. Гілка `codex/user-platform`, draft [PR #1](https://github.com/WebDev-Den/PrintCost/pull/1). `main` не змінювався.
 
 ## Фактичне приймання
 
-- [x] 137 application tests + 100 emulator/integration tests, lint, build, validator і dry-run — PASS для опублікованого source. [Чистий CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37959585046).
-- [x] Реальний API-ключ: прихована пропозиція прийнята HTTP 202; job `6f391f2a-2987-4d58-9aac-2a895fda55d9` completed, 1/1. Той самий JSON/Idempotency-Key повертає той самий job без дубля.
-- [x] Імпорт через живий кабінет: company JSON + оновлення ціни 600 → 610 грн; job `c5c50322-6932-4f6d-b82f-a59512af0611` completed, 2/2. ID товару зберігся, опис зберігся, профіль PLA — сопло 190–225 °C / стіл 50–60 °C.
-- [x] Після окремого перемикання статусу контрольний товар повернуто в hidden; у публічному каталозі його немає. Реальні товари/компанії не видалялися, контрольна компанія лишається доступною адміністратору.
-- [x] Live HTTP: SPA-маршрути/assets/favicon, CSP, 401/403/404/405, foreign Origin, відхилення неправильного API-ключа й Turnstile — PASS. Без secrets у звітах.
+- [x] **138 application tests + 110 emulator/integration = 248 тестів**, lint, build, validator і dry-run — PASS для чинного source. [Push CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37963808991) та [PR CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37963816394) успішні.
+- [x] Попереднє живе приймання API-ключа: прихована пропозиція прийнята HTTP 202; job `6f391f2a-2987-4d58-9aac-2a895fda55d9` completed, 1/1. Той самий JSON/Idempotency-Key повертає той самий job без дубля.
+- [x] Попереднє приймання через живий кабінет: company JSON + оновлення ціни 600 → 610 грн; job `c5c50322-6932-4f6d-b82f-a59512af0611` completed, 2/2. ID товару зберігся, опис зберігся, профіль PLA — сопло 190–225 °C / стіл 50–60 °C.
+- [x] Новий live job `dc569995-27a6-4de0-85d0-23617741bd96` completed **1/1**: для наявного контрольного товару явно передано `published`, але результат — `hidden`, version 5, ціна 610 грн і пропущений опис збережені. Production видалень, нових ролей і нових ключів не було.
+- [x] Локальна CUA-перевірка в ізольованих emulators: створення/читання/редагування менеджером, публікація 100 записів і повернення 100 у чернетки; підтвердження видалення 100 показано й скасовано, фактичне видалення перевірене інтеграційними тестами. Власний заблокований запис видно, але вибір/зміни/видалення недоступні; чужий `companyId` та `source=global` не відкривають доступ менеджеру. Звичайному користувачу маршрут закритий. Адміністратор бачить загальні вкладки; старий redirect зберігає `companyId`.
+- [x] Чинний Worker: **68 byte comparisons на двох доменах + 10 негативних API перевірок PASS** — HTML/assets/favicon, відмова аналітики без входу (401) і відмови Turnstile для неправильного методу, порожнього чи недійсного token (405/400/403). Перевірки CSP, foreign Origin і недійсного API-ключа належать попередньому live-прийманню; у цьому проходженні їх окремо не повторювали. Без secrets у звітах.
 - [x] Cloud Billing false; IAM, Queue bindings, міграції, App Check enforcement перевірені через readback.
 
-## Поточний блок перевірки продуктивності
+## Продуктивність: попередні метрики та відкриті перевірки
+
+Наведені нижче CPU вибірки отримані в попередньому проходженні до та після source `9f2d8ba`. Для чинного `309b00c` свіжий load test не виконувався; ці числа не є прийманням нового релізу під навантаженням.
 
 - [x] Cloudflare GraphQL підтвердив одиницю CPU: **мікросекунди**. У початкових 55 sampled requests — 0 runtime errors, але максимальний bucket P99 **25.842 ms**, вище номінальних 10 ms HTTP/Cron Free. Startup time не є request CPU.
 - [x] Оптимізовано чотири свіжих читання authorization documents в один Firestore batchGet без кешу ролей. Незалежність від порядку, missing/duplicate/foreign rows та fail-closed перевірені, target integration 2/2 і 137 app tests PASS.
@@ -40,10 +46,10 @@
 - [x] **API-ключ, який потрапив у чат, оновлено власником** після завершення jobs. D1 readback: старий hash не має активного ключа (`old_key_still_active: 0`). Новий plaintext не передавався агенту й не зберігався у Git.
 - [ ] Firebase Templates: штатна action URL досі `https://kilo-g.firebaseapp.com/__/auth/action`. Через консоль власника налаштувати `https://web-dev.pp.ua/auth/callback` і перевірити реальні verify/reset/recover листи. API PATCH раніше відхилений; не підміняти одноразові action links статичним URL.
 - [ ] Застосувати ім'я/теми/дозволені тексти листів та `noreply@web-dev.pp.ua`: точні DNS records з Customize domain, перевірка MX/SPF/DKIM і Apply Custom Domain. HTML-макети готові, доставка/SMTP ще не підключені. [Пакет листів](./docs/email-templates/README.md).
-- [ ] Живе приймання під окремим менеджером/іншим адміністратором, логотип компанії, власний профіль, масові дії на непорожньому каталозі, звіт менеджера, фізичний телефон, нативний друк/PDF. Локальні сценарії працюють, live матриця не завершена.
+- [ ] Живе приймання під окремим менеджером/іншим адміністратором, CRUD і масові дії на 100 production-пропозиціях, логотип компанії, власний профіль, звіт менеджера, фізичний телефон, нативний друк/PDF. Manager CRUD і масові операції по 100 записів перевірені локально; повна live матриця не завершена.
 - [ ] Посилена серверна password policy та аудит доступів людей/Google API restrictions у консолях — не завершені. App Check не замінює контроль Firestore квот усередині справжнього клієнта.
 - [ ] Злиття draft PR #1 у `main` — окреме рішення після приймання; зараз не зливати. Cloudflare Builds стежить за `main`.
 
-Докази: ігнорований `output/` містить CI/HTTP/import/App Check/IAM/CPU JSON, логи та screenshots без plaintext ключів. Private service account і D1 backup зберігаються окремо від репозиторію. Вимкнення ПК не виконувати без актуальної команди.
+Докази: нові логи та screenshots — ігноровані `output/catalog-drafts-*`; попередні CI/HTTP/import/App Check/IAM/CPU JSON також у `output/`, без plaintext ключів. Private service account і D1 backup зберігаються окремо від репозиторію. Вимкнення ПК не виконувати без актуальної команди.
 
 [PROJECT_STATUS.md](./PROJECT_STATUS.md) · [API_IMPORT_PLAN.md](./API_IMPORT_PLAN.md) · [API_IMPORT_GUIDE.md](./API_IMPORT_GUIDE.md) · [security_best_practices_report.md](./security_best_practices_report.md) · [FIREBASE_SECURITY_ACTIVATION.md](./FIREBASE_SECURITY_ACTIVATION.md) · [OPERATIONS.md](./OPERATIONS.md).
