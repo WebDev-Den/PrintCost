@@ -160,7 +160,7 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, i) => {
   return value >>> 0;
 });
 
-function extractMetadata(data: Uint8Array) {
+export function readPrintArchive(data: Uint8Array) {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let end = data.length - 22;
   for (; end >= Math.max(0, data.length - 65557); end--) {
@@ -227,7 +227,7 @@ export function parsePrintFile(fileName: string, data: Uint8Array, fileSizeBytes
     let parsed: ReturnType<typeof parseGcode>[];
     if (/\.gcode$/i.test(fileName)) parsed = [parseGcode(decoder.decode(data), 1)];
     else if (/\.3mf$/i.test(fileName)) {
-      const { files, names } = extractMetadata(data);
+      const { files, names } = readPrintArchive(data);
       const sliceInfo = [...files].find(([name]) => /^Metadata\/slice_info\.config$/i.test(name))?.[1];
       const gcode = new Map<number, string>();
       const gcodeFiles = [...files].filter(([name]) => /\.gcode$/i.test(name));

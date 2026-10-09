@@ -4,6 +4,7 @@ import { Lock, Eye, EyeOff, CheckCircle, AlertTriangle } from 'lucide-react';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
 import { authService, authErrorMessage } from '../../services/authService.ts';
+import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const ResetPasswordPage: React.FC = () => {
   const navigate = useNavigate();
@@ -18,6 +19,7 @@ export const ResetPasswordPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [isChecking, setIsChecking] = useState(true);
+  const captcha = useTurnstile('reset_password', !isChecking && !linkError && !success);
 
   useEffect(() => {
     let active = true;
@@ -31,6 +33,7 @@ export const ResetPasswordPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || isChecking || linkError || !captcha.ready) return;
     setError(null);
 
     if (password.length < 6) {
@@ -44,11 +47,12 @@ export const ResetPasswordPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      await authService.resetPassword(password, code);
+      await authService.resetPassword(password, code, captcha.token);
       setSuccess(true);
     } catch (error) {
       setError(authErrorMessage(error));
     } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -118,7 +122,7 @@ export const ResetPasswordPage: React.FC = () => {
               )}
 
               <div>
-                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
+                <label htmlFor="reset-password" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
                   Новий пароль
                 </label>
                 <div className="relative flex items-center rounded-lg border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900 focus-within:ring-2 focus-within:ring-emerald-500">
@@ -126,7 +130,9 @@ export const ResetPasswordPage: React.FC = () => {
                     <Lock className="w-4 h-4" />
                   </div>
                   <input
+                    id="reset-password"
                     type={showPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Мінімум 6 знаків"
@@ -145,7 +151,7 @@ export const ResetPasswordPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
+                <label htmlFor="reset-password-confirm" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
                   Повторіть новий пароль
                 </label>
                 <div className="relative flex items-center rounded-lg border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900 focus-within:ring-2 focus-within:ring-emerald-500">
@@ -153,7 +159,9 @@ export const ResetPasswordPage: React.FC = () => {
                     <Lock className="w-4 h-4" />
                   </div>
                   <input
+                    id="reset-password-confirm"
                     type={showPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="Повторіть пароль"
@@ -163,13 +171,15 @@ export const ResetPasswordPage: React.FC = () => {
                 </div>
               </div>
 
+              {captcha.field}
+
               <Button
                 type="submit"
                 variant="primary"
                 size="md"
                 className="w-full"
                 isLoading={isSubmitting}
-                disabled={isChecking}
+                disabled={isChecking || !captcha.ready}
               >
                 {isChecking ? 'Перевірка посилання…' : 'Зберегти новий пароль'}
               </Button>

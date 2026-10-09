@@ -4,12 +4,15 @@ import { Eye, EyeOff, Lock, Mail, Sparkles } from 'lucide-react';
 import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
+import { GoogleSignInButton } from '../../components/common/GoogleSignInButton.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
+import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { login, enableDemoSession, authError } = useAuth();
+  const { login, loginWithGoogle, enableDemoSession, authError } = useAuth();
+  const captcha = useTurnstile('login');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -19,6 +22,7 @@ export const LoginPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || !captcha.ready) return;
     setError(null);
 
     if (!email || !email.includes('@')) {
@@ -32,11 +36,12 @@ export const LoginPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      await login(email, password);
+      await login(email, password, captcha.token);
       navigate('/app/dashboard');
     } catch (error) {
       setError(authErrorMessage(error));
     } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -50,6 +55,21 @@ export const LoginPage: React.FC = () => {
     } catch (error) {
       setError(authErrorMessage(error));
     } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    if (isSubmitting || !captcha.ready) return;
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await loginWithGoogle(captcha.token, 'login');
+      navigate('/app/dashboard');
+    } catch (error) {
+      setError(authErrorMessage(error));
+    } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -88,17 +108,6 @@ export const LoginPage: React.FC = () => {
             </Button>
           </div>
 
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-neutral-200 dark:border-neutral-800" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-white dark:bg-neutral-900 px-2 text-neutral-500">
-                або за адресою email
-              </span>
-            </div>
-          </div>
-
           {(error || authError) && (
             <div role="alert" className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300 font-medium">
               {error || authError}
@@ -119,7 +128,7 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                <label htmlFor="login-password" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
                   Пароль
                 </label>
                 <NavLink
@@ -135,6 +144,7 @@ export const LoginPage: React.FC = () => {
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
+                  id="login-password"
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
                   value={password}
@@ -160,11 +170,26 @@ export const LoginPage: React.FC = () => {
               size="md"
               className="w-full"
               isLoading={isSubmitting}
+              disabled={!captcha.ready}
             >
               Увійти в кабінет
             </Button>
 
           </form>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-neutral-200 dark:border-neutral-800" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white dark:bg-neutral-900 px-2 text-neutral-500">
+                або
+              </span>
+            </div>
+          </div>
+
+          {captcha.field}
+          <GoogleSignInButton onClick={handleGoogleLogin} disabled={isSubmitting || !captcha.ready} />
 
           <div className="text-center text-xs text-neutral-500 dark:text-neutral-400 pt-2 border-t border-neutral-200 dark:border-neutral-800">
             <span>Ще немає акаунта? </span>

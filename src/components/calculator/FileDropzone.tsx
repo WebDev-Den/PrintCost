@@ -1,8 +1,20 @@
-import React, { useRef, useState } from 'react';
-import { UploadCloud, Sparkles, CheckCircle, AlertTriangle, Cpu } from 'lucide-react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { UploadCloud, Sparkles, CheckCircle, AlertTriangle, Cpu, Box } from 'lucide-react';
 import { Button } from '../common/Button.tsx';
 import type { ParsedJob } from '../../domain/types.ts';
 import { fileAnalysisService } from '../../services/fileAnalysisService.ts';
+
+const Print3DPreview = lazy(() => import('./Print3DPreview.tsx'));
+
+class PreviewBoundary extends React.Component<{ children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    return this.state.failed
+      ? <p role="status" className="text-xs text-amber-700 dark:text-amber-300">Не вдалося завантажити 3D-прев’ю. Оновіть сторінку, щоб спробувати знову; розрахунок залишається доступним.</p>
+      : this.props.children;
+  }
+}
 
 interface FileDropzoneProps {
   onJobLoaded: (job: ParsedJob) => void;
@@ -20,49 +32,76 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<{ file: File; job: ParsedJob } | null>(null);
+  const [showPreview, setShowPreview] = useState(true);
+  const busyRef = useRef(false);
+  const generationRef = useRef(0);
 
-  const handleSelectDemo = async () => {
+  useEffect(() => () => { generationRef.current++; }, []);
+
+  const beginLoading = () => {
+    if (busyRef.current || isLoading) return null;
+    busyRef.current = true;
+    const generation = ++generationRef.current;
     setIsLoading(true);
     setErrorMessage(null);
+    setPreviewFile(null);
+    setShowPreview(true);
+    return generation;
+  };
+
+  const finishLoading = (generation: number) => {
+    if (generation !== generationRef.current) return;
+    busyRef.current = false;
+    setIsLoading(false);
+  };
+
+  const handleSelectDemo = async () => {
+    const generation = beginLoading();
+    if (generation === null) return;
     try {
       const demo = await fileAnalysisService.getDemoJob();
+      if (generation !== generationRef.current) return;
       onJobLoaded(demo);
     } finally {
-      setIsLoading(false);
+      finishLoading(generation);
     }
   };
 
   const handleSelectPreset = async (presetKey: string) => {
-    setIsLoading(true);
-    setErrorMessage(null);
+    const generation = beginLoading();
+    if (generation === null) return;
     try {
       const preset = await fileAnalysisService.loadPresetJob(presetKey);
+      if (generation !== generationRef.current) return;
       if (preset.errorMessage) {
         setErrorMessage(preset.errorMessage);
       }
       onJobLoaded(preset);
     } finally {
-      setIsLoading(false);
+      finishLoading(generation);
     }
   };
 
   const handleFileProcess = async (file: File) => {
-    if (isLoading) return;
-    setIsLoading(true);
-    setErrorMessage(null);
+    const generation = beginLoading();
+    if (generation === null) return;
     onJobLoaded({ fileName: file.name, fileSizeBytes: file.size, slicerSource: '', plates: [], totalPredictionSeconds: 0, totalWeightGrams: 0, warnings: [], parseStatus: 'reading' });
     try {
       const parsed = await fileAnalysisService.analyzeUploadedFile(file);
+      if (generation !== generationRef.current) return;
       if (parsed.parseStatus !== 'success' && parsed.errorMessage) {
         setErrorMessage(parsed.errorMessage);
       }
       onJobLoaded(parsed);
+      setPreviewFile({ file, job: parsed });
     } catch (error) {
+      if (generation !== generationRef.current) return;
       const message = error instanceof Error ? error.message : 'Не вдалося прочитати файл. Спробуйте інший .gcode.3mf або .gcode.';
       setErrorMessage(message);
       onJobLoaded({ fileName: file.name, fileSizeBytes: file.size, slicerSource: 'Невідомо', plates: [], totalPredictionSeconds: 0, totalWeightGrams: 0, warnings: [], parseStatus: 'error', errorMessage: message });
     } finally {
-      setIsLoading(false);
+      finishLoading(generation);
     }
   };
 
@@ -131,7 +170,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
                 : 'Перетягніть .gcode.3mf або виберіть файл нарізки'}
             </p>
             <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-lg mx-auto leading-relaxed">
-              Нарізані <strong className="text-neutral-800 dark:text-neutral-200">.3mf / .gcode.3mf</strong> Bambu Studio та OrcaSlicer, текстовий <strong className="text-neutral-800 dark:text-neutral-200">.gcode</strong> з часом і витратами філаменту (PrusaSlicer, OrcaSlicer, Bambu Studio). До 50 МБ. Файл обробляється у браузері. Проєкти без нарізки та binary .bgcode не підтримуються.
+              Нарізані <strong className="text-neutral-800 dark:text-neutral-200">.3mf / .gcode.3mf</strong> Bambu Studio та OrcaSlicer, текстовий <strong className="text-neutral-800 dark:text-neutral-200">.gcode</strong> PrusaSlicer, OrcaSlicer та Bambu Studio з підтримуваними даними часу друку й витрат кожного філаменту. До 50 MiB. Файл обробляється у браузері. Проєкти без нарізки та binary .bgcode не підтримуються.
             </p>
           </div>
 
@@ -158,6 +197,23 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           </div>
         </div>
       </div>
+
+      {previewFile && !isLoading && (
+        <div className="space-y-3">
+          <Button type="button" variant="outline" size="sm" leftIcon={<Box className="h-3.5 w-3.5" />} aria-expanded={showPreview} aria-controls="print-3d-preview" onClick={() => setShowPreview(value => !value)}>
+            {showPreview ? 'Приховати 3D-прев’ю' : 'Показати 3D-прев’ю'}
+          </Button>
+          {showPreview && (
+            <div id="print-3d-preview">
+              <PreviewBoundary>
+                <Suspense fallback={<p role="status" className="text-xs text-neutral-500">Завантажуємо 3D-прев’ю…</p>}>
+                  <Print3DPreview file={previewFile.file} job={previewFile.job} />
+                </Suspense>
+              </PreviewBoundary>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Error / Warning Alert Banner */}
       {errorMessage && (

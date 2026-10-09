@@ -27,6 +27,13 @@ import { SettingsPage } from './pages/app/SettingsPage.tsx';
 import { AccountPage } from './pages/app/AccountPage.tsx';
 import { OnboardingPage } from './pages/app/OnboardingPage.tsx';
 const CatalogAdminPage = lazy(() => import('./pages/app/CatalogAdminPage.tsx').then((m) => ({ default: m.CatalogAdminPage })));
+const AdministrationPage = lazy(() => import('./pages/app/AdministrationPage.tsx').then((m) => ({ default: m.AdministrationPage })));
+const CompanyOffersPage = lazy(() => import('./pages/app/CompanyOffersPage.tsx').then((m) => ({ default: m.CompanyOffersPage })));
+const TemplatesPage = lazy(() => import('./pages/app/TemplatesPage.tsx').then((m) => ({ default: m.TemplatesPage })));
+const AnalyticsPage = lazy(() => import('./pages/app/AnalyticsPage.tsx').then((m) => ({ default: m.AnalyticsPage })));
+const ApiPage = lazy(() => import('./pages/app/ApiPage.tsx').then(m => ({ default: m.ApiPage })));
+const PrivacyPage = lazy(() => import('./pages/public/PrivacyPage.tsx').then((m) => ({ default: m.PrivacyPage })));
+const AccountDeletionPage = lazy(() => import('./pages/public/AccountDeletionPage.tsx').then((m) => ({ default: m.AccountDeletionPage })));
 
 // Fallback pages
 import { NotFoundPage } from './pages/NotFoundPage.tsx';
@@ -40,23 +47,30 @@ export default function App() {
             {/* Public Routes */}
             <Route path="/" element={<LandingPage />} />
             <Route path="/filaments" element={<FilamentsDirectoryPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/auth/login" element={<LoginPage />} />
             <Route path="/auth/register" element={<RegisterPage />} />
             <Route path="/auth/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/auth/reset-password" element={<ResetPasswordPage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
             <Route path="/auth/check-email" element={<CheckEmailPage />} />
+            <Route path="/auth/delete-account" element={<AccountDeletionPage />} />
 
             {/* Cabinet App Routes */}
             <Route path="/app" element={<AppLayout />}>
               <Route index element={<Navigate to="/app/dashboard" replace />} />
               <Route path="dashboard" element={<DashboardPage />} />
               <Route path="calculator" element={<CalculatorPage />} />
+              <Route path="templates" element={<TemplatesPage />} />
+              <Route path="analytics" element={<AnalyticsPage />} />
+              <Route path="api" element={<ApiPage />} />
               <Route path="calculations" element={<CalculationsHistoryPage />} />
               <Route path="calculations/:id" element={<CalculationDetailsPage />} />
               <Route path="materials" element={<MaterialsPage />} />
               <Route path="printers" element={<PrintersPage />} />
               <Route path="admin/catalog" element={<CatalogAdminPage />} />
+              <Route path="admin/access" element={<AdministrationPage />} />
+              <Route path="company/offers" element={<CompanyOffersPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="account" element={<AccountPage />} />
               <Route path="onboarding" element={<OnboardingPage />} />

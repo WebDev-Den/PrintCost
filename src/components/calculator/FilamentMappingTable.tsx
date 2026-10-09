@@ -1,7 +1,8 @@
 import React from 'react';
-import { Layers, Bookmark, AlertTriangle, CheckCircle, HelpCircle } from 'lucide-react';
+import { Layers, Bookmark, AlertTriangle, CheckCircle } from 'lucide-react';
 import type { FilamentUsage, MaterialProfile } from '../../domain/types.ts';
 import { formatUah, formatWeightUk, formatNumberUk } from '../../domain/formatters.ts';
+import { getEffectiveMaterialType, isCompatibleMaterial, isKnownMaterialType } from '../../domain/materialMatching.ts';
 
 interface FilamentMappingTableProps {
   filaments: FilamentUsage[];
@@ -9,7 +10,8 @@ interface FilamentMappingTableProps {
   onMapMaterial: (key: string, materialId: string) => void;
   onPriceOverride: (key: string, newPricePerKg: string) => void;
   onSavePreference: (typeFromFile: string, materialId: string) => void;
-  onAddNewMaterialClick?: () => void;
+  onAddNewMaterialClick?: (key?: string) => void;
+  onClarifyType: (key: string, type: string) => void;
 }
 
 export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
@@ -19,6 +21,7 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
   onPriceOverride,
   onSavePreference,
   onAddNewMaterialClick,
+  onClarifyType,
 }) => {
   return (
     <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden shadow-2xs">
@@ -35,7 +38,7 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
         {onAddNewMaterialClick && (
           <button
             type="button"
-            onClick={onAddNewMaterialClick}
+            onClick={() => onAddNewMaterialClick()}
             className="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
           >
             + Додати новий матеріал
@@ -68,6 +71,9 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
               filaments.map((f) => {
                 const hasPrice = f.pricePerKgUah !== null && f.pricePerKgUah !== '';
                 const hasCost = f.costUah !== null && f.costUah !== '';
+                const effectiveType = getEffectiveMaterialType(f);
+                const compatibleMaterials = availableMaterials.filter(material => isCompatibleMaterial(material, effectiveType));
+                const selectedIsCompatible = compatibleMaterials.some(material => material.id === f.mappedMaterialId);
 
                 return (
                   <tr
@@ -98,12 +104,17 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
                       <span className="font-mono font-medium text-neutral-900 dark:text-neutral-100 px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">
                         {f.typeFromFile}
                       </span>
+                      {!isKnownMaterialType(f.typeFromFile) && <label className="block mt-2 space-y-1 text-[11px] text-neutral-500">
+                        <span>Уточніть тип для лоту #{f.trayId}</span>
+                        <input aria-label={`Уточнений тип ${f.plateName}, лот ${f.trayId}`} value={f.effectiveMaterialType || ''} onChange={event => onClarifyType(f.key, event.target.value)} placeholder="Наприклад, PLA-CF" maxLength={60} className="w-28 px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white" />
+                      </label>}
                     </td>
 
                     {/* Mapped Catalog Material */}
                     <td className="py-3 px-3">
                       <select
-                        value={f.mappedMaterialId || ''}
+                        aria-label={`Матеріал ${f.plateName}, лот ${f.trayId}, ${effectiveType || 'невідомий тип'}`}
+                        value={selectedIsCompatible ? f.mappedMaterialId! : ''}
                         onChange={(e) => onMapMaterial(f.key, e.target.value)}
                         className={`w-full py-1.5 px-2.5 rounded-md border text-xs bg-white dark:bg-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-500 ${
                           !f.mappedMaterialId
@@ -112,12 +123,11 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
                         }`}
                       >
                         <option value="">— Оберіть матеріал з каталогу —</option>
-                        {availableMaterials
-                          .filter((m) => !m.isArchived)
+                        {compatibleMaterials
                           .map((m) => {
-                            const count = m.spoolsInStock ?? 0;
+                            const count = m.spoolsInStock;
                             const stockLabel =
-                              count === 0
+                              count === undefined ? ' [Залишок не вказано]' : count === 0
                                 ? ' [Немає на складі]'
                                 : ` [В наявності: ${count} шт]`;
                             return (
@@ -127,6 +137,8 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
                             );
                           })}
                       </select>
+                      {!effectiveType && <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">Спершу уточніть невідомий тип з файлу.</p>}
+                      {effectiveType && compatibleMaterials.length === 0 && <div className="mt-1 space-y-1 text-[11px] text-amber-700 dark:text-amber-400"><p>Немає активного матеріалу типу {effectiveType}. Додайте його або вкажіть ціну вручну.</p>{onAddNewMaterialClick && <button type="button" onClick={() => onAddNewMaterialClick(f.key)} className="underline">Додати {effectiveType}</button>}</div>}
 
                       {/* Matching hint */}
                       <div className="flex items-center gap-1.5 mt-1 text-[11px]">
@@ -169,6 +181,7 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
                         <input
                           type="text"
                           inputMode="decimal"
+                          aria-label={`Ціна за кг ${f.plateName}, лот ${f.trayId}`}
                           value={f.pricePerKgUah ?? ''}
                           placeholder="—"
                           onChange={(e) => onPriceOverride(f.key, e.target.value)}
@@ -197,11 +210,12 @@ export const FilamentMappingTable: React.FC<FilamentMappingTableProps> = ({
 
                     {/* Action: Remember mapping */}
                     <td className="py-3 px-3 text-center">
-                      {f.mappedMaterialId && (
+                      {f.mappedMaterialId && selectedIsCompatible && isKnownMaterialType(f.typeFromFile) && (
                         <button
                           type="button"
                           onClick={() => onSavePreference(f.typeFromFile, f.mappedMaterialId!)}
                           title={`Запам'ятати: завжди зіставляти "${f.typeFromFile}" з вибраним матеріалом`}
+                          aria-label={`Запам'ятати матеріал для ${f.typeFromFile}`}
                           className="p-1 text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
                         >
                           <Bookmark className="w-3.5 h-3.5" />

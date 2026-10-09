@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Navigate, NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Calculator,
@@ -20,22 +20,31 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  BarChart3,
+  KeyRound,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import { DemoBanner } from '../common/DemoBanner.tsx';
 import { BrandLogo } from '../common/BrandLogo.tsx';
 import { ErrorPage } from '../../pages/ErrorPage.tsx';
+import { authErrorMessage } from '../../services/authService.ts';
+import { useDialogFocus } from '../common/useDialogFocus.ts';
 
 export const AppLayout: React.FC = () => {
   const { user, logout, isLoading: authLoading, isDemoSession, authError, reloadUser } = useAuth();
   const { theme, setTheme, isLoading, loadError, actionError, clearActionError, retryLoad } = useAppData();
   const navigate = useNavigate();
   const location = useLocation();
-  const canManageCatalog = !isDemoSession && user?.isAdmin === true;
+  const canManageAccess = !isDemoSession && user?.isAdmin === true;
+  const canManageCatalog = canManageAccess || (!isDemoSession && user?.role === 'manager');
 
   // Mobile menu drawer state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(mobileMenuRef, mobileMenuOpen, () => setMobileMenuOpen(false));
+  useEffect(() => { setMobileMenuOpen(false); }, [location.pathname, user?.id, user?.isBlocked, user?.deletionPending]);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
 
   // Desktop sidebar collapsed state (persistent in localStorage)
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
@@ -73,18 +82,25 @@ export const AppLayout: React.FC = () => {
   const navItems = [
     { to: '/app/dashboard', label: 'Огляд', icon: LayoutDashboard },
     { to: '/app/calculator', label: 'Калькулятор', icon: Calculator },
+    { to: '/app/templates', label: 'Шаблони розрахунку', icon: BookOpen },
     { to: '/app/calculations', label: 'Історія розрахунків', icon: History },
     { to: '/app/materials', label: 'Матеріали', icon: Layers },
     { to: '/filaments', label: 'Каталог пластиків', icon: BookOpen },
     { to: '/app/admin/catalog', label: 'Адмінка каталогу', icon: ShieldCheck },
+    { to: '/app/admin/access', label: 'Користувачі та компанії', icon: ShieldCheck },
+    { to: '/app/analytics', label: 'Аналітика каталогу', icon: BarChart3 },
+    { to: '/app/api', label: 'API та імпорт', icon: KeyRound },
     { to: '/app/printers', label: 'Принтери', icon: Printer },
     { to: '/app/settings', label: 'Налаштування', icon: Settings },
     { to: '/app/account', label: 'Акаунт', icon: User },
-  ].filter((item) => item.to !== '/app/admin/catalog' || canManageCatalog);
+  ].filter((item) => (item.to !== '/app/admin/catalog' || canManageCatalog)
+    && (item.to !== '/app/admin/access' || canManageAccess)
+    && (!['/app/analytics', '/app/api'].includes(item.to) || canManageCatalog));
 
   const handleLogout = async () => {
+    setLogoutError(null);
     try { await logout(); navigate('/'); }
-    catch { /* AuthContext displays the error. */ }
+    catch (error) { setLogoutError(authErrorMessage(error)); }
   };
 
   const getPageTitle = () => {
@@ -97,9 +113,23 @@ export const AppLayout: React.FC = () => {
   if (authLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження акаунту" /></div>;
   if (authError) return <ErrorPage error={new Error(authError)} resetErrorBoundary={() => { void reloadUser(); }} />;
   if (!user) return <Navigate to="/auth/login" state={{ from: location }} replace />;
+  if (!isDemoSession && user.deletionPending) return <Navigate to="/auth/delete-account" replace />;
+  if (!isDemoSession && user.isBlocked) return <div className="min-h-screen flex items-center justify-center bg-neutral-100 dark:bg-neutral-950 p-6">
+    <div className="max-w-md rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-6 space-y-4">
+      <h1 className="text-lg font-semibold text-neutral-900 dark:text-white">Доступ до акаунта призупинено</h1>
+      <p className="text-sm text-neutral-600 dark:text-neutral-400">Адміністратор обмежив доступ для {user.email}. Зверніться до адміністратора системи.</p>
+      {logoutError && <p role="alert" className="text-sm text-red-600">{logoutError}</p>}
+      <button className="text-sm underline text-emerald-600" onClick={handleLogout}>Вийти з акаунта</button>
+      <NavLink className="block text-sm underline text-red-600" to="/auth/delete-account">Видалити власний акаунт</NavLink>
+    </div>
+  </div>;
+  if (!isDemoSession && !user.emailVerified) return <Navigate to="/auth/check-email" replace />;
   if (isLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження даних" /></div>;
   if (loadError) return <ErrorPage error={new Error(loadError)} resetErrorBoundary={retryLoad} />;
-  if (location.pathname.startsWith('/app/admin') && !canManageCatalog) return <Navigate to="/app/dashboard" replace />;
+  if (location.pathname.startsWith('/app/admin') && !(location.pathname.startsWith('/app/admin/catalog') ? canManageCatalog : canManageAccess)) return <Navigate to="/app/dashboard" replace />;
+  if (location.pathname.startsWith('/app/company') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;
+  if (location.pathname.startsWith('/app/analytics') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;
+  if (location.pathname.startsWith('/app/api') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;
 
   return (
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col antialiased">
@@ -271,8 +301,8 @@ export const AppLayout: React.FC = () => {
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
           {/* Top Bar Header */}
-          <header className="h-14 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 px-3 sm:px-6 lg:px-8 flex items-center justify-between sticky top-0 z-30">
-            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <header className="h-14 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 px-3 sm:px-6 lg:px-8 flex items-center justify-between gap-3 sticky top-0 z-30">
+            <div className="flex-1 flex items-center gap-2 sm:gap-3 min-w-0">
               {/* Mobile hamburger button */}
               <button
                 type="button"
@@ -289,7 +319,7 @@ export const AppLayout: React.FC = () => {
               </h1>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="shrink-0 flex items-center gap-2">
               {/* Quick Theme Switcher in Header */}
               <button
                 type="button"
@@ -307,26 +337,29 @@ export const AppLayout: React.FC = () => {
 
               <NavLink
                 to="/filaments"
+                aria-label="Каталог пластиків"
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors border border-neutral-200 dark:border-neutral-700"
               >
                 <BookOpen className="w-3.5 h-3.5 text-emerald-600" />
                 <span className="hidden sm:inline">Каталог пластиків</span>
-                <span className="sm:hidden">Каталог</span>
+                <span className="hidden min-[400px]:inline sm:hidden">Каталог</span>
               </NavLink>
 
               <NavLink
                 to="/app/calculator"
+                aria-label="Новий розрахунок"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs"
               >
                 <Calculator className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Новий розрахунок</span>
-                <span className="sm:hidden">Розрахунок</span>
+                <span className="hidden min-[400px]:inline sm:hidden">Розрахунок</span>
               </NavLink>
             </div>
           </header>
 
           {/* Page Content Viewport with Responsive Max-Width */}
           <main className="flex-1 p-3 sm:p-5 lg:p-6 w-full mx-auto max-w-full">
+            {logoutError && <p role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700">{logoutError}</p>}
             {actionError && <div role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 flex items-center justify-between gap-3"><span>{actionError}</span><button onClick={clearActionError} aria-label="Закрити повідомлення"><X className="w-4 h-4" /></button></div>}
             <Outlet key={isDemoSession ? 'demo' : user.id} />
           </main>
@@ -341,7 +374,7 @@ export const AppLayout: React.FC = () => {
             onClick={() => setMobileMenuOpen(false)}
             aria-hidden="true"
           />
-          <div className="relative w-72 bg-white dark:bg-neutral-900 flex-1 flex flex-col max-w-xs shadow-xl z-10 border-r border-neutral-200 dark:border-neutral-800">
+          <div ref={mobileMenuRef} role="dialog" aria-modal="true" aria-label="Навігація кабінету" tabIndex={-1} className="relative w-72 bg-white dark:bg-neutral-900 flex-1 flex flex-col max-w-xs shadow-xl z-10 border-r border-neutral-200 dark:border-neutral-800">
             <div className="h-14 px-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
               <BrandLogo size="sm" />
               <button

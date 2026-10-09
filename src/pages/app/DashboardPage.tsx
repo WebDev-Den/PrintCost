@@ -23,8 +23,9 @@ export const DashboardPage: React.FC = () => {
   const { materials, printers, settings, calculations } = useAppData();
 
   // Compute metrics purely from stored calculations (no fabricated revenue graphs)
-  const totalCalculationsCount = calculations.length;
-  const completeCalculations = calculations.filter((c) => c.status === 'complete');
+  const recentCalculations = calculations.slice(0, 50);
+  const totalCalculationsCount = recentCalculations.length;
+  const completeCalculations = recentCalculations.filter((c) => c.status === 'complete');
   const activeMaterialsCount = materials.filter((m) => !m.isArchived).length;
   const printersCount = printers.length;
 
@@ -128,7 +129,7 @@ export const DashboardPage: React.FC = () => {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800">
           <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs">
-            <span>Останні 200 розрахунків</span>
+            <span>Останні 50 розрахунків</span>
             <History className="w-4 h-4 text-emerald-600" />
           </div>
           <p className="text-2xl font-bold font-mono tabular-nums text-neutral-900 dark:text-white mt-2">
@@ -174,7 +175,7 @@ export const DashboardPage: React.FC = () => {
             {averageSellingPrice ? formatUah(averageSellingPrice) : '— грн'}
           </p>
           <p className="text-[11px] text-neutral-500 mt-0.5">
-            за збереженими записами
+            серед готових із останніх 50 записів
           </p>
         </div>
       </div>

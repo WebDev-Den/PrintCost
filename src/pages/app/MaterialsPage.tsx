@@ -388,6 +388,7 @@ export const MaterialsPage: React.FC = () => {
                             <div className="text-[10px] text-neutral-500">
                               {pricePerGram > 0 ? `${pricePerGram.toFixed(3)} грн/г` : '—'}
                             </div>
+                            {m.priceVatMode && m.priceVatMode !== 'not_applicable' && <div className="text-[10px] text-neutral-500">{m.priceVatMode === 'included' ? 'З ПДВ' : 'Без ПДВ'} {m.vatRatePercent}%</div>}
                             <div className="text-[10px] text-neutral-400">
                               Запас: {formatUah(totalValue)}
                             </div>

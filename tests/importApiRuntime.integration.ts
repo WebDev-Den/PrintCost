@@ -1,0 +1,235 @@
+import assert from 'node:assert/strict';
+import { generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+import { build } from 'esbuild';
+import { Miniflare, Response as RuntimeResponse, convertV4MiniflareOptions } from 'miniflare';
+import { IMPORT_EXAMPLE, IMPORT_LIMITS } from '../src/domain/apiImports.ts';
+import { encodeFields } from '../workers/importFirebase.ts';
+import { decodeFields } from '../workers/firebase.ts';
+import { createImportApi } from '../workers/importApi.ts';
+
+test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and retry recovery', { timeout: 120_000 }, async t => {
+  const project = 'demo-import-api-' + randomUUID().slice(0, 8);
+  const root = '/v1/projects/' + project + '/databases/(default)/documents';
+  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const secret = JSON.stringify({ project_id: project, client_email: 'import@' + project + '.iam.gserviceaccount.com',
+    private_key: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() });
+  const jwk = { ...pair.publicKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
+  const users = new Map(['admin', 'manager', 'other-manager', 'user'].map(uid => [uid, { localId: uid, emailVerified: true, validSince: '0', disabled: false }]));
+  const seed = async (path: string, data: Record<string, unknown>) => {
+    const response = await fetch('http://127.0.0.1:8080' + root + '/' + path, { method: 'PATCH', headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: encodeFields(data) }) });
+    assert.ok(response.ok, 'Fixture HTTP ' + response.status);
+  };
+  const read = async (path: string) => {
+    const response = await fetch('http://127.0.0.1:8080' + root + '/' + path, { headers: { Authorization: 'Bearer owner' } });
+    assert.ok(response.ok, 'Fixture read HTTP ' + response.status);
+    return decodeFields((await response.json()).fields);
+  };
+  await seed('system/authorization', { adminUids: ['admin'], version: 1 });
+  for (const uid of users.keys()) await seed('accountAccess/' + uid, { blocked: false, changeId: 'initial' });
+  const stamp = new Date();
+  for (const id of ['company-a', 'company-b']) await seed('companies/' + id, { id, name: id, website: 'https://' + id + '.example.com', allowedDomains: [id + '.example.com'],
+    status: 'active', version: 1, createdBy: 'admin', createdAt: stamp, updatedAt: stamp, updatedBy: 'admin', changeId: 'initial' });
+  await seed('memberships/manager', { active: true, companyId: 'company-a', changeId: 'initial', version: 1 });
+  await seed('memberships/other-manager', { active: true, companyId: 'company-b', changeId: 'initial', version: 1 });
+  const bundle = await build({ entryPoints: ['workers/index.ts'], bundle: true, write: false, format: 'esm', platform: 'browser' });
+  let failCommitOnce = false, failFirebase = false, firebaseRequests = 0;
+  const transport = async (request: Pick<Request, 'url' | 'method' | 'text'>) => {
+      const url = new URL(request.url);
+      if (url.hostname === 'www.googleapis.com') return new RuntimeResponse(JSON.stringify({ keys: [jwk] }), { headers: { 'Cache-Control': 'public,max-age=3600' } });
+      if (url.hostname === 'oauth2.googleapis.com') {
+        const assertion = new URLSearchParams(await request.text()).get('assertion')!;
+        const parts = assertion.split('.');
+        assert.ok(verify('RSA-SHA256', Buffer.from(parts[0] + '.' + parts[1]), pair.publicKey, Buffer.from(parts[2], 'base64url')));
+        return new RuntimeResponse(JSON.stringify({ access_token: 'fixture', expires_in: 3600 }));
+      }
+      if (url.hostname === 'identitytoolkit.googleapis.com') {
+        const uid = JSON.parse(await request.text()).localId[0];
+        return new RuntimeResponse(JSON.stringify({ users: users.has(uid) ? [users.get(uid)] : [] }));
+      }
+      assert.equal(url.hostname, 'firestore.googleapis.com', 'Fixtures never contact a production endpoint.');
+      assert.ok(url.pathname.startsWith(root));
+      firebaseRequests++;
+      if (failFirebase) return new RuntimeResponse('{}', { status: 503 });
+      const upstream = await fetch('http://127.0.0.1:8080' + url.pathname + url.search, { method: request.method, headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+        body: request.method === 'GET' ? undefined : await request.text() });
+      if (failCommitOnce && url.pathname.endsWith(':commit') && upstream.ok) { failCommitOnce = false; return new RuntimeResponse('{}', { status: 503 }); }
+      return new RuntimeResponse(await upstream.arrayBuffer(), { status: upstream.status, headers: Object.fromEntries(upstream.headers) });
+    };
+  const mf = new Miniflare(convertV4MiniflareOptions({
+    name: 'import-runtime', modules: true, script: bundle.outputFiles[0].text, compatibilityDate: '2026-10-08',
+    bindings: { FIREBASE_PROJECT_ID: project, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret },
+    d1Databases: ['ANALYTICS_DB'], queueProducers: { IMPORT_QUEUE: 'imports' },
+    queueConsumers: { imports: { maxBatchSize: 1, maxBatchTimeout: 0, maxRetries: 3, retryDelay: 0 } },
+    outboundService: transport,
+  }));
+  t.after(async () => { await mf.dispose(); await fetch('http://127.0.0.1:8080/emulator/v1/projects/' + project + '/databases/(default)/documents', { method: 'DELETE' }); });
+  const db = await mf.getD1Database('ANALYTICS_DB');
+  for (const file of ['0002_import_api.sql', '0003_import_access_limits.sql']) {
+    const migration = await readFile('migrations/' + file, 'utf8');
+    for (const statement of migration.trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER)\b)/i)) await db.prepare(statement).run();
+  }
+  function jwt(uid: string, stale = false) {
+    const time = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'fixture' })).toString('base64url');
+    const claims = Buffer.from(JSON.stringify({ sub: uid, aud: project, iss: 'https://securetoken.google.com/' + project,
+      iat: time, exp: time + 3600, auth_time: stale ? time - 600 : time, email_verified: true })).toString('base64url');
+    const input = header + '.' + claims;
+    return input + '.' + sign('RSA-SHA256', Buffer.from(input), pair.privateKey).toString('base64url');
+  }
+  const request = (path: string, token: string, method = 'GET', payload?: unknown, idempotency = randomUUID(), extra: Record<string, string> = {}) =>
+    mf.dispatchFetch('https://import-runtime.invalid/api/v1/' + path, { method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': idempotency, ...extra },
+      body: payload === undefined ? undefined : JSON.stringify(payload) });
+  const adminJwt = jwt('admin'), managerJwt = jwt('manager');
+  assert.equal((await request('api-key', jwt('user'))).status, 403);
+  assert.equal((await request('api-key', jwt('admin', true), 'POST')).status, 401);
+  assert.equal((await request('api-key', adminJwt, 'GET', undefined, randomUUID(), { Origin: 'https://evil.invalid' })).status, 403);
+  const adminKey = (await (await request('api-key', adminJwt, 'POST')).json() as any).key;
+  let managerKey = (await (await request('api-key', managerJwt, 'POST')).json() as any).key;
+  const otherKey = (await (await request('api-key', jwt('other-manager'), 'POST')).json() as any).key;
+  assert.match(adminKey, /^kg_api_[\w-]{43}$/);
+  assert.ok(!JSON.stringify(await (await request('api-key', adminJwt)).json()).includes(adminKey));
+  assert.ok(!(await db.prepare('SELECT * FROM import_keys').all()).results.some((row: Record<string, unknown>) => JSON.stringify(row).includes(managerKey)));
+  assert.equal((await request('api-key', adminKey)).status, 401);
+  const managerPayload = { offers: Array.from({ length: 12 }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: 'p-' + index,
+    status: 'published', productUrl: 'https://company-a.example.com/p-' + index })) };
+  const idempotency = randomUUID();
+  failCommitOnce = true;
+  const accepted = await request('imports', managerKey, 'POST', managerPayload, idempotency);
+  assert.equal(accepted.status, 202, JSON.stringify(await accepted.clone().json()));
+  const job = await accepted.json() as any;
+  async function waitJob(id: string, token: string) {
+    for (let i = 0; i < 80; i++) {
+      const result = await (await request('imports/' + id, token)).json() as any;
+      if (['completed','partial','failed','cancelled'].includes(result.status)) return result;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('Queue did not finish.');
+  }
+  // Production retries use a 60-second delay. Advance the queue locally via its durable outbox.
+  for (let i = 0; i < 80; i++) {
+    const row = await db.prepare('SELECT * FROM import_jobs WHERE id=?').bind(job.id).first<any>();
+    if (row.attempts > 0 && row.lease_until === 0) {
+      await db.prepare('UPDATE import_jobs SET dispatch_at=0 WHERE id=?').bind(job.id).run();
+      const worker = await mf.getWorker() as unknown as { scheduled(event: { cron: string }): Promise<unknown> };
+      await worker.scheduled({ cron: '*/5 * * * *' }); break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const completed = await waitJob(job.id, managerKey);
+  assert.equal(completed.status, 'completed', JSON.stringify(completed));
+  assert.equal(completed.succeeded, 12);
+  assert.equal((await read('companyOffers/' + completed.results[0].offerId)).version, 1, 'ambiguous commit and redelivery did not duplicate writes');
+  for (const result of completed.results) {
+    assert.equal((await read('companyOffers/' + result.offerId)).status, 'hidden', 'HTTP publication flags cannot bypass draft review');
+  }
+  assert.equal((await request('imports/' + job.id, otherKey)).status, 404);
+  assert.equal((await request('imports/' + job.id, adminKey)).status, 200);
+  assert.equal((await request('imports', managerKey, 'POST', managerPayload, idempotency)).status, 202);
+  assert.equal((await request('imports', managerKey, 'POST', IMPORT_EXAMPLE, idempotency)).status, 409);
+  assert.equal((await request('imports', managerKey, 'POST', { companies: [{ website: 'https://other.example.com' }] })).status, 403);
+  const parallel = await Promise.all(Array.from({ length: 10 }, () => request('imports', managerKey, 'POST', managerPayload)));
+  assert.ok(parallel.every(response => response.status === 429), 'owner cooldown remains enforced under concurrent requests');
+  assert.ok(Number(parallel[0].headers.get('Retry-After')) > 3000);
+  const cooldown = await db.prepare('SELECT next_allowed FROM import_limits WHERE uid=?').bind('manager').first<any>();
+  assert.equal(cooldown.next_allowed - Date.parse(job.createdAt) / 1000, IMPORT_LIMITS.managerInterval);
+  const oldKey = managerKey;
+  managerKey = (await (await request('api-key', managerJwt, 'POST')).json() as any).key;
+  assert.equal((await request('imports', oldKey)).status, 401);
+  assert.equal((await request('imports', managerKey, 'POST', managerPayload)).status, 429, 'rotating keys cannot reset cooldown');
+  await db.prepare('UPDATE import_limits SET next_allowed=0 WHERE uid=?').bind('manager').run();
+  const firstPath = 'companyOffers/' + completed.results[0].offerId;
+  await seed(firstPath, { ...await read(firstPath), status: 'published' });
+  const managerUpdate = { offers: managerPayload.offers.map(({ status: _status, ...offer }) => ({ ...offer, priceUah: 615 })) };
+  const concurrentIds = await Promise.all(Array.from({ length: 6 }, () => request('imports', managerKey, 'POST', managerUpdate)));
+  assert.equal(concurrentIds.filter(response => response.status === 202).length, 1, 'atomic trigger reserves only one concurrent import');
+  const second = await concurrentIds.find(response => response.status === 202)!.json() as any;
+  const updated = await waitJob(second.id, managerKey);
+  assert.equal(updated.status, 'completed');
+  assert.equal((await read(firstPath)).status, 'hidden', 'a queued update with omitted status returns the offer to drafts');
+  assert.equal((await read(firstPath)).priceUah, 615);
+  await seed('accountAccess/manager', { blocked: true, changeId: 'blocked' });
+  assert.equal((await request('imports', managerKey)).status, 403);
+  await seed('accountAccess/manager', { blocked: false, changeId: 'unblocked' });
+  assert.equal((await request('imports', managerKey)).status, 403, 'unblocking does not resurrect the old key');
+  managerKey = (await (await request('api-key', managerJwt, 'POST')).json() as any).key;
+  users.get('manager')!.disabled = true;
+  assert.equal((await request('imports', managerKey)).status, 403);
+  users.get('manager')!.disabled = false;
+  const adminImport = await request('imports', adminKey, 'POST', IMPORT_EXAMPLE);
+  assert.equal(adminImport.status, 202);
+  await waitJob((await adminImport.json() as any).id, adminKey);
+  const adminLimit = await db.prepare('SELECT next_allowed FROM import_limits WHERE uid=?').bind('admin').first<any>();
+  const adminCreated = await db.prepare('SELECT created_at FROM import_jobs WHERE owner_uid=? ORDER BY created_at DESC LIMIT 1').bind('admin').first<any>();
+  assert.equal(adminLimit.next_allowed - adminCreated.created_at, 300);
+  assert.equal((await request('imports', managerKey, 'POST', { offers: Array.from({ length: 101 }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: 'large-' + index })) })).status, 422);
+  const huge = await request('imports', managerKey, 'POST', { value: 'x'.repeat(129 * 1024) });
+  assert.equal(huge.status, 413);
+  await db.prepare('UPDATE import_limits SET next_allowed=0').run();
+  failFirebase = true;
+  // Initial scope fails closed; no job is reserved when Firebase is unavailable.
+  assert.equal((await request('imports', managerKey, 'POST', managerPayload)).status, 503);
+  failFirebase = false;
+  // Same production handler with an intentionally unavailable producer: D1 remains the durable outbox.
+  const manual = createImportApi(async (input, init) => {
+    const response = await transport(new Request(String(input), init));
+    return new Response(await response.arrayBuffer(), { status: response.status, headers: Object.fromEntries(response.headers) });
+  });
+  const environment = { FIREBASE_PROJECT_ID: project, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
+    IMPORT_QUEUE: { send: async () => { throw new Error('Fixture queue unavailable'); } } };
+  const pending = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { method: 'POST',
+    headers: { Authorization: 'Bearer ' + adminKey, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() },
+    body: JSON.stringify({ offers: [{ ...IMPORT_EXAMPLE.offers[0], externalId: 'last-delivery' }] }) }), environment);
+  assert.equal(pending.status, 202);
+  const pendingJob = await pending.json() as any;
+  assert.equal((await db.prepare('SELECT status FROM import_jobs WHERE id=?').bind(pendingJob.id).first<any>()).status, 'queued');
+  await db.prepare('UPDATE import_jobs SET attempts=3 WHERE id=?').bind(pendingJob.id).run();
+  failCommitOnce = true;
+  let acknowledged = false;
+  await manual.queue({ messages: [{ body: { id: pendingJob.id, cursor: 0 }, ack: () => { acknowledged = true; }, retry: () => { throw new Error('Last delivery should recover its receipt.'); } }] }, environment);
+  assert.ok(acknowledged);
+  assert.equal((await db.prepare('SELECT status FROM import_jobs WHERE id=?').bind(pendingJob.id).first<any>()).status, 'completed', 'ambiguous last commit is recovered before marking a job failed');
+  await db.prepare('UPDATE import_limits SET next_allowed=0').run();
+  const previousJobs = (await db.prepare('SELECT COUNT(*) AS count FROM import_jobs').first<any>()).count;
+  await db.prepare('UPDATE import_daily SET items=5000').run();
+  assert.equal((await request('imports', adminKey, 'POST', IMPORT_EXAMPLE)).status, 429);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM import_jobs').first<any>()).count, previousJobs);
+  await db.prepare('UPDATE import_daily SET items=0,dispatches=1500').run();
+  const backpressure = await request('imports', adminKey, 'POST', IMPORT_EXAMPLE);
+  assert.equal(backpressure.status, 202);
+  const deferred = await backpressure.json() as any;
+  const deferredRow = await db.prepare('SELECT status,error,payload FROM import_jobs WHERE id=?').bind(deferred.id).first<any>();
+  assert.equal(deferredRow.status, 'queued'); assert.ok(deferredRow.error.includes('ліміт черги')); assert.ok(deferredRow.payload);
+  assert.equal((await request('api-key', adminJwt, 'DELETE')).status, 200);
+  const cancelled = await db.prepare('SELECT status,payload FROM import_jobs WHERE id=?').bind(deferred.id).first<any>();
+  assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.payload, null);
+  assert.equal((await request('imports', adminKey)).status, 401);
+  const day = new Date().toISOString().slice(0, 10);
+  await db.prepare('UPDATE import_daily SET access_checks=?,admin_access_checks=0 WHERE day=?').bind(IMPORT_LIMITS.dailyManagerAccessChecks - 1, day).run();
+  const deniedBefore = firebaseRequests;
+  const userJwt = jwt('user');
+  // The initial denied request already used one of this UID's discovery checks.
+  for (let i = 1; i < IMPORT_LIMITS.dailyUnrecognizedUidChecks; i++) assert.equal((await request('api-key', userJwt)).status, 403);
+  const deniedAfter = firebaseRequests;
+  assert.ok(deniedAfter > deniedBefore);
+  const unknownOverflow = await Promise.all(Array.from({ length: 5 }, () => request('api-key', userJwt)));
+  assert.ok(unknownOverflow.every(response => response.status === 429));
+  assert.equal(firebaseRequests, deniedAfter, 'unknown UID quota stops Firebase reads before authorization');
+  let counters = await db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day).first<any>();
+  assert.equal(counters.access_checks, IMPORT_LIMITS.dailyManagerAccessChecks - 1, '403 cannot consume privileged quotas');
+  assert.equal(counters.admin_access_checks, 0);
+  assert.equal((await request('api-key', adminJwt)).status, 200, 'admin without an API key remains reachable after denied user requests');
+  const restoredAdminKey = (await (await request('api-key', adminJwt, 'POST')).json() as any).key;
+  await db.prepare('UPDATE import_daily SET access_checks=? WHERE day=?').bind(IMPORT_LIMITS.dailyManagerAccessChecks, day).run();
+  const beforeBudget = firebaseRequests;
+  assert.equal((await request('imports', managerKey)).status, 429);
+  assert.equal(firebaseRequests, beforeBudget, 'exhausted budget stops outbound authorization reads');
+  assert.equal((await request('imports', restoredAdminKey)).status, 200, 'manager quota exhaustion does not consume the admin reserve');
+  await db.prepare('UPDATE import_daily SET admin_access_checks=? WHERE day=?').bind(IMPORT_LIMITS.dailyAdminAccessChecks - 1, day).run();
+  const concurrentBudget = await Promise.all(Array.from({ length: 5 }, () => request('imports', restoredAdminKey)));
+  assert.equal(concurrentBudget.filter(response => response.status === 200).length, 1, 'admin reserve is atomic under concurrent requests');
+  assert.ok(concurrentBudget.every(response => [200,429].includes(response.status)));
+  counters = await db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day).first<any>();
+  assert.equal(counters.admin_access_checks, IMPORT_LIMITS.dailyAdminAccessChecks);
+});

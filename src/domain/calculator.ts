@@ -1,6 +1,9 @@
 import { Decimal } from 'decimal.js';
 import type { CalculationInput, CalculationResult, RoundingMode } from './types.ts';
 import { isValidDecimalString, normalizeDecimalInput } from './formatters.ts';
+import { calculateTaxPrice, materialPriceForCost, normalizeTaxSettings, type TaxResult, type TaxSettings } from './taxes.ts';
+import { getEffectiveMaterialType, isKnownMaterialType, normalizeMaterialType } from './materialMatching.ts';
+export { CALCULATION_ALGORITHM_VERSION } from './calculationTemplates.ts';
 
 /**
  * Pure domain calculation engine for PrintCost.
@@ -8,6 +11,12 @@ import { isValidDecimalString, normalizeDecimalInput } from './formatters.ts';
  */
 export function calculatePrintCost(input: CalculationInput): CalculationResult {
   const incompleteReasons: string[] = [];
+  let taxSettings: TaxSettings | undefined;
+  if (input.tax && typeof input.tax.enabled !== 'boolean') incompleteReasons.push('Увімкнення податків має бути логічною позначкою.');
+  else if (input.tax?.enabled) {
+    try { taxSettings = normalizeTaxSettings(input.tax); }
+    catch (error) { incompleteReasons.push(error instanceof Error ? error.message : 'Некоректні податкові параметри.'); }
+  }
   const readDecimal = (value: string | null | undefined, label: string, optional = false): Decimal => {
     const normalized = normalizeDecimalInput(value || (optional ? '0' : ''));
     if (!isValidDecimalString(normalized)) {
@@ -51,6 +60,11 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
     const repeats = plateRepeats.get(f.plateIndex);
     if (!repeats) continue; // Plate is not selected
 
+    if (!getEffectiveMaterialType(f)) incompleteReasons.push(`Уточніть невідомий тип матеріалу (Пластина: ${f.plateName}).`);
+    if (isKnownMaterialType(f.typeFromFile) && f.effectiveMaterialType !== undefined) incompleteReasons.push(`Тип ${f.typeFromFile} визначено у файлі й не можна перевизначити.`);
+    const source = selectedPlates.find(plate => plate.plateIndex === f.plateIndex)?.filaments.find(layer => layer.trayId === f.trayId);
+    if (source && normalizeMaterialType(source.type) !== normalizeMaterialType(f.typeFromFile)) incompleteReasons.push(`Тип матеріалу не збігається з даними файлу (Пластина: ${f.plateName}).`);
+
     const weightDec = readDecimal(f.weightGrams, `Маса ${f.typeFromFile}`).mul(repeats);
     totalWeightGramsDec = totalWeightGramsDec.plus(weightDec);
 
@@ -59,7 +73,7 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
       incompleteReasons.push(`Не задано ціну для матеріалу "${f.typeFromFile}" (Пластина: ${f.plateName})`);
     } else {
       // (weight in grams / 1000) * pricePerKg
-      const itemCost = weightDec.div(1000).mul(pricePerKg);
+      const itemCost = weightDec.div(1000).mul(materialPriceForCost(pricePerKg, f, taxSettings, incompleteReasons));
       materialsCostDec = materialsCostDec.plus(itemCost);
     }
   }
@@ -101,8 +115,20 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
 
   // 7. Pricing method
   let preRoundingPriceDec = new Decimal(0);
-  const isTargetMargin = input.pricingMode === 'target_margin';
+  let minOrderApplied = false;
+  let finalPriceDec = new Decimal(0);
+  let taxResult: TaxResult | undefined;
   if (!['target_margin', 'markup'].includes(input.pricingMode)) incompleteReasons.push('Невідомий спосіб ціноутворення');
+  if (taxSettings) {
+    const taxPricing = calculateTaxPrice({ settings: taxSettings, cost: costPriceDec, durationHours: durationHoursDec,
+      pricingMode: input.pricingMode, markupPercent: input.markupPercent, marginPercent: input.marginPercent,
+      minimumGross: input.minOrderPriceUah, roundGross: value => applyRounding(value, input.roundingMode), reasons: incompleteReasons });
+    preRoundingPriceDec = taxPricing.preRoundingPrice;
+    finalPriceDec = taxPricing.finalPrice;
+    minOrderApplied = taxPricing.minOrderApplied;
+    taxResult = taxPricing.tax;
+  } else {
+  const isTargetMargin = input.pricingMode === 'target_margin';
 
   if (isTargetMargin) {
     const marginPercentDec = readDecimal(input.marginPercent, 'Маржа', true);
@@ -123,7 +149,6 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
 
   // 8. Minimum order
   const minOrderPriceDec = readDecimal(input.minOrderPriceUah, 'Мінімальна ціна', true);
-  let minOrderApplied = false;
   let priceBeforeRounding = preRoundingPriceDec;
 
   if (priceBeforeRounding.lt(minOrderPriceDec)) {
@@ -132,7 +157,8 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
   }
 
   // 9. Rounding
-  let finalPriceDec = applyRounding(priceBeforeRounding, input.roundingMode);
+  finalPriceDec = applyRounding(priceBeforeRounding, input.roundingMode);
+  }
   if (!Number.isFinite(finalPriceDec.toNumber())) {
     incompleteReasons.push('Ціна перевищує допустимий діапазон');
     finalPriceDec = new Decimal(0);
@@ -141,9 +167,10 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
   if (!Number.isSafeInteger(Math.ceil(totalDurationSeconds))) incompleteReasons.push('Завелика сумарна тривалість друку');
 
   // 10. Profit & Margin calculation
-  const profitDec = finalPriceDec.minus(costPriceDec);
+  const profitDec = taxResult ? new Decimal(taxResult.profitAfterTaxUah) : finalPriceDec.minus(costPriceDec);
   let marginPercentActualDec = new Decimal(0);
-  if (finalPriceDec.gt(0)) {
+  if (taxResult) marginPercentActualDec = new Decimal(taxResult.marginAfterTaxPercent);
+  else if (finalPriceDec.gt(0)) {
     marginPercentActualDec = profitDec.div(finalPriceDec).mul(100);
   }
 
@@ -155,6 +182,7 @@ export function calculatePrintCost(input: CalculationInput): CalculationResult {
   const isComplete = incompleteReasons.length === 0;
 
   return {
+    ...(taxResult ? { tax: taxResult } : {}),
     status: isComplete ? 'complete' : 'incomplete',
     incompleteReasons,
     totalWeightGrams: totalWeightGramsDec.toFixed(2),

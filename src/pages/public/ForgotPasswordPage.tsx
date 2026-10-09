@@ -5,6 +5,7 @@ import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
 import { authService, authErrorMessage } from '../../services/authService.ts';
+import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const ForgotPasswordPage: React.FC = () => {
   const navigate = useNavigate();
@@ -12,19 +13,21 @@ export const ForgotPasswordPage: React.FC = () => {
   const [submitted, setSubmitted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const captcha = useTurnstile('forgot_password', !submitted);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) return;
+    if (!email || isLoading || !captcha.ready) return;
 
     setIsLoading(true);
     setError(null);
     try {
-      await authService.forgotPassword(email);
+      await authService.forgotPassword(email, captcha.token);
       setSubmitted(true);
     } catch (error) {
       setError(authErrorMessage(error));
     } finally {
+      captcha.reset();
       setIsLoading(false);
     }
   };
@@ -80,12 +83,15 @@ export const ForgotPasswordPage: React.FC = () => {
                 required
               />
 
+              {captcha.field}
+
               <Button
                 type="submit"
                 variant="primary"
                 size="md"
                 className="w-full"
                 isLoading={isLoading}
+                disabled={!captcha.ready}
               >
                 Надіслати посилання
               </Button>

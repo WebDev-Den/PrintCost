@@ -4,12 +4,15 @@ import { Eye, EyeOff, Lock, Mail, Sparkles } from 'lucide-react';
 import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
+import { GoogleSignInButton } from '../../components/common/GoogleSignInButton.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
+import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
-  const { register, enableDemoSession } = useAuth();
+  const { register, loginWithGoogle, enableDemoSession } = useAuth();
+  const captcha = useTurnstile('register');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -20,6 +23,7 @@ export const RegisterPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || !captcha.ready) return;
     setError(null);
 
     if (!email || !email.includes('@')) {
@@ -37,11 +41,12 @@ export const RegisterPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      await register(email, password);
+      await register(email, password, captcha.token);
       navigate('/auth/check-email', { state: { verificationSent: true } });
     } catch (error) {
       setError(authErrorMessage(error));
     } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -55,6 +60,21 @@ export const RegisterPage: React.FC = () => {
     } catch (error) {
       setError(authErrorMessage(error));
     } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    if (isSubmitting || !captcha.ready) return;
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await loginWithGoogle(captcha.token, 'register');
+      navigate('/app/dashboard');
+    } catch (error) {
+      setError(authErrorMessage(error));
+    } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -81,6 +101,10 @@ export const RegisterPage: React.FC = () => {
             </div>
           )}
 
+          {captcha.field}
+          <GoogleSignInButton onClick={handleGoogleLogin} disabled={isSubmitting || !captcha.ready} />
+          <p className="text-center text-xs text-neutral-500 dark:text-neutral-400">або зареєструйтеся за адресою email</p>
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <Input
               label="Електронна пошта"
@@ -94,7 +118,7 @@ export const RegisterPage: React.FC = () => {
             />
 
             <div>
-              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
+              <label htmlFor="register-password" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
                 Пароль
               </label>
               <div className="relative flex items-center rounded-lg border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900 focus-within:ring-2 focus-within:ring-emerald-500">
@@ -102,6 +126,7 @@ export const RegisterPage: React.FC = () => {
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
+                  id="register-password"
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="new-password"
                   value={password}
@@ -122,7 +147,7 @@ export const RegisterPage: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
+              <label htmlFor="register-password-confirm" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1.5">
                 Повторіть пароль
               </label>
               <div className="relative flex items-center rounded-lg border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-900 focus-within:ring-2 focus-within:ring-emerald-500">
@@ -130,6 +155,7 @@ export const RegisterPage: React.FC = () => {
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
+                  id="register-password-confirm"
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="new-password"
                   value={confirmPassword}
@@ -147,6 +173,7 @@ export const RegisterPage: React.FC = () => {
               size="md"
               className="w-full"
               isLoading={isSubmitting}
+              disabled={!captcha.ready}
             >
               Створити акаунт та почати
             </Button>

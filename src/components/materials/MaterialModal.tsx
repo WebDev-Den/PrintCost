@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import { Modal } from '../common/Modal.tsx';
 import { Button } from '../common/Button.tsx';
 import { Input } from '../common/Input.tsx';
@@ -12,6 +12,7 @@ interface MaterialModalProps {
   onClose: () => void;
   onSave: (data: Omit<MaterialProfile, 'id' | 'createdAt'>) => Promise<void>;
   initialMaterial?: MaterialProfile | null;
+  seededType?: string;
 }
 
 const COMMON_SPOOLS = [
@@ -27,7 +28,9 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   onClose,
   onSave,
   initialMaterial,
+  seededType,
 }) => {
+  const fieldId = useId();
   const [name, setName] = useState('');
   const [type, setType] = useState('PETG');
   const [family, setFamily] = useState('Стандартні');
@@ -41,6 +44,9 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
   const [spoolPriceUah, setSpoolPriceUah] = useState<string>('650');
   const [spoolsInStock, setSpoolsInStock] = useState<number>(1);
   const [pricePerKgUah, setPricePerKgUah] = useState<string>('650.00');
+  const [priceVatMode, setPriceVatMode] = useState<NonNullable<MaterialProfile['priceVatMode']>>('not_applicable');
+  const [vatRatePercent, setVatRatePercent] = useState('20');
+  const [vatRecoverable, setVatRecoverable] = useState(false);
 
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -67,9 +73,12 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       setPricePerKgUah(perKg);
       setSpoolsInStock(initialMaterial.spoolsInStock ?? 1);
       setNotes(initialMaterial.notes || '');
+      setPriceVatMode(initialMaterial.priceVatMode || 'not_applicable');
+      setVatRatePercent(initialMaterial.vatRatePercent || '20');
+      setVatRecoverable(initialMaterial.vatRecoverable === true);
     } else {
       setName('');
-      setType('PETG');
+      setType(seededType || 'PETG');
       setFamily('Стандартні');
       setBrand('Bambu Lab');
       setColorName('');
@@ -80,8 +89,9 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
       setPricePerKgUah('650.00');
       setSpoolsInStock(1);
       setNotes('');
+      setPriceVatMode('not_applicable'); setVatRatePercent('20'); setVatRecoverable(false);
     }
-  }, [initialMaterial, isOpen]);
+  }, [initialMaterial, isOpen, seededType]);
 
   // Recalculate automatic fields when weight in kg changes
   const handleWeightKgChange = (kgVal: string) => {
@@ -151,6 +161,7 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
         spoolsInStock: Math.max(0, spoolsInStock),
         isArchived: initialMaterial ? initialMaterial.isArchived : false,
         notes: notes.trim() || undefined,
+        priceVatMode, vatRatePercent, vatRecoverable,
       });
       onClose();
     } catch (error) {
@@ -226,10 +237,11 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+            <label htmlFor={`${fieldId}-type`} className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
               Тип полімеру
             </label>
             <input
+              id={`${fieldId}-type`}
               type="text"
               placeholder="PETG, PLA, ABS, ASA, TPU, PA-CF..."
               value={type}
@@ -371,6 +383,19 @@ export const MaterialModal: React.FC<MaterialModalProps> = ({
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-700 space-y-3">
+          <label className="block text-xs space-y-1.5"><span>ПДВ у ціні матеріалу</span><select aria-label="ПДВ у ціні матеріалу" value={priceVatMode} onChange={event => {
+            const mode = event.target.value as NonNullable<MaterialProfile['priceVatMode']>;
+            setPriceVatMode(mode); if (mode === 'not_applicable') setVatRecoverable(false);
+          }} className="w-full px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm">
+            <option value="not_applicable">ПДВ не застосовується / ціну використовувати як задано</option><option value="included">ПДВ уже включено у вказану ціну</option><option value="excluded">Вказана ціна без ПДВ; додати його до витрат</option>
+          </select></label>
+          {priceVatMode !== 'not_applicable' && <><NumberInput id="material-vat-rate" label="Ставка ПДВ матеріалу" value={vatRatePercent} onChange={setVatRatePercent} unit="%" min={0} max={100} />
+            <label className="flex items-start gap-2 text-xs"><input className="mt-0.5" type="checkbox" checked={vatRecoverable} onChange={event => setVatRecoverable(event.target.checked)} /><span>Є підтверджена підстава виключати вхідний ПДВ із собівартості</span></label>
+            <p className="text-[11px] text-neutral-500">Виключення застосовується лише при увімкненій податковій оцінці та статусі платника ПДВ. Сам статус платника не створює такої підстави. Без неї вхідний ПДВ залишається у витратах.</p></>}
+          <p className="text-[11px] text-neutral-500">Ціни у цій формі зберігаються у вибраному режимі. У калькуляторі цей режим визначає фактичну вартість матеріалу.</p>
         </div>
 
         {/* Live Auto-Calculated Results: Наявність & Вартість */}

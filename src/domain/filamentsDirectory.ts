@@ -83,7 +83,12 @@ export interface PublicFilamentItem {
   stores: FilamentStoreLink[];
 }
 
+export const MAX_CATALOG_BULK_ITEMS = 450;
+export type FilamentBulkAction = 'delete' | 'in_stock' | 'out_of_stock';
+
 export interface TemperatureProfile {
+  family?: PublicFilamentItem['family'];
+  densityGPerCm3?: number;
   plasticType: string;
   nozzleRange: string;
   bedRange: string;
@@ -97,6 +102,7 @@ export interface TemperatureProfile {
 // Стандартні температурні профілі за типами пластику (використовуються, якщо інший не заданий виробником)
 export const STANDARD_TEMPERATURE_PROFILES: Record<string, TemperatureProfile> = {
   PLA: {
+    family: 'Стандартні', densityGPerCm3: 1.24,
     plasticType: 'PLA / PLA+',
     nozzleRange: '190–225 °C',
     bedRange: '50–60 °C',
@@ -107,6 +113,7 @@ export const STANDARD_TEMPERATURE_PROFILES: Record<string, TemperatureProfile> =
     dryingTempTime: '45–50 °C (4–6 год)',
   },
   PETG: {
+    family: 'Стандартні', densityGPerCm3: 1.25,
     plasticType: 'PETG',
     nozzleRange: '225–250 °C',
     bedRange: '70–85 °C',
@@ -117,6 +124,7 @@ export const STANDARD_TEMPERATURE_PROFILES: Record<string, TemperatureProfile> =
     dryingTempTime: '60–65 °C (6–8 год)',
   },
   ABS: {
+    family: 'Інженерні', densityGPerCm3: 1.05,
     plasticType: 'ABS / ABS+',
     nozzleRange: '235–260 °C',
     bedRange: '95–110 °C',
@@ -127,6 +135,7 @@ export const STANDARD_TEMPERATURE_PROFILES: Record<string, TemperatureProfile> =
     dryingTempTime: '70–80 °C (4–6 год)',
   },
   ASA: {
+    family: 'Інженерні', densityGPerCm3: 1.07,
     plasticType: 'ASA',
     nozzleRange: '240–260 °C',
     bedRange: '90–105 °C',
@@ -137,6 +146,7 @@ export const STANDARD_TEMPERATURE_PROFILES: Record<string, TemperatureProfile> =
     dryingTempTime: '70–80 °C (4–6 год)',
   },
   TPU: {
+    family: 'Гнучкі', densityGPerCm3: 1.21,
     plasticType: 'TPU (Гнучкий / Flex)',
     nozzleRange: '210–235 °C',
     bedRange: '30–50 °C (або без підігріву)',
@@ -147,6 +157,7 @@ export const STANDARD_TEMPERATURE_PROFILES: Record<string, TemperatureProfile> =
     dryingTempTime: '55–60 °C (6–8 год)',
   },
   PA: {
+    family: 'Інженерні', densityGPerCm3: 1.14,
     plasticType: 'PA / Nylon (Нейлон)',
     nozzleRange: '250–290 °C',
     bedRange: '80–100 °C',
@@ -157,6 +168,7 @@ export const STANDARD_TEMPERATURE_PROFILES: Record<string, TemperatureProfile> =
     dryingTempTime: '80–90 °C (8–12 год)',
   },
   'PLA-CF': {
+    family: 'Композитні', densityGPerCm3: 1.29,
     plasticType: 'PLA-CF (Carbon Fiber)',
     nozzleRange: '210–240 °C',
     bedRange: '55–65 °C',
@@ -167,6 +179,7 @@ export const STANDARD_TEMPERATURE_PROFILES: Record<string, TemperatureProfile> =
     dryingTempTime: '50–55 °C (4–6 год)',
   },
   PC: {
+    family: 'Інженерні', densityGPerCm3: 1.20,
     plasticType: 'PC (Полікарбонат)',
     nozzleRange: '260–300 °C',
     bedRange: '100–120 °C',
@@ -1774,6 +1787,10 @@ export function getFilamentEffectiveTemp(filament: PublicFilamentItem): {
 // КОНКРЕТНА КАРТКА ТОВАРУ (1 КАРТОЧКА = 1 ВАГА, 1 КОЛІР, 1 ВИРОБНИК, 1 ПРОФІЛЬ, 1 СИЛКА)
 // ============================================================================
 export interface ConcreteFilamentSku {
+  offerId?: string;
+  companyId?: string;
+  companyName?: string;
+  companyLogoDataUrl?: string;
   id: string; // Унікальний ID карточки
   parentFilamentId: string;
   name: string; // e.g. "Plexiwire PLA Глибокий чорний 1.0 кг (З котушкою)"

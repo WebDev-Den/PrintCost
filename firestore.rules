@@ -1,13 +1,327 @@
 rules_version = '2';
+// Assumed data model:
+// users/{uid}: private profile; only its owner may read it or edit names.
+// users/{uid}/{materials,printers,calculations,templates,settings,likes}: private owner data.
+// templates: exact scalar parameters, optional tax, <=100 material mapping IDs,
+//   version CAS and immutable creation identity; key normalization is application-validated.
+// calculations: creation records algorithm/source IDs; only title/clientName/notes
+//   may change afterward, preserving original input, result and legacy data.
+// Material VAT metadata and optional tax settings/results are strictly validated.
+// Snapshot filament arrays retain the 500-row contract; every nested row and its
+// VAT metadata is validated by the application, since Rules cannot loop over it.
+// userDirectory/{uid}: trusted-token email/verification and bounded display name;
+//   only owner and verified, unblocked system administrators may read it.
+// system/authorization: nonempty unique adminUids (<=32), immutable bootstrapUid
+//   and initializedAt, integer version, fresh lastChangeId.
+// accountAccess/{uid}: blocked, timestamp updatedAt, actor updatedBy, changeId.
+// accountDeletion/{uid}: uid, server startedAt, UUID changeId; immutable self-
+//   deletion marker. Recent sign-in starts an atomic role revocation. The marker,
+//   blocked access, inactive membership and UID-only audit remain as tombstones.
+//   A marked owner may read/export leftovers and recently reauthenticate to
+//   delete private data; no account or company mutations can resume afterward.
+// memberships/{uid}: nullable companyId, active, version, timestamp updatedAt,
+//   actor updatedBy, changeId. All role/block changes atomically update these
+//   two documents, the authorization registry and one immutable accessAudit.
+// accessAudit/{id}: actorUid, targetUid, action, role, nullable companyId,
+//   blocked, timestamp createdAt, registryVersion; append-only administrator log.
+// companies/{id}: public id/name/https website/allowedDomains/status/version,
+//   immutable createdBy/createdAt, updatedAt/updatedBy/changeId. No private PII.
+// companyLogos/{companyId}: companyId, nullable canonical PNG data URL (128x128,
+//   <=98,304 decoded bytes), version, immutable createdBy/createdAt, updatedBy,
+//   server updatedAt. Active-company logos are public by ID; collection lists
+//   and deletes are denied. Image decoding is validated by the application.
+// companyOffers/{id}: one bounded material/color/packaging/shop-price variant;
+//   immutable id/companyId/createdBy/createdAt; exact allowed HTTPS product host,
+//   published/hidden/blocked status, integer version and server updatedAt.
+//   Public visibility requires published status and an active company.
+//   Deletes require a current administrator or an active own-company manager;
+//   managers cannot delete offers blocked by an administrator.
+// filaments, manufacturers, temperatureProfiles: explicitly public catalog;
+//   mutations require the current authorization registry, never custom claims.
+// temperatureProfiles: optional family enum and positive densityGPerCm3 <=100;
+//   legacy profiles without those fields remain valid.
 service cloud.firestore {
   match /databases/{database}/documents {
     function owner(uid) { return request.auth != null && request.auth.uid == uid; }
-    function admin() { return request.auth != null && request.auth.token.get('admin', false) == true; }
+    function verified() { return request.auth != null && request.auth.token.get('email_verified', false) == true; }
+    function unblocked() {
+      return request.auth != null && (!exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid))
+        || get(/databases/$(database)/documents/accountAccess/$(request.auth.uid)).data.blocked == false);
+    }
+    function privateOwner(uid) { return owner(uid) && verified() && unblocked() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(uid)); }
+    function recentSignIn() {
+      return request.auth != null && request.auth.token.get('auth_time', null) is int
+        && request.auth.token.auth_time > 0
+        && timestamp.value(request.auth.token.auth_time * 1000) <= request.time
+        && timestamp.value(request.auth.token.auth_time * 1000) >= request.time - duration.value(5, 'm');
+    }
+    function deletingOwner(uid) { return owner(uid) && exists(/databases/$(database)/documents/accountDeletion/$(uid)); }
+    function privateReader(uid) { return privateOwner(uid) || deletingOwner(uid); }
+    function cleanupOwner(uid) { return deletingOwner(uid) && recentSignIn(); }
+    function admin() {
+      return verified() && unblocked() && exists(/databases/$(database)/documents/system/authorization)
+        && request.auth.uid in get(/databases/$(database)/documents/system/authorization).data.adminUids;
+    }
     function text(value, max) { return value is string && value.size() <= max; }
-    function money(value) { return value is string && value.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'); }
-    function signedMoney(value) { return value is string && value.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?$'); }
+    function uid(value) { return value.matches('^[^/]{1,128}$'); }
+    function changeId(value) { return value.matches('^[A-Za-z0-9_-]{1,128}$'); }
+    function validAdminUids(values) {
+      // Contents are proven by the singleton bootstrap and exact one-UID transitions.
+      return values is list && values.size() > 0 && values.size() <= 32
+        && values.toSet().size() == values.size();
+    }
+    function validRegistry(data) {
+      return data.size() == 5
+        && validAdminUids(data.adminUids) && uid(data.bootstrapUid) && data.initializedAt is timestamp
+        && data.version is int && data.version >= 1 && changeId(data.lastChangeId);
+    }
+    function validAccess(data) {
+      return data.size() == 4
+        && data.blocked is bool && data.updatedAt == request.time && uid(data.updatedBy) && changeId(data.changeId);
+    }
+    function validMembership(data) {
+      return data.size() == 6
+        && (data.companyId == null || uid(data.companyId)) && data.active is bool
+        && data.version is int && data.version >= 1 && data.updatedAt == request.time
+        && uid(data.updatedBy) && changeId(data.changeId);
+    }
+    function validAudit(data) {
+      return data.size() == 8
+        && uid(data.actorUid) && (data.targetUid == '' || uid(data.targetUid))
+        && data.action in ['bootstrap', 'role', 'block', 'company', 'delete'] && data.role in ['user', 'manager', 'admin']
+        && (data.companyId == null || uid(data.companyId)) && data.blocked is bool
+        && data.createdAt == request.time && data.registryVersion is int && data.registryVersion >= 0
+        && (data.action == 'delete' || data.registryVersion >= 1);
+    }
+    function freshAudit(id, data) {
+      return changeId(id) && !exists(/databases/$(database)/documents/accessAudit/$(id))
+        && data.actorUid == request.auth.uid;
+    }
+    function validDirectory(data, id) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'verified', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'verified', 'updatedAt'])
+        && data.uid == id && uid(data.uid) && text(data.email, 320) && data.email.size() > 0
+        && data.email == request.auth.token.email && text(data.displayName, 200)
+        && data.verified is bool && data.verified == request.auth.token.get('email_verified', false)
+        && data.updatedAt == request.time;
+    }
+    function membershipVersion(target, next) {
+      return next.version == (exists(/databases/$(database)/documents/memberships/$(target))
+        ? get(/databases/$(database)/documents/memberships/$(target)).data.version + 1 : 1);
+    }
+    function canonicalRole(target, audit, registry, access, membership) {
+      return access.blocked == audit.blocked && access.updatedBy == audit.actorUid
+        && membership.updatedBy == audit.actorUid && membershipVersion(target, membership)
+        && (audit.role == 'manager'
+          ? (!(target in registry.adminUids) && audit.blocked == false
+              && membership.active == true && membership.companyId == audit.companyId
+              && audit.companyId != null
+              && getAfter(/databases/$(database)/documents/companies/$(audit.companyId)).data.status == 'active')
+          : (audit.companyId == null && membership.companyId == null && membership.active == false
+              && (audit.role == 'admin' ? target in registry.adminUids && audit.blocked == false
+                : audit.role == 'user' && !(target in registry.adminUids))));
+    }
+    function bootstrapTransition(target, audit, next) {
+      return !exists(/databases/$(database)/documents/system/authorization)
+        && verified() && unblocked() && request.auth.token.email == 'web.developer.den@gmail.com'
+        && target == request.auth.uid && audit.action == 'bootstrap' && audit.role == 'admin'
+        && next.adminUids == [request.auth.uid] && next.bootstrapUid == request.auth.uid
+        && next.initializedAt == request.time && next.version == 1;
+    }
+    function registryTransition(target, audit, next) {
+      let previous = get(/databases/$(database)/documents/system/authorization).data;
+      let directory = get(/databases/$(database)/documents/userDirectory/$(target)).data;
+      // Reuse the required prestate reads: grants already require unblocked target access below.
+      return verified() && unblocked() && request.auth.uid in previous.adminUids
+        && audit.action in ['role', 'block'] && directory is map
+        && (audit.action != 'block' || audit.role == 'user')
+        && (audit.action != 'block' || audit.blocked == true
+          || (exists(/databases/$(database)/documents/accountAccess/$(target))
+            && get(/databases/$(database)/documents/accountAccess/$(target)).data.blocked == true))
+        && (audit.action != 'role' || (audit.blocked == false
+          && (!exists(/databases/$(database)/documents/accountAccess/$(target))
+            || get(/databases/$(database)/documents/accountAccess/$(target)).data.blocked == false)))
+        && (audit.role == 'user' || directory.verified == true)
+        && next.bootstrapUid == previous.bootstrapUid && next.initializedAt == previous.initializedAt
+        && next.version == previous.version + 1
+        && next.adminUids == previous.adminUids.removeAll([target]).concat(audit.role == 'admin' ? [target] : []);
+    }
+    function roleChange(target, id) {
+      let registry = getAfter(/databases/$(database)/documents/system/authorization).data;
+      let audit = getAfter(/databases/$(database)/documents/accessAudit/$(id)).data;
+      let access = getAfter(/databases/$(database)/documents/accountAccess/$(target)).data;
+      let membership = getAfter(/databases/$(database)/documents/memberships/$(target)).data;
+      return request.auth != null && uid(target) && !existsAfter(/databases/$(database)/documents/accountDeletion/$(target))
+        && freshAudit(id, audit) && audit.targetUid == target
+        && registry.lastChangeId == id && audit.registryVersion == registry.version
+        && access.updatedAt == request.time && access.changeId == id
+        && membership.updatedAt == request.time && membership.changeId == id
+        && canonicalRole(target, audit, registry, access, membership)
+        && (audit.action == 'bootstrap' ? bootstrapTransition(target, audit, registry) : registryTransition(target, audit, registry));
+    }
+    function adminWriter() { return admin() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid)); }
+    function validDeletion(data, target) {
+      return data.keys().hasAll(['uid', 'startedAt', 'changeId']) && data.keys().hasOnly(['uid', 'startedAt', 'changeId'])
+        && data.uid == target && uid(data.uid) && data.startedAt == request.time
+        && data.changeId.matches('^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');
+    }
+    function deletionRegistry(target, id, version) {
+      let previous = get(/databases/$(database)/documents/system/authorization).data;
+      let next = getAfter(/databases/$(database)/documents/system/authorization).data;
+      return next.bootstrapUid == previous.bootstrapUid && next.initializedAt == previous.initializedAt
+        && next.adminUids == previous.adminUids.removeAll([target]) && next.adminUids.size() > 0
+        && next.version == previous.version + 1 && next.version == version && next.lastChangeId == id;
+    }
+    function deletionChange(target, id) {
+      let marker = getAfter(/databases/$(database)/documents/accountDeletion/$(target)).data;
+      let audit = getAfter(/databases/$(database)/documents/accessAudit/$(id)).data;
+      let access = getAfter(/databases/$(database)/documents/accountAccess/$(target)).data;
+      let membership = getAfter(/databases/$(database)/documents/memberships/$(target)).data;
+      return owner(target) && recentSignIn() && !exists(/databases/$(database)/documents/accountDeletion/$(target))
+        && marker.uid == target && marker.startedAt == request.time && marker.changeId == id
+        && freshAudit(id, audit) && audit.action == 'delete' && audit.targetUid == target
+        && audit.role == 'user' && audit.companyId == null && audit.blocked == true
+        && access.blocked == true && access.updatedAt == request.time && access.updatedBy == target && access.changeId == id
+        && membership.active == false && membership.companyId == null && membership.updatedAt == request.time
+        && membership.updatedBy == target && membership.changeId == id && membershipVersion(target, membership)
+        && (exists(/databases/$(database)/documents/system/authorization)
+          ? deletionRegistry(target, id, audit.registryVersion)
+          : (!existsAfter(/databases/$(database)/documents/system/authorization) && audit.registryVersion == 0));
+    }
+    function domain(value) {
+      return text(value, 253) && value.matches('^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z]{2,63}$');
+    }
+    function validDomainAt(values, index) { return values.size() <= index || domain(values[index]); }
+    function validCompany(data, id) {
+      return data.keys().hasAll(['id', 'name', 'website', 'allowedDomains', 'status', 'version', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy', 'changeId'])
+        && data.keys().hasOnly(['id', 'name', 'website', 'allowedDomains', 'status', 'version', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy', 'changeId'])
+        && data.id == id && uid(data.id) && text(data.name, 200) && data.name.size() > 0
+        && text(data.website, 2000) && data.website.matches('^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][^ ]*)?$')
+        && data.allowedDomains is list && data.allowedDomains.size() >= 1 && data.allowedDomains.size() <= 10
+        && data.allowedDomains.toSet().size() == data.allowedDomains.size()
+        && validDomainAt(data.allowedDomains, 0) && validDomainAt(data.allowedDomains, 1)
+        && validDomainAt(data.allowedDomains, 2) && validDomainAt(data.allowedDomains, 3)
+        && validDomainAt(data.allowedDomains, 4) && validDomainAt(data.allowedDomains, 5)
+        && validDomainAt(data.allowedDomains, 6) && validDomainAt(data.allowedDomains, 7)
+        && validDomainAt(data.allowedDomains, 8) && validDomainAt(data.allowedDomains, 9)
+        && data.status in ['active', 'disabled'] && data.version is int && data.version >= 1
+        && uid(data.createdBy) && data.createdAt is timestamp && data.updatedAt == request.time
+        && uid(data.updatedBy) && changeId(data.changeId);
+    }
+    function companyChange(id, auditId) {
+      let company = getAfter(/databases/$(database)/documents/companies/$(id)).data;
+      let audit = getAfter(/databases/$(database)/documents/accessAudit/$(auditId)).data;
+      return adminWriter() && freshAudit(auditId, audit) && audit.action == 'company'
+        && audit.targetUid == '' && audit.role == 'user' && audit.companyId == id && audit.blocked == false
+        && audit.registryVersion == get(/databases/$(database)/documents/system/authorization).data.version
+        && company.updatedAt == request.time && company.changeId == auditId && company.updatedBy == request.auth.uid;
+    }
+    function activeCompany(id) {
+      return exists(/databases/$(database)/documents/companies/$(id))
+        && get(/databases/$(database)/documents/companies/$(id)).data.status == 'active';
+    }
+    function companyManager(id) {
+      return verified() && unblocked()
+        && exists(/databases/$(database)/documents/memberships/$(request.auth.uid))
+        && get(/databases/$(database)/documents/memberships/$(request.auth.uid)).data.active == true
+        && get(/databases/$(database)/documents/memberships/$(request.auth.uid)).data.companyId == id
+        && activeCompany(id);
+    }
+    function companyLogoWriter(id) {
+      return exists(/databases/$(database)/documents/companies/$(id))
+        && (adminWriter() || (companyManager(id)
+          && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid))));
+    }
+    function validCompanyLogo(data, id) {
+      return data.keys().hasAll(['companyId', 'imageDataUrl', 'version', 'createdBy', 'createdAt', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['companyId', 'imageDataUrl', 'version', 'createdBy', 'createdAt', 'updatedBy', 'updatedAt'])
+        && data.companyId == id && uid(data.companyId)
+        && (data.imageDataUrl == null || (text(data.imageDataUrl, 131094) && data.imageDataUrl.size() >= 82
+          && data.imageDataUrl.matches('^data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACA([A-Za-z0-9+/]{4})*([A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$')))
+        && data.version is int && data.version >= 1 && data.version <= 9007199254740991
+        && uid(data.createdBy) && data.createdAt is timestamp
+        && data.updatedBy == request.auth.uid && uid(data.updatedBy) && data.updatedAt == request.time;
+    }
+    function offerReader(data) {
+      return admin() || companyManager(data.companyId) || (data.status == 'published' && activeCompany(data.companyId));
+    }
+    function validOffer(data, id) {
+      return data.keys().hasAll(['id', 'companyId', 'createdBy', 'updatedBy', 'name', 'brand', 'type', 'family', 'colorName', 'colorHex', 'colorTone', 'packagingType', 'spoolWeightGrams', 'priceUah', 'diameterMm', 'description', 'productUrl', 'inStock', 'status', 'version', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'companyId', 'createdBy', 'updatedBy', 'name', 'brand', 'type', 'family', 'colorName', 'colorHex', 'colorTone', 'packagingType', 'spoolWeightGrams', 'priceUah', 'diameterMm', 'description', 'productUrl', 'inStock', 'status', 'version', 'createdAt', 'updatedAt'])
+        && data.id == id && uid(data.id) && uid(data.companyId) && uid(data.createdBy) && uid(data.updatedBy)
+        && text(data.name, 200) && data.name.size() > 0 && text(data.brand, 200) && data.brand.size() > 0
+        && text(data.type, 80) && data.type.size() > 0
+        && data.family in ['Стандартні', 'Інженерні', 'Гнучкі', 'Композитні', 'Підтримки']
+        && text(data.colorName, 100) && data.colorName.size() > 0
+        && data.colorHex is string && data.colorHex.matches('^#[0-9a-f]{6}$')
+        && data.colorTone in ['black', 'white', 'grey', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'multicolor', 'special']
+        && data.packagingType in ['spool', 'refill'] && data.spoolWeightGrams is number
+        && data.spoolWeightGrams >= 1 && data.spoolWeightGrams <= 100000
+        && data.priceUah is number && data.priceUah > 0 && data.priceUah <= 10000000
+        && data.priceUah == math.round(data.priceUah * 100) / 100.0
+        && data.diameterMm is number && data.diameterMm >= 0.1 && data.diameterMm <= 10
+        && text(data.description, 10000) && text(data.productUrl, 2000)
+        && data.productUrl.matches('^https://[a-z0-9.-]+([/?#][!-~]*)?$')
+        && exists(/databases/$(database)/documents/companies/$(data.companyId))
+        && data.inStock is bool && data.status in ['published', 'hidden', 'blocked']
+        && (data.status != 'published' || activeCompany(data.companyId))
+        && data.version is int && data.version >= 1 && data.createdAt is timestamp && data.updatedAt == request.time;
+    }
+    function allowedOfferHost(data) {
+      return data.productUrl.split('[/?#]')[2] in get(/databases/$(database)/documents/companies/$(data.companyId)).data.allowedDomains;
+    }
+    // matches is string-only, so non-string values fail closed without duplicate type checks.
+    function money(value) { return value.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'); }
     function optionalMoney(value) { return value == null || value == '' || money(value); }
-    function identity(data, id) { return data.id == id && text(data.createdAt, 40) && data.createdAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*'); }
+    function taxRate(value) { return value.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$'); }
+    function validVatMetadata(data) {
+      return (!('priceVatMode' in data) && !('vatRatePercent' in data) && !('vatRecoverable' in data))
+        || (data.get('priceVatMode', '') in ['included', 'excluded', 'not_applicable']
+          && (data.priceVatMode == 'not_applicable' || 'vatRatePercent' in data)
+          && taxRate(data.get('vatRatePercent', '0')) && data.get('vatRecoverable', false) is bool);
+    }
+
+
+
+    function validTaxSettings(data) {
+      let amounts1 = [data.monthlyUnifiedTaxUah, data.monthlyMilitaryTaxUah, data.monthlyEsvUah, data.monthlyOtherUah];
+      let encoded1 = amounts1.join('|');
+      return (data.size() == 19)
+        && data.enabled is bool && data.scenario in ['cover', 'estimate'] && data.vatPayer is bool
+        && data.vatRatePercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.unifiedTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.incomeTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$') && data.militaryTaxPercent.matches('^([0-9]{1,2}([.][0-9]{1,6})?|100([.]0{1,6})?)$')
+        && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && data.monthlyOrders.matches('^([0-9]{1,9}|1000000000)$')
+        && data.monthlyBillableHours.matches('^([0-9]{1,9}([.][0-9]{1,6})?|1000000000([.]0{1,6})?)$')
+        && data.allocationMode in ['orders', 'hours']
+        && (data.netTaxableIncomeUah == null || data.netTaxableIncomeUah.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?$'))
+        && (data.customerPriceUah == null || data.customerPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')) && data.presetVersion.matches('(?s)^[^[:space:]](.{0,62}[^[:space:]])?$') && data.presetEffectiveDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (data.regime == 'manual' ? true
+          : data.regime == 'fop3' ? (data.incomeTaxPercent == '0' && data.militaryTaxPercent == '1'
+              && data.monthlyUnifiedTaxUah == '0' && data.monthlyMilitaryTaxUah == '0'
+              && data.unifiedTaxPercent == (data.vatPayer ? '3' : '5'))
+          : data.regime == 'general' ? (data.unifiedTaxPercent == '0' && data.incomeTaxPercent == '18'
+              && data.militaryTaxPercent == '5' && data.monthlyUnifiedTaxUah == '0' && data.monthlyMilitaryTaxUah == '0')
+          : (data.regime in ['fop1', 'fop2'] && data.vatPayer == false && data.unifiedTaxPercent == '0' && data.incomeTaxPercent == '0' && data.militaryTaxPercent == '0'));
+    }
+    function taxSource(value) {
+      return value in ['https://sumy.tax.gov.ua/media-ark/news-ark/print-975635.html', 'https://mk.tax.gov.ua/media-ark/news-ark/976670.html'];
+    }
+    function validTaxResult(data) {
+      let amounts1 = [data.unifiedTaxUah, data.militaryTaxUah, data.incomeTaxUah, data.allocatedUnifiedTaxUah, data.allocatedMilitaryTaxUah, data.allocatedEsvUah, data.allocatedOtherUah, data.totalTaxesUah, data.totalPaymentsUah, data.netRevenueUah, data.vatUah, data.grossPriceUah];
+      let encoded1 = amounts1.join('|');
+      let amounts2 = [data.profitBeforeTaxUah, data.profitAfterTaxUah, data.marginAfterTaxPercent];
+      let encoded2 = amounts2.join('|');
+      return (data.size() == 21)
+        && data.regime in ['fop1', 'fop2', 'fop3', 'general', 'manual'] && data.scenario in ['cover', 'estimate'] && data.presetVersion.matches('(?s)^[^[:space:]](.{0,62}[^[:space:]])?$') && data.presetEffectiveDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && (encoded2.split('[|]') == amounts2 && encoded2.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?([|]-?[0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && (data.netTaxableIncomeUah == null || data.netTaxableIncomeUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'))
+        && data.sourceUrls is list && data.sourceUrls.size() <= 2
+        && (data.sourceUrls.size() < 1 || taxSource(data.sourceUrls[0]))
+        && (data.sourceUrls.size() < 2 || taxSource(data.sourceUrls[1]));
+    }
+    function privateId(value) { return value.matches('^([^/.][^/]?|[.][^/.]|[^/]{3,180})$') && value.matches('(?s).*[^[:space:]].*'); }
+    function identity(data, id) { return data.id == id && data.createdAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.{0,29}$'); }
     function immutable() { return request.resource.data.id == resource.data.id && request.resource.data.createdAt == resource.data.createdAt; }
     function pricingMode(value) { return value in ['markup', 'target_margin']; }
     function rounding(value) { return value in ['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100']; }
@@ -20,11 +334,12 @@ service cloud.firestore {
     }
     function validMaterial(data, id) {
       return data.keys().hasAll(['id', 'name', 'type', 'family', 'brand', 'pricePerKgUah', 'isArchived', 'createdAt'])
-        && data.keys().hasOnly(['id', 'name', 'type', 'family', 'brand', 'colorHex', 'colorName', 'pricePerKgUah', 'spoolWeightGrams', 'spoolPriceUah', 'spoolsInStock', 'isArchived', 'createdAt', 'notes'])
+        && data.keys().hasOnly(['id', 'name', 'type', 'family', 'brand', 'colorHex', 'colorName', 'pricePerKgUah', 'spoolWeightGrams', 'spoolPriceUah', 'spoolsInStock', 'isArchived', 'createdAt', 'notes', 'priceVatMode', 'vatRatePercent', 'vatRecoverable'])
         && identity(data, id) && text(data.name, 200) && data.name.size() > 0 && text(data.type, 80) && text(data.family, 100) && text(data.brand, 200)
         && optionalMoney(data.pricePerKgUah) && optionalMoney(data.get('spoolWeightGrams', null)) && optionalMoney(data.get('spoolPriceUah', null))
         && text(data.get('colorName', ''), 100) && text(data.get('colorHex', ''), 20) && text(data.get('notes', ''), 5000)
-        && data.get('spoolsInStock', 0) is int && data.get('spoolsInStock', 0) >= 0 && data.get('spoolsInStock', 0) <= 1000000 && data.isArchived is bool;
+        && data.get('spoolsInStock', 0) is int && data.get('spoolsInStock', 0) >= 0 && data.get('spoolsInStock', 0) <= 1000000 && data.isArchived is bool
+        && validVatMetadata(data);
     }
     function validPrinter(data, id) {
       return data.keys().hasAll(['id', 'name', 'averagePowerWatts', 'costCalculationMode', 'machineHourlyRateUah', 'isDefault', 'createdAt'])
@@ -36,46 +351,88 @@ service cloud.firestore {
     }
     function validSettings(data) {
       return data.keys().hasAll(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone'])
-        && data.keys().hasOnly(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone', 'folderAutoImportPath'])
+        && data.keys().hasOnly(['electricityTariffUahPerKwh', 'pricingMode', 'defaultMarkupPercent', 'defaultMarginPercent', 'scrapReservePercent', 'minOrderPriceUah', 'roundingMode', 'defaultOperatorFeeUah', 'defaultPackagingFeeUah', 'defaultPostProcessingFeeUah', 'defaultOtherFeeUah', 'defaultPrinterId', 'filamentMappingPresets', 'theme', 'timezone', 'folderAutoImportPath', 'tax', 'defaultTemplateId'])
         && optionalMoney(data.electricityTariffUahPerKwh) && pricingMode(data.pricingMode) && rounding(data.roundingMode)
         && money(data.defaultMarkupPercent) && money(data.defaultMarginPercent) && float(data.defaultMarginPercent) < 100 && money(data.scrapReservePercent) && money(data.minOrderPriceUah)
         && money(data.defaultOperatorFeeUah) && money(data.defaultPackagingFeeUah) && money(data.defaultPostProcessingFeeUah) && money(data.defaultOtherFeeUah)
         && (data.defaultPrinterId == null || text(data.defaultPrinterId, 180))
         && data.filamentMappingPresets is map && data.filamentMappingPresets.size() <= 100
-        && data.theme in ['light', 'dark', 'system'] && text(data.timezone, 100) && text(data.get('folderAutoImportPath', ''), 500);
+        && data.theme in ['light', 'dark', 'system'] && text(data.timezone, 100) && text(data.get('folderAutoImportPath', ''), 500)
+        && (!('tax' in data) || validTaxSettings(data.tax))
+        && (data.get('defaultTemplateId', null) == null || privateId(data.defaultTemplateId));
     }
     function validJob(data) {
-      return data is map && data.keys().hasAll(['fileName', 'fileSizeBytes', 'slicerSource', 'plates', 'totalPredictionSeconds', 'totalWeightGrams', 'warnings', 'parseStatus'])
-        && data.keys().hasOnly(['fileName', 'fileSizeBytes', 'slicerSource', 'printerModelName', 'nozzleDiameterMm', 'plates', 'totalPredictionSeconds', 'totalWeightGrams', 'warnings', 'isDemoJob', 'parseStatus', 'errorMessage'])
-        && text(data.fileName, 500) && data.fileSizeBytes is number && data.fileSizeBytes >= 0 && text(data.slicerSource, 200)
+      return (data.size() == 8 + ('printerModelName' in data ? 1 : 0) + ('nozzleDiameterMm' in data ? 1 : 0) + ('isDemoJob' in data ? 1 : 0) + ('errorMessage' in data ? 1 : 0))
+        && data.fileName.matches('(?s)^.{0,500}$') && data.fileSizeBytes >= 0 && data.slicerSource.matches('(?s)^.{0,200}$')
         && data.plates is list && data.plates.size() <= 100 && data.warnings is list && data.warnings.size() <= 100
-        && data.totalPredictionSeconds is number && data.totalPredictionSeconds >= 0 && data.totalWeightGrams is number && data.totalWeightGrams >= 0
+        && data.totalPredictionSeconds >= 0 && data.totalWeightGrams >= 0
         && data.parseStatus in ['empty', 'reading', 'success', 'no_slicing_data', 'corrupted', 'file_limit_exceeded', 'error']
-        && data.get('isDemoJob', false) is bool && text(data.get('printerModelName', ''), 200) && text(data.get('nozzleDiameterMm', ''), 50) && text(data.get('errorMessage', ''), 2000);
+        && data.get('isDemoJob', false) is bool && data.get('printerModelName', '').matches('(?s)^.{0,200}$') && data.get('nozzleDiameterMm', '').matches('(?s)^.{0,50}$') && text(data.get('errorMessage', ''), 2000);
     }
     function validInput(data) {
-      return data is map && data.keys().hasAll(['job', 'filaments', 'selectedPrinterId', 'averagePowerWatts', 'electricityTariffUahPerKwh', 'machineHourlyRateUah', 'operatorFeeUah', 'packagingFeeUah', 'postProcessingFeeUah', 'otherFeeUah', 'scrapReservePercent', 'pricingMode', 'markupPercent', 'marginPercent', 'minOrderPriceUah', 'roundingMode'])
-        && data.keys().hasOnly(['job', 'filaments', 'selectedPrinterId', 'averagePowerWatts', 'electricityTariffUahPerKwh', 'machineHourlyRateUah', 'operatorFeeUah', 'packagingFeeUah', 'postProcessingFeeUah', 'otherFeeUah', 'scrapReservePercent', 'pricingMode', 'markupPercent', 'marginPercent', 'minOrderPriceUah', 'roundingMode'])
-        && validJob(data.job) && data.filaments is list && data.filaments.size() <= 500
-        && (data.selectedPrinterId == null || text(data.selectedPrinterId, 180)) && money(data.averagePowerWatts) && optionalMoney(data.electricityTariffUahPerKwh)
-        && money(data.machineHourlyRateUah) && money(data.operatorFeeUah) && money(data.packagingFeeUah) && money(data.postProcessingFeeUah) && money(data.otherFeeUah)
-        && money(data.scrapReservePercent) && money(data.markupPercent) && money(data.marginPercent) && float(data.marginPercent) < 100 && money(data.minOrderPriceUah)
-        && pricingMode(data.pricingMode) && rounding(data.roundingMode);
+      let amounts = [data.averagePowerWatts, data.machineHourlyRateUah, data.operatorFeeUah, data.packagingFeeUah, data.postProcessingFeeUah, data.otherFeeUah, data.scrapReservePercent, data.markupPercent, data.marginPercent, data.minOrderPriceUah];
+      let encoded = amounts.join('|');
+      return (data.size() == 16 + ('tax' in data ? 1 : 0))
+        && data.filaments is list && data.filaments.size() <= 500
+        && (data.selectedPrinterId == null || data.selectedPrinterId.matches('(?s)^.{0,180}$'))
+        && (data.electricityTariffUahPerKwh == null || data.electricityTariffUahPerKwh == '' || data.electricityTariffUahPerKwh.matches('^[0-9]{1,12}([.][0-9]{1,6})?$'))
+        && encoded.split('[|]') == amounts && encoded.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$') && float(data.marginPercent) < 100
+        && data.pricingMode in ['markup', 'target_margin'] && data.roundingMode in ['none', 'up_1', 'up_5', 'up_10', 'up_50', 'up_100'];
     }
+    function validTemplateParameters(data) {
+      let amounts1 = [data.machineHourlyRateUah, data.operatorFeeUah, data.packagingFeeUah, data.postProcessingFeeUah, data.otherFeeUah];
+      let encoded1 = amounts1.join('|');
+      let amounts2 = [data.scrapReservePercent, data.markupPercent, data.marginPercent];
+      let encoded2 = amounts2.join('|');
+      return (data.size() == 14 + ('tax' in data ? 1 : 0))
+        && (data.selectedPrinterId == null || privateId(data.selectedPrinterId)) && data.averagePowerWatts.matches('^[0-9]{1,12}([.][0-9]{1,6})?$') && optionalMoney(data.electricityTariffUahPerKwh)
+        && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && (encoded2.split('[|]') == amounts2 && encoded2.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$')) && float(data.marginPercent) < 100 && data.minOrderPriceUah.matches('^[0-9]{1,12}([.][0-9]{1,6})?$')
+        && pricingMode(data.pricingMode) && rounding(data.roundingMode)
+        && (!('tax' in data) || validTaxSettings(data.tax));
+    }
+    function validMaterialMappings(data) {
+      let values = data.values();
+      let encoded = values.join('/');
+      return data.size() <= 100 && !values.hasAny(['.', '..'])
+        && (data.size() == 0 || (encoded.split('/') == values && encoded.matches('^[^/]{1,180}([/][^/]{1,180})*$')
+          && encoded.matches('(?s)^[^/]{0,179}[^/[:space:]][^/]{0,179}([/][^/]{0,179}[^/[:space:]][^/]{0,179})*$')));
+    }
+    function templateDate(value) {
+      return text(value, 40) && value.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9]([.][0-9]{1,9})?)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])?$');
+    }
+    function validTemplate(data, id) {
+      return data.keys().hasAll(['id', 'name', 'parameters', 'materialMappings', 'version', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'parameters', 'materialMappings', 'version', 'createdAt', 'updatedAt'])
+        && privateId(data.id) && data.id == id && templateDate(data.createdAt) && data.name.matches('(?s)^.{1,120}$') && data.name.matches('(?s).*[^[:space:]].*')
+        && data.parameters is map && validTemplateParameters(data.parameters)
+        && data.materialMappings is map && validMaterialMappings(data.materialMappings)
+        && data.version is int && data.version >= 1 && data.version <= 9007199254740991
+        && templateDate(data.updatedAt);
+    }
+    function validCalculationMetadata(data) {
+      return data.title.matches('(?s)^.{1,300}$') && data.title.matches('(?s).*[^[:space:]].*')
+        && data.get('clientName', '').matches('(?s)^.{0,200}$') && text(data.get('notes', ''), 10000);
+    }
+
     function validResult(data) {
-      return data is map && data.keys().hasAll(['status', 'incompleteReasons', 'totalWeightGrams', 'totalDurationSeconds', 'totalEnergyKwh', 'materialsCostUah', 'electricityCostUah', 'machineCostUah', 'operatorCostUah', 'packagingCostUah', 'postProcessingCostUah', 'otherCostUah', 'baseCostSubtotalUah', 'scrapReserveUah', 'costPriceUah', 'preRoundingPriceUah', 'minOrderApplied', 'sellingPriceUah', 'profitUah', 'marginPercent', 'markupPercentActual'])
-        && data.keys().hasOnly(['status', 'incompleteReasons', 'totalWeightGrams', 'totalDurationSeconds', 'totalEnergyKwh', 'materialsCostUah', 'electricityCostUah', 'machineCostUah', 'operatorCostUah', 'packagingCostUah', 'postProcessingCostUah', 'otherCostUah', 'baseCostSubtotalUah', 'scrapReserveUah', 'costPriceUah', 'preRoundingPriceUah', 'minOrderApplied', 'sellingPriceUah', 'profitUah', 'marginPercent', 'markupPercentActual'])
+      let amounts1 = [data.totalWeightGrams, data.totalEnergyKwh, data.materialsCostUah, data.electricityCostUah, data.machineCostUah, data.operatorCostUah, data.packagingCostUah, data.postProcessingCostUah, data.otherCostUah, data.baseCostSubtotalUah, data.scrapReserveUah, data.costPriceUah, data.preRoundingPriceUah, data.sellingPriceUah];
+      let encoded1 = amounts1.join('|');
+      let amounts2 = [data.profitUah, data.marginPercent, data.markupPercentActual];
+      let encoded2 = amounts2.join('|');
+      return (data.size() == 21 + ('tax' in data ? 1 : 0))
         && data.status in ['complete', 'incomplete'] && data.incompleteReasons is list && data.incompleteReasons.size() <= 100
-        && money(data.totalWeightGrams) && data.totalDurationSeconds is number && data.totalDurationSeconds >= 0 && money(data.totalEnergyKwh)
-        && money(data.materialsCostUah) && money(data.electricityCostUah) && money(data.machineCostUah) && money(data.operatorCostUah) && money(data.packagingCostUah)
-        && money(data.postProcessingCostUah) && money(data.otherCostUah) && money(data.baseCostSubtotalUah) && money(data.scrapReserveUah) && money(data.costPriceUah) && money(data.preRoundingPriceUah)
-        && data.minOrderApplied is bool && money(data.sellingPriceUah) && signedMoney(data.profitUah) && signedMoney(data.marginPercent) && signedMoney(data.markupPercentActual);
+        && data.totalDurationSeconds >= 0
+        && (encoded1.split('[|]') == amounts1 && encoded1.matches('^[0-9]{1,12}([.][0-9]{1,6})?([|][0-9]{1,12}([.][0-9]{1,6})?)*$'))
+        && data.minOrderApplied is bool && (encoded2.split('[|]') == amounts2 && encoded2.matches('^-?[0-9]{1,12}([.][0-9]{1,6})?([|]-?[0-9]{1,12}([.][0-9]{1,6})?)*$'));
     }
     function validCalculation(data, id) {
-      return data.keys().hasAll(['id', 'title', 'createdAt', 'status', 'input', 'result', 'fileName'])
-        && data.keys().hasOnly(['id', 'title', 'createdAt', 'status', 'input', 'result', 'fileName', 'clientName', 'notes'])
-        && identity(data, id) && text(data.title, 300) && text(data.fileName, 500) && text(data.get('clientName', ''), 200) && text(data.get('notes', ''), 5000)
-        && data.status in ['complete', 'incomplete'] && validInput(data.input) && validResult(data.result) && data.status == data.result.status;
+      return (data.size() == 8 + ('clientName' in data ? 1 : 0) + ('notes' in data ? 1 : 0) + ('sourceCalculationId' in data ? 1 : 0))
+        && identity(data, id) && data.fileName.matches('(?s)^.{0,500}$')
+        && data.algorithmVersion.matches('(?s)^.{1,64}$')
+        && (data.get('sourceCalculationId', null) == null || (data.sourceCalculationId.matches('^([^/.][^/]?|[.][^/.]|[^/]{3,180})$')
+          && data.sourceCalculationId.matches('(?s).*[^[:space:]].*')))
+        && data.status == data.result.status;
     }
     function tombstone(data, id) { return data.keys().hasOnly(['id', 'deleted']) && data.id == id && data.deleted == true; }
     function validFilament(data, id) {
@@ -96,63 +453,162 @@ service cloud.firestore {
     }
     function validTemperature(data) {
       return (data.keys().hasOnly(['deleted']) && data.deleted == true) || (data.keys().hasAll(['plasticType', 'nozzleRange', 'bedRange', 'chamberRange', 'fanSpeed', 'notes', 'enclosureRequired', 'dryingTempTime'])
-        && data.keys().hasOnly(['plasticType', 'nozzleRange', 'bedRange', 'chamberRange', 'fanSpeed', 'notes', 'enclosureRequired', 'dryingTempTime'])
+        && data.keys().hasOnly(['plasticType', 'nozzleRange', 'bedRange', 'chamberRange', 'fanSpeed', 'notes', 'enclosureRequired', 'dryingTempTime', 'family', 'densityGPerCm3'])
         && text(data.plasticType, 200) && text(data.nozzleRange, 200) && text(data.bedRange, 200) && text(data.chamberRange, 300) && text(data.fanSpeed, 300)
-        && text(data.notes, 10000) && data.enclosureRequired is bool && text(data.dryingTempTime, 300));
+        && text(data.notes, 10000) && data.enclosureRequired is bool && text(data.dryingTempTime, 300)
+        && (!('family' in data) || data.family in ['Стандартні', 'Інженерні', 'Гнучкі', 'Композитні', 'Підтримки'])
+        && (!('densityGPerCm3' in data) || (data.densityGPerCm3 is number && data.densityGPerCm3 > 0 && data.densityGPerCm3 <= 100)));
     }
     match /users/{uid} {
       allow get: if owner(uid);
-      allow create: if owner(uid) && validProfile(request.resource.data, uid);
-      allow update: if owner(uid) && validProfile(request.resource.data, uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'workshopName']);
+      allow create: if owner(uid) && unblocked() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(uid)) && validProfile(request.resource.data, uid);
+      allow update: if owner(uid) && unblocked() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(uid)) && validProfile(request.resource.data, uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'workshopName']);
+      allow delete: if cleanupOwner(uid);
       match /materials/{id} {
-        allow get: if owner(uid);
-        allow list: if owner(uid) && request.query.limit <= 200;
-        allow create: if owner(uid) && validMaterial(request.resource.data, id);
-        allow update: if owner(uid) && immutable() && validMaterial(request.resource.data, id);
-        allow delete: if owner(uid);
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 200;
+        allow create: if privateOwner(uid) && validMaterial(request.resource.data, id);
+        allow update: if privateOwner(uid) && immutable() && validMaterial(request.resource.data, id);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
       match /printers/{id} {
-        allow get: if owner(uid);
-        allow list: if owner(uid) && request.query.limit <= 200;
-        allow create: if owner(uid) && validPrinter(request.resource.data, id);
-        allow update: if owner(uid) && immutable() && validPrinter(request.resource.data, id);
-        allow delete: if owner(uid);
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 200;
+        allow create: if privateOwner(uid) && validPrinter(request.resource.data, id);
+        allow update: if privateOwner(uid) && immutable() && validPrinter(request.resource.data, id);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
       match /calculations/{id} {
-        allow get: if owner(uid);
-        allow list: if owner(uid) && request.query.limit <= 200;
-        allow create: if owner(uid) && validCalculation(request.resource.data, id);
-        allow update: if owner(uid) && immutable() && validCalculation(request.resource.data, id);
-        allow delete: if owner(uid);
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 200;
+        allow create: if privateOwner(uid) && validCalculationMetadata(request.resource.data) && validCalculation(request.resource.data, id)
+          && validInput(request.resource.data.input) && validJob(request.resource.data.input.job) && validResult(request.resource.data.result)
+          && (!('tax' in request.resource.data.input) || validTaxSettings(request.resource.data.input.tax))
+          && (!('tax' in request.resource.data.result) || validTaxResult(request.resource.data.result.tax));
+        allow update: if privateOwner(uid) && validCalculationMetadata(request.resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'clientName', 'notes']);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
+      }
+      match /templates/{id} {
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 100;
+        allow create: if privateOwner(uid) && validTemplate(request.resource.data, id) && request.resource.data.version == 1;
+        allow update: if privateOwner(uid) && immutable() && validTemplate(request.resource.data, id)
+          && request.resource.data.version == resource.data.version + 1;
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
       match /settings/pricing {
-        allow read: if owner(uid);
-        allow create, update: if owner(uid) && validSettings(request.resource.data);
+        allow get: if privateReader(uid);
+        allow create, update: if privateOwner(uid) && validSettings(request.resource.data);
+      }
+      match /settings/{id} {
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 100;
+        allow delete: if cleanupOwner(uid);
       }
       match /likes/{id} {
-        allow get: if owner(uid);
-        allow list: if owner(uid) && request.query.limit <= 1000;
-        allow create: if owner(uid) && request.resource.data.keys().hasOnly(['filamentId']) && request.resource.data.filamentId == id;
-        allow delete: if owner(uid);
+        allow get: if privateReader(uid);
+        allow list: if privateReader(uid) && request.query.limit <= 1000;
+        allow create: if privateOwner(uid) && request.resource.data.keys().hasOnly(['filamentId']) && request.resource.data.filamentId == id && text(id, 180);
+        allow delete: if privateOwner(uid) || cleanupOwner(uid);
       }
+    }
+    match /userDirectory/{uid} {
+      allow get: if owner(uid) || admin();
+      allow list: if admin() && request.query.limit <= 100;
+      allow create, update: if owner(uid) && unblocked() && !existsAfter(/databases/$(database)/documents/accountDeletion/$(uid)) && validDirectory(request.resource.data, uid);
+      allow delete: if cleanupOwner(uid);
+    }
+    match /accountDeletion/{uid} {
+      allow get: if owner(uid);
+      allow create: if validDeletion(request.resource.data, uid) && deletionChange(uid, request.resource.data.changeId);
+    }
+    match /system/authorization {
+      allow get: if request.auth != null;
+      allow create, update: if validRegistry(request.resource.data)
+        && (getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.lastChangeId)).data.action == 'delete'
+          ? deletionChange(getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.lastChangeId)).data.targetUid, request.resource.data.lastChangeId)
+          : roleChange(getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.lastChangeId)).data.targetUid, request.resource.data.lastChangeId));
+    }
+    match /accountAccess/{uid} {
+      allow get: if owner(uid) || admin();
+      allow list: if admin() && request.query.limit <= 100;
+      allow create, update: if validAccess(request.resource.data)
+        && (getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.changeId)).data.action == 'delete'
+          ? deletionChange(uid, request.resource.data.changeId) : roleChange(uid, request.resource.data.changeId));
+    }
+    match /memberships/{uid} {
+      allow get: if owner(uid) || admin();
+      allow list: if admin() && request.query.limit <= 100;
+      allow create, update: if validMembership(request.resource.data)
+        && (getAfter(/databases/$(database)/documents/accessAudit/$(request.resource.data.changeId)).data.action == 'delete'
+          ? deletionChange(uid, request.resource.data.changeId) : roleChange(uid, request.resource.data.changeId));
+    }
+    match /accessAudit/{id} {
+      allow get: if admin();
+      allow list: if admin() && request.query.limit <= 100;
+      allow create: if validAudit(request.resource.data) && freshAudit(id, request.resource.data)
+        && ((request.resource.data.action == 'company' && companyChange(request.resource.data.companyId, id))
+          || (request.resource.data.action == 'delete' && deletionChange(request.resource.data.targetUid, id))
+          || (request.resource.data.action in ['bootstrap', 'role', 'block'] && roleChange(request.resource.data.targetUid, id)));
+    }
+    match /companies/{id} {
+      allow get: if true;
+      allow list: if request.query.limit <= 200;
+      allow create: if validCompany(request.resource.data, id) && request.resource.data.version == 1
+        && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time
+        && companyChange(id, request.resource.data.changeId);
+      allow update: if validCompany(request.resource.data, id) && request.resource.data.id == resource.data.id
+        && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.version == resource.data.version + 1 && companyChange(id, request.resource.data.changeId);
+    }
+    match /companyOffers/{id} {
+      allow get: if offerReader(resource.data);
+      allow list: if request.query.limit <= 50 && offerReader(resource.data);
+      allow create: if validOffer(request.resource.data, id) && request.resource.data.version == 1
+        && allowedOfferHost(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && (adminWriter() || (companyManager(request.resource.data.companyId) && request.resource.data.status != 'blocked'
+          && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid))));
+      allow update: if validOffer(request.resource.data, id)
+        && request.resource.data.id == resource.data.id && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid && request.resource.data.version == resource.data.version + 1
+        && (allowedOfferHost(request.resource.data)
+          || (adminWriter() && request.resource.data.status == 'blocked' && request.resource.data.productUrl == resource.data.productUrl))
+        && (adminWriter() || (companyManager(resource.data.companyId) && resource.data.status != 'blocked' && request.resource.data.status != 'blocked'
+          && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid))));
+      allow delete: if adminWriter() || (companyManager(resource.data.companyId) && resource.data.status != 'blocked'
+        && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid)));
+    }
+    match /companyLogos/{id} {
+      allow get: if admin() || activeCompany(id);
+      allow create: if companyLogoWriter(id) && validCompanyLogo(request.resource.data, id)
+        && request.resource.data.version == 1 && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow update: if companyLogoWriter(id) && validCompanyLogo(request.resource.data, id)
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.version == resource.data.version + 1;
     }
     match /filaments/{id} {
       allow get: if true;
       allow list: if request.query.limit <= 1000;
-      allow create, update: if admin() && validFilament(request.resource.data, id);
-      allow delete: if admin();
+      allow create, update: if adminWriter() && validFilament(request.resource.data, id);
+      allow delete: if adminWriter();
     }
     match /manufacturers/{id} {
       allow get: if true;
       allow list: if request.query.limit <= 1000;
-      allow create, update: if admin() && validManufacturer(request.resource.data, id);
-      allow delete: if admin();
+      allow create, update: if adminWriter() && validManufacturer(request.resource.data, id);
+      allow delete: if adminWriter();
     }
     match /temperatureProfiles/{type} {
       allow get: if true;
       allow list: if request.query.limit <= 200;
-      allow create, update: if admin() && validTemperature(request.resource.data);
-      allow delete: if admin();
+      allow create, update: if adminWriter() && validTemperature(request.resource.data);
+      allow delete: if adminWriter();
     }
   }
 }

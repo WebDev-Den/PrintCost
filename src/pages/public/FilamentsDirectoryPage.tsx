@@ -1,16 +1,15 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import type { QueryDocumentSnapshot } from 'firebase/firestore';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   Search,
   ExternalLink,
-  Plus,
   Thermometer,
   Gauge,
   ShoppingCart,
   Check,
   ArrowRight,
   Filter,
-  Sparkles,
   Building2,
   Globe,
   Flame,
@@ -51,24 +50,48 @@ import { useAppData } from '../../context/AppDataContext.tsx';
 import { formatUah } from '../../domain/formatters.ts';
 import { FilamentDirectoryCard } from '../../components/filaments/FilamentDirectoryCard.tsx';
 import { FilamentDetailsModal } from '../../components/filaments/FilamentDetailsModal.tsx';
+import type { Company } from '../../domain/organizations.ts';
+import type { CompanyOffer } from '../../domain/companyOffers.ts';
+import { toConcreteCompanyOffer } from '../../domain/companyOffers.ts';
+import { companyOfferRepository } from '../../services/companyOfferRepository.ts';
+import { companyLogoRepository } from '../../services/companyLogoRepository.ts';
+import { analyticsMaterialCategory, analyticsOptedOut, analyticsService, type AnalyticsDimensions } from '../../services/analyticsService.ts';
 
 export const FilamentsDirectoryPage: React.FC = () => {
   const navigate = useNavigate();
   const { addMaterial } = useAppData();
   const { user, isDemoSession } = useAuth();
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [analyticsDisabled, setAnalyticsDisabled] = useState(analyticsOptedOut);
+  const analyticsDimensions = (sku: ConcreteFilamentSku): AnalyticsDimensions => ({ offerId: sku.offerId || sku.id,
+    materialType: analyticsMaterialCategory(sku.type), packaging: sku.packagingType, stock: sku.inStock ? 'in_stock' : 'out_of_stock' });
+  useEffect(() => { analyticsService.reset(); analyticsService.beginPage(); }, [user?.id, isDemoSession]);
 
   // Load dynamic data from catalog repository (allowing admin updates to reflect here)
   const [filaments, setFilaments] = useState<PublicFilamentItem[]>([]);
   const [manufacturers, setManufacturers] = useState<ManufacturerBrand[]>([]);
   const [tempProfiles, setTempProfiles] = useState<Record<string, TemperatureProfile>>({});
   const [likedIds, setLikedIds] = useState<string[]>([]);
+  const [sellerCompanies, setSellerCompanies] = useState<Company[]>([]);
+  const [companyCursor, setCompanyCursor] = useState<QueryDocumentSnapshot | null>(null);
+  const [companyOffers, setCompanyOffers] = useState<Record<string, CompanyOffer[]>>({});
+  const [companyLogos, setCompanyLogos] = useState<Record<string, string | null>>({});
+  const [logoErrors, setLogoErrors] = useState<string[]>([]);
+  const requestedLogos = useRef(new Set<string>());
+  const pendingLogos = useRef(new Set<string>());
+  const [offerCursors, setOfferCursors] = useState<Record<string, QueryDocumentSnapshot | null>>({});
+  const [companiesLoading, setCompaniesLoading] = useState(false);
+  const [offersLoading, setOffersLoading] = useState<string[]>([]);
+  const [offersError, setOffersError] = useState<string | null>(null);
+  const [selectedSeller, setSelectedSeller] = useState('all');
+  const companyGeneration = useRef(0);
 
   // Detailed Product Modal Popup State
   const [selectedSkuForModal, setSelectedSkuForModal] = useState<ConcreteFilamentSku | null>(null);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
 
   const handleOpenDetails = (sku: ConcreteFilamentSku) => {
+    analyticsService.track('details', analyticsDimensions(sku));
     setSelectedSkuForModal(sku);
     setIsDetailsModalOpen(true);
   };
@@ -120,6 +143,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
     if (packagingFilter !== 'all') count++;
     if (stockFilter !== 'all') count++;
     if (likesOnlyFilter) count++;
+    if (selectedSeller !== 'all') count++;
     return count;
   }, [
     searchQuery,
@@ -129,6 +153,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
     packagingFilter,
     stockFilter,
     likesOnlyFilter,
+    selectedSeller,
   ]);
 
   // Refresh data on mount
@@ -138,7 +163,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
     setCatalogError(null);
     Promise.all([
       catalogAdminRepository.getFilaments(), catalogAdminRepository.getManufacturers(),
-      catalogAdminRepository.getTemperatureProfiles(), catalogAdminRepository.getLikedFilamentIds(),
+      catalogAdminRepository.getTemperatureProfiles(), isDemoSession || (user?.emailVerified && !user.isBlocked) ? catalogAdminRepository.getLikedFilamentIds() : Promise.resolve([]),
     ]).then(([items, brands, profiles, likes]) => {
       if (!active) return;
       setFilaments(items);
@@ -147,12 +172,60 @@ export const FilamentsDirectoryPage: React.FC = () => {
       setLikedIds(likes);
     }).catch((error) => { if (active) setCatalogError(authErrorMessage(error)); });
     return () => { active = false; };
-  }, [user?.id, isDemoSession]);
+  }, [user?.id, user?.emailVerified, user?.isBlocked, isDemoSession]);
+
+  const loadSellerLogo = async (companyId: string, generation = companyGeneration.current) => {
+    if (isDemoSession || requestedLogos.current.has(companyId) || pendingLogos.current.has(companyId)) return;
+    requestedLogos.current.add(companyId);
+    pendingLogos.current.add(companyId);
+    try {
+      const logo = await companyLogoRepository.get(companyId);
+      if (generation !== companyGeneration.current) return;
+      setCompanyLogos(previous => ({ ...previous, [companyId]: logo?.imageDataUrl ?? null }));
+      setLogoErrors(previous => previous.filter(id => id !== companyId));
+    } catch {
+      if (generation === companyGeneration.current) setLogoErrors(previous => previous.includes(companyId) ? previous : [...previous, companyId]);
+    } finally { if (generation === companyGeneration.current) pendingLogos.current.delete(companyId); }
+  };
+
+  const loadSellerOffers = async (company: Company, more = false, generation = companyGeneration.current) => {
+    setOffersLoading(previous => [...previous, company.id]);
+    setOffersError(null);
+    try {
+      const page = await companyOfferRepository.getPublishedForCompany(company.id, more && offerCursors[company.id] ? offerCursors[company.id]! : undefined);
+      if (generation !== companyGeneration.current) return;
+      setCompanyOffers(previous => ({ ...previous, [company.id]: more ? [...(previous[company.id] || []), ...page.items.filter(item => !(previous[company.id] || []).some(existing => existing.id === item.id))] : page.items }));
+      setOfferCursors(previous => ({ ...previous, [company.id]: page.nextCursor }));
+      void loadSellerLogo(company.id, generation);
+    } catch (error) { if (generation === companyGeneration.current) setOffersError(authErrorMessage(error)); }
+    finally { if (generation === companyGeneration.current) setOffersLoading(previous => previous.filter(id => id !== company.id)); }
+  };
+
+  const loadSellerCompanies = async (more = false, generation = companyGeneration.current) => {
+    setCompaniesLoading(true); setOffersError(null);
+    try {
+      const page = await companyOfferRepository.loadActiveCompanies(more && companyCursor ? companyCursor : undefined);
+      if (generation !== companyGeneration.current) return;
+      setSellerCompanies(previous => more ? [...previous, ...page.items.filter(item => !previous.some(existing => existing.id === item.id))] : page.items);
+      setCompanyCursor(page.nextCursor);
+      if (!more) await Promise.all(page.items.slice(0, 3).map(company => loadSellerOffers(company, false, generation)));
+    } catch (error) { if (generation === companyGeneration.current) setOffersError(authErrorMessage(error)); }
+    finally { if (generation === companyGeneration.current) setCompaniesLoading(false); }
+  };
+
+  useEffect(() => {
+    const generation = ++companyGeneration.current;
+    setSellerCompanies([]); setCompanyOffers({}); setOfferCursors({}); setCompanyCursor(null);
+    setCompanyLogos({}); setLogoErrors([]); requestedLogos.current.clear(); pendingLogos.current.clear();
+    setOffersLoading([]); setCompaniesLoading(false); setOffersError(null); setSelectedSeller('all');
+    if (firebaseConfigured && !isDemoSession) void loadSellerCompanies(false, generation);
+    return () => { ++companyGeneration.current; };
+  }, [isDemoSession]);
 
   // Build concrete 1-card-1-item SKUs (1 card = 1 weight, 1 color, 1 manufacturer, 1 profile, 1 direct store link)
   const concreteSkus = useMemo(() => {
     const byId = new Map(filaments.map((item) => [item.id, item]));
-    return buildConcreteFilamentSkus(filaments).map((sku) => {
+    const globalSkus = buildConcreteFilamentSkus(filaments).map((sku) => {
       const filament = byId.get(sku.parentFilamentId)!;
       const profile = tempProfiles[sku.type];
       return {
@@ -164,12 +237,25 @@ export const FilamentsDirectoryPage: React.FC = () => {
         profileNotes: profile?.notes,
       };
     });
-  }, [filaments, tempProfiles]);
+    const sellerSkus = sellerCompanies.flatMap(company => (companyOffers[company.id] || []).map(offer => {
+      const sku = toConcreteCompanyOffer(offer, company, tempProfiles);
+      const knownBrand = manufacturers.find(manufacturer => manufacturer.name.toLocaleLowerCase('uk') === offer.brand.toLocaleLowerCase('uk'));
+      return { ...sku, ...(knownBrand ? { manufacturerId: knownBrand.id } : {}), ...(companyLogos[company.id] ? { companyLogoDataUrl: companyLogos[company.id]! } : {}) };
+    }));
+    return [...globalSkus, ...sellerSkus];
+  }, [filaments, tempProfiles, sellerCompanies, companyOffers, companyLogos, manufacturers]);
+
+  const manufacturerChoices = useMemo(() => {
+    const choices = new Map(manufacturers.map(manufacturer => [manufacturer.id, manufacturer.name]));
+    concreteSkus.forEach(sku => { if (!choices.has(sku.manufacturerId)) choices.set(`brand:${sku.brand.toLocaleLowerCase('uk')}`, sku.brand); });
+    return Array.from(choices, ([id, name]) => ({ id, name }));
+  }, [manufacturers, concreteSkus]);
 
   // Distinct plastic types available across concrete SKUs
   const plasticTypes = useMemo(() => {
-    const types = Array.from(new Set(concreteSkus.map((s) => s.type)));
-    return ['all', ...types];
+    const types = new Map<string, string>();
+    concreteSkus.forEach(sku => { const key = sku.type.toLocaleLowerCase('uk'); if (!types.has(key)) types.set(key, sku.type); });
+    return ['all', ...types.values()];
   }, [concreteSkus]);
 
   // Manufacturers map for quick lookup
@@ -181,7 +267,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
   // Toggle user like / favorite
   const handleToggleLike = async (id: string) => {
-    if (!user) { navigate('/login'); return; }
+    if (!allowPrivateAction()) return;
     try { setLikedIds(await catalogAdminRepository.toggleLike(id)); }
     catch (error) { setCatalogError(authErrorMessage(error)); }
   };
@@ -204,11 +290,12 @@ export const FilamentsDirectoryPage: React.FC = () => {
         sku.description.toLowerCase().includes(q);
 
       // 2. Plastic Type Filter
-      const matchesType = selectedType === 'all' || sku.type === selectedType;
+      const matchesType = selectedType === 'all' || sku.type.toLocaleLowerCase('uk') === selectedType.toLocaleLowerCase('uk');
 
       // 3. Manufacturer Filter
       const matchesManufacturer =
-        selectedManufacturer === 'all' || sku.manufacturerId === selectedManufacturer;
+        selectedManufacturer === 'all' || sku.manufacturerId === selectedManufacturer
+        || selectedManufacturer === `brand:${sku.brand.toLocaleLowerCase('uk')}`;
 
       // 4. Color Tone Filter (exact 1 color tone match)
       const matchesColor =
@@ -229,6 +316,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
         !likesOnlyFilter ||
         likedIds.includes(sku.id) ||
         likedIds.includes(sku.parentFilamentId);
+      const matchesSeller = selectedSeller === 'all' || (selectedSeller === 'directory' ? !sku.companyId : sku.companyId === selectedSeller);
 
       return (
         matchesSearch &&
@@ -237,7 +325,8 @@ export const FilamentsDirectoryPage: React.FC = () => {
         matchesColor &&
         matchesPackaging &&
         matchesStock &&
-        matchesLikes
+        matchesLikes &&
+        matchesSeller
       );
     });
 
@@ -272,10 +361,41 @@ export const FilamentsDirectoryPage: React.FC = () => {
     likesOnlyFilter,
     sortBy,
     likedIds,
+    packagingFilter,
+    selectedSeller,
   ]);
 
+  const previousAnalyticsFilters = useRef({ search: '', filters: '' });
+  const pendingAnalyticsFilters = useRef({ search: false, filter: false });
+  useEffect(() => {
+    const filters = JSON.stringify([selectedType, selectedManufacturer, selectedColorTone, packagingFilter, stockFilter, likesOnlyFilter, selectedSeller, sortBy]);
+    const previous = previousAnalyticsFilters.current;
+    if (searchQuery.trim() !== previous.search) pendingAnalyticsFilters.current.search = true;
+    if (previous.filters && filters !== previous.filters) pendingAnalyticsFilters.current.filter = true;
+    previousAnalyticsFilters.current = { search: searchQuery.trim(), filters };
+    if (activeTab !== 'catalog' || analyticsDisabled || isDemoSession || !concreteSkus.length) { pendingAnalyticsFilters.current = { search: false, filter: false }; return; }
+    const timer = setTimeout(() => {
+      const pending = pendingAnalyticsFilters.current;
+      if (!pending.search && !pending.filter) return;
+      const dimensions: AnalyticsDimensions = { materialType: analyticsMaterialCategory(selectedType), packaging: packagingFilter,
+        stock: stockFilter, hasSearch: Boolean(searchQuery.trim()), resultCount: Math.min(100000, filteredSkus.length) };
+      if (pending.search) analyticsService.track('search', dimensions);
+      if (pending.filter) analyticsService.track('filter', dimensions);
+      if (!filteredSkus.length) analyticsService.track('no_results', dimensions);
+      pendingAnalyticsFilters.current = { search: false, filter: false };
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [searchQuery, selectedType, selectedManufacturer, selectedColorTone, packagingFilter, stockFilter, likesOnlyFilter, selectedSeller, sortBy, filteredSkus.length, concreteSkus.length, activeTab, analyticsDisabled, isDemoSession]);
+
+  const allowPrivateAction = () => {
+    if (!user) { navigate('/auth/login'); return false; }
+    if (!isDemoSession && user.isBlocked) { navigate('/app'); return false; }
+    if (!isDemoSession && !user.emailVerified) { navigate('/auth/check-email'); return false; }
+    return true;
+  };
+
   const handleAddMaterialToWorkshop = async (sku: ConcreteFilamentSku) => {
-    if (!user) { navigate('/login'); return; }
+    if (!allowPrivateAction()) return;
     try {
       await addMaterial({
       name: sku.name,
@@ -292,12 +412,15 @@ export const FilamentsDirectoryPage: React.FC = () => {
       notes: `Виробник: ${sku.brand}. Колір: ${sku.colorName}. Вага: ${sku.weightKgDisplay}. Сопло: ${sku.profileNozzle}, Стіл: ${sku.profileBed}. Магазин: ${sku.storeName}. Посилання: ${sku.storeUrl}. Додано з каталогу KILO·G.`,
     });
 
+    analyticsService.track('add_material', analyticsDimensions(sku));
+
     setAddedMaterialId(sku.id);
     setTimeout(() => setAddedMaterialId(null), 2500);
     } catch (error) { setCatalogError(authErrorMessage(error)); }
   };
 
   const handleCalculatePrint = (sku: ConcreteFilamentSku) => {
+    if (!allowPrivateAction()) return;
     sessionStorage.setItem(
       'kilog_preselect_material',
       JSON.stringify({
@@ -320,51 +443,37 @@ export const FilamentsDirectoryPage: React.FC = () => {
       <PublicNavbar />
 
       <main className="flex-1">
-        {!firebaseConfigured && !isDemoSession && <p role="status" className="max-w-6xl mx-auto p-4 text-sm text-amber-700">Каталог використовує початкові дані. Для акаунтів і синхронізації потрібне налаштування Firebase.</p>}
-        {catalogError && <p role="alert" className="max-w-6xl mx-auto p-4 text-sm text-red-700">{catalogError}</p>}
+        {!firebaseConfigured && !isDemoSession && <p role="status" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-amber-700">Показано базовий каталог.</p>}
+        {catalogError && <p role="alert" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-red-700">{catalogError}</p>}
+        <div className="px-4 sm:px-6 lg:px-8 py-2 text-xs text-neutral-500 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!analyticsDisabled} onChange={event => { const disabled = !event.target.checked; setAnalyticsDisabled(disabled); analyticsService.setOptedOut(disabled); }} />Дозволити анонімну аналітику</label>
+          <NavLink to="/privacy" className="underline hover:text-primary-600">Приватність</NavLink>
+        </div>
         {/* Header Hero Section */}
-        <section className="bg-white dark:bg-neutral-900/60 border-b border-neutral-200 dark:border-neutral-800 py-10 px-4 sm:px-6 lg:px-8">
-          <div className="max-w-6xl mx-auto space-y-4">
+        <section className="bg-white dark:bg-neutral-900/60 border-b border-neutral-200 dark:border-neutral-800 py-6 px-4 sm:px-6 lg:px-8">
+          <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="inline-flex items-center gap-2 text-xs font-medium text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 px-3 py-1 rounded-full border border-emerald-200 dark:border-emerald-800/80">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400" />
-                <span>Відкритий каталог пластиків KILO·G</span>
+              <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-neutral-900 dark:text-white">Каталог пластиків</h1>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {(!isDemoSession && (user?.role === 'admin' || user?.role === 'manager')) && (
+                  <NavLink
+                    to="/app/admin/catalog"
+                    className="inline-flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:text-emerald-600 dark:hover:text-emerald-400 bg-white dark:bg-neutral-800 px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors shadow-2xs font-bold"
+                    title="Керувати каталогом"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>Керувати каталогом</span>
+                  </NavLink>
+                )}
+                <NavLink to="/app/calculator" className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">
+                  Розрахувати вартість <ArrowRight className="w-3.5 h-3.5" />
+                </NavLink>
               </div>
-
-              {/* Quick Admin & Add Filament Link */}
-              {(!isDemoSession && user?.isAdmin === true) && <div className="flex items-center gap-2">
-                <NavLink
-                  to="/app/admin/catalog"
-                  className="inline-flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:text-emerald-600 dark:hover:text-emerald-400 bg-white dark:bg-neutral-800 px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors shadow-2xs font-bold"
-                  title="Додати новий філамент або бренд"
-                >
-                  <Plus className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                  <span>+ Додати позицію / бренд</span>
-                </NavLink>
-
-                <NavLink
-                  to="/app/admin/catalog"
-                  className="inline-flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 bg-neutral-100 dark:bg-neutral-800/80 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors"
-                  title="Панель адміністратора каталогу"
-                >
-                  <Lock className="w-3.5 h-3.5" />
-                  <span>Адмінка</span>
-                </NavLink>
-              </div>}
             </div>
 
-            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-              <div>
-                <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-neutral-900 dark:text-white">
-                  Каталог пластиків та виробників 3D-друку
-                </h1>
-                <p className="text-sm sm:text-base text-neutral-600 dark:text-neutral-300 max-w-3xl leading-relaxed mt-2">
-                  Кожна картка — це одна конкретна позиція: <strong>1 виробник</strong>, <strong>1 колір</strong>, <strong>1 вага котушки</strong>, <strong>1 профіль друку</strong> та <strong>1 пряме посилання</strong> на сторінку товару продавця.
-                </p>
-              </div>
-
               {/* Navigation Tabs */}
-              <div className="flex items-center gap-1.5 p-1 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-xs shrink-0 self-start md:self-auto overflow-x-auto no-scrollbar max-w-full">
+              <div className="flex items-center gap-1.5 p-1 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-xs w-fit overflow-x-auto no-scrollbar max-w-full">
                 <button
                   type="button"
                   onClick={() => setActiveTab('catalog')}
@@ -374,7 +483,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
                       : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900'
                   }`}
                 >
-                  Каталог карток ({concreteSkus.length})
+                  Пластики ({concreteSkus.length})
                 </button>
                 <button
                   type="button"
@@ -398,38 +507,42 @@ export const FilamentsDirectoryPage: React.FC = () => {
                   }`}
                 >
                   <Flame className="w-3.5 h-3.5 text-amber-500" />
-                  Температурні стандарти
+                  Профілі друку
                 </button>
               </div>
-            </div>
-
-            {/* Universal Slicer Support Notice */}
-            <div className="p-3 bg-neutral-100/80 dark:bg-neutral-800/60 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-neutral-600 dark:text-neutral-300">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>
-                  <strong>Сумісність:</strong> KILO·G підтримує <strong>будь-який файл нарізки .gcode.3mf</strong> з Bambu Studio, OrcaSlicer, PrusaSlicer, Creality Print, Elegoo Slicer.
-                </span>
-              </div>
-              <NavLink
-                to="/app/calculator"
-                className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 font-semibold whitespace-nowrap flex items-center gap-1 self-end sm:self-auto"
-              >
-                <span>Розрахувати собівартість</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </NavLink>
-            </div>
           </div>
         </section>
 
         {/* TAB 1: FILAMENTS CATALOG */}
         {activeTab === 'catalog' && (
-          <section className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+          <section className="px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+            {firebaseConfigured && !isDemoSession && <div className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 space-y-3">
+              <label htmlFor="catalog-seller" className="block text-xs font-medium">Продавець / компанія</label>
+              <select id="catalog-seller" className="w-full sm:max-w-md px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm" value={selectedSeller} onChange={event => {
+                const id = event.target.value;
+                setSelectedSeller(id);
+                const company = sellerCompanies.find(item => item.id === id);
+                if (company && !(id in companyOffers) && !offersLoading.includes(id)) void loadSellerOffers(company);
+              }}>
+                <option value="all">Усі пропозиції</option><option value="directory">Каталог KILO·G</option>{sellerCompanies.map(company => <option key={company.id} value={company.id}>{company.name}</option>)}
+              </select>
+              {(companiesLoading || offersLoading.length > 0) && <p role="status" className="text-xs text-neutral-500">Завантаження пропозицій компаній…</p>}
+              {offersError && <p role="alert" className="text-xs text-red-600">Не вдалося завантажити частину пропозицій. {offersError}</p>}
+              {logoErrors.length > 0 && <p role="status" className="text-xs text-neutral-500">Частину логотипів компаній не вдалося завантажити. Пропозиції доступні. <button type="button" className="underline hover:text-emerald-600" onClick={() => { logoErrors.slice(0, 3).forEach(id => { if (pendingLogos.current.has(id)) return; requestedLogos.current.delete(id); void loadSellerLogo(id); }); }}>Повторити завантаження логотипів</button></p>}
+              <div className="flex flex-wrap gap-2">
+                {sellerCompanies.some(company => !(company.id in companyOffers)) && <Button variant="outline" size="sm" disabled={companiesLoading || offersLoading.length > 0} onClick={() => {
+                  void Promise.all(sellerCompanies.filter(company => !(company.id in companyOffers)).slice(0, 3).map(company => loadSellerOffers(company)));
+                }}>Завантажити пропозиції наступних компаній</Button>}
+                {companyCursor && <Button variant="outline" size="sm" disabled={companiesLoading || offersLoading.length > 0} onClick={() => { void loadSellerCompanies(true); }}>Завантажити ще компанії</Button>}
+                {offersError && <Button variant="outline" size="sm" disabled={companiesLoading || offersLoading.length > 0} onClick={() => { void loadSellerCompanies(); }}>Повторити завантаження компаній</Button>}
+              </div>
+              {(companyCursor || sellerCompanies.some(company => !(company.id in companyOffers) || offerCursors[company.id])) && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">Є ще пропозиції. Завантажте їх для повного пошуку.</p>}
+            </div>}
             {/* Filter Toolbar Header & Toggle Bar */}
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold text-neutral-900 dark:text-white">
-                  Знайдено позицій: {filteredSkus.length}
+                  Показано: {filteredSkus.length}
                 </span>
                 {activeFiltersCount > 0 && (
                   <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
@@ -451,6 +564,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
                       setStockFilter('all');
                       setLikesOnlyFilter(false);
                       setSearchQuery('');
+                      setSelectedSeller('all');
                     }}
                     className="text-xs text-neutral-500 hover:text-neutral-900 dark:hover:text-white underline cursor-pointer"
                   >
@@ -489,6 +603,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
                   {/* Search Box (Takes full width on mobile, 1 col on desktop) */}
                   <div className="sm:col-span-2 lg:col-span-1">
                     <Input
+                      aria-label="Пошук пластиків"
                       placeholder="Пошук (PLA, eSUN, Bambu)..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
@@ -502,12 +617,13 @@ export const FilamentsDirectoryPage: React.FC = () => {
                       Виробник (Бренд):
                     </label>
                     <select
+                      aria-label="Виробник (Бренд)"
                       value={selectedManufacturer}
                       onChange={(e) => setSelectedManufacturer(e.target.value)}
                       className="w-full py-2 px-2.5 text-xs rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white font-medium focus:ring-1 focus:ring-emerald-500"
                     >
-                      <option value="all">Усі виробники ({manufacturers.length})</option>
-                      {manufacturers.map((m) => (
+                      <option value="all">Усі виробники ({manufacturerChoices.length})</option>
+                      {manufacturerChoices.map((m) => (
                         <option key={m.id} value={m.id}>
                           {m.name}
                         </option>
@@ -587,8 +703,8 @@ export const FilamentsDirectoryPage: React.FC = () => {
                       const count =
                         typeKey === 'all'
                           ? concreteSkus.length
-                          : concreteSkus.filter((s) => s.type === typeKey).length;
-                      const isSelected = selectedType === typeKey;
+                          : concreteSkus.filter((s) => s.type.toLocaleLowerCase('uk') === typeKey.toLocaleLowerCase('uk')).length;
+                      const isSelected = selectedType.toLocaleLowerCase('uk') === typeKey.toLocaleLowerCase('uk');
 
                       return (
                         <button
@@ -734,8 +850,8 @@ export const FilamentsDirectoryPage: React.FC = () => {
               </div>
             ) : (
               /* Compact quick bar when filters are collapsed */
-              <div className="p-3 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-3 shadow-2xs">
-                <div className="flex items-center gap-2 flex-1 max-w-md">
+              <div className="p-3 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                <div className="flex items-center gap-2 flex-1 min-w-0 max-w-md">
                   <Search className="w-4 h-4 text-neutral-400 shrink-0" />
                   <input
                     type="text"
@@ -767,7 +883,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
             )}
 
             {/* Filaments Grid: 1 card = 1 manufacturer, 1 color, 1 weight, 1 profile, 1 direct store link */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 sm:gap-6">
               {filteredSkus.length === 0 ? (
                 <div className="col-span-full py-16 text-center text-neutral-500 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-8">
                   Нічого не знайдено за вибраними фільтрами.
@@ -783,6 +899,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
                         setStockFilter('all');
                         setLikesOnlyFilter(false);
                         setSearchQuery('');
+                        setSelectedSeller('all');
                       }}
                     >
                       Скинути всі фільтри
@@ -802,16 +919,21 @@ export const FilamentsDirectoryPage: React.FC = () => {
                     onCalculatePrint={handleCalculatePrint}
                     onSelectType={(t) => setSelectedType(t)}
                     onOpenDetails={handleOpenDetails}
+                    onImpression={analyticsDisabled || isDemoSession ? undefined : sku => analyticsService.impression(sku.offerId || sku.id, analyticsDimensions(sku))}
+                    onSellerClick={sku => analyticsService.track('seller_click', analyticsDimensions(sku))}
                   />
                 ))
               )}
             </div>
+            {sellerCompanies.some(company => offerCursors[company.id]) && <div className="space-y-2">
+              <p className="text-xs text-neutral-500">Наступні пропозиції продавців:</p><div className="flex flex-wrap gap-2">{sellerCompanies.filter(company => offerCursors[company.id] && (selectedSeller === 'all' || selectedSeller === company.id)).map(company => <Button key={company.id} variant="outline" size="sm" disabled={offersLoading.includes(company.id)} onClick={() => { void loadSellerOffers(company, true); }}>Ще пропозиції: {company.name}</Button>)}</div>
+            </div>}
           </section>
         )}
 
         {/* TAB 2: MANUFACTURERS LIST */}
         {activeTab === 'manufacturers' && (
-          <section className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+          <section className="px-4 sm:px-6 lg:px-8 py-6 space-y-6">
             <div className="bg-white dark:bg-neutral-900 p-6 rounded-2xl border border-neutral-200 dark:border-neutral-800 space-y-4">
               <h2 className="text-xl font-bold text-neutral-900 dark:text-white flex items-center gap-2">
                 <Building2 className="w-5 h-5 text-emerald-600" />
@@ -904,7 +1026,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
         {/* TAB 3: STANDARD TEMPERATURE PROFILES */}
         {activeTab === 'temperatures' && (
-          <section className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+          <section className="px-4 sm:px-6 lg:px-8 py-6 space-y-6">
             <div className="bg-white dark:bg-neutral-900 p-6 rounded-2xl border border-neutral-200 dark:border-neutral-800 space-y-4">
               <h2 className="text-xl font-bold text-neutral-900 dark:text-white flex items-center gap-2">
                 <Flame className="w-5 h-5 text-amber-500" />
@@ -986,9 +1108,10 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
       {/* POPUP: Detailed Product Information Modal */}
       <FilamentDetailsModal
+        onSellerClick={sku => analyticsService.track('seller_click', analyticsDimensions(sku))}
         isOpen={isDetailsModalOpen}
         onClose={handleCloseDetails}
-        sku={selectedSkuForModal}
+        sku={selectedSkuForModal?.companyId ? { ...selectedSkuForModal, companyLogoDataUrl: companyLogos[selectedSkuForModal.companyId] || undefined } : selectedSkuForModal}
         manufacturer={
           selectedSkuForModal
             ? manufacturerMap.get(selectedSkuForModal.manufacturerId)

@@ -1,0 +1,2 @@
+# D1's remote SQL splitter requires LF when migrations contain triggers.
+migrations/*.sql text eol=lf
