@@ -132,7 +132,12 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
         if (receipt && Number(receipt.cursor) > cursor) return receipt.results as ImportItemResult[];
         if (receipt && Number(receipt.cursor) !== cursor) throw new ApiError(409, 'Некоректний порядок черги.');
         const pending = new Map<string, Document>();
-        const read = async (path: string) => pending.get(path) || await c.read(path, transaction);
+        const reads = new Map<string, Document | null>();
+        const read = async (path: string) => {
+          if (pending.has(path)) return pending.get(path)!;
+          if (!reads.has(path)) reads.set(path, await c.read(path, transaction));
+          return reads.get(path)!;
+        };
         const stamp = now();
         const changeId = crypto.randomUUID();
         async function companyByDomain(domain: string): Promise<Document | null> {

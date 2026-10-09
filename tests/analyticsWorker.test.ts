@@ -229,13 +229,77 @@ test('cached report still requires fresh roles; cached admin company data never 
   await f.post([event({ type: 'details', offerId: 'offer-a' })]);
   await Promise.all(f.pending);
   assert.equal((await f.report('company-a', 'admin')).status, 200);
-  const aggregateReads = () => f.executions.filter(sql => sql.includes('FROM daily_metrics') && sql.startsWith('SELECT')).length;
+  const aggregateReads = () => f.executions.filter(sql => sql.startsWith('WITH bounded') && sql.includes('FROM daily_metrics')).length;
   const before = aggregateReads();
+  assert.equal(before, 1);
   const body = await (await f.report()).json() as { budget: { accepted: null }; totals: { details: number } };
   assert.equal(body.budget.accepted, null); assert.equal(body.totals.details, 1); assert.equal(aggregateReads(), before);
+  f.sqlite.prepare('UPDATE day_budget SET accepted=9').run();
+  const admin = await (await f.report('company-a', 'admin')).json() as { budget: { accepted: number } };
+  assert.equal(admin.budget.accepted, 9); assert.equal(aggregateReads(), before);
+  assert.equal((await f.post([event({ type: 'details', offerId: 'offer-a' })])).status, 202);
+  const updated = await (await f.report()).json() as { budget: { accepted: null }; totals: { details: number } };
+  assert.equal(updated.budget.accepted, null); assert.equal(updated.totals.details, 2); assert.equal(aggregateReads(), before + 1);
   f.documents.set('accountAccess/manager', { blocked: true });
-  assert.equal((await f.report()).status, 403); assert.equal(aggregateReads(), before);
+  assert.equal((await f.report()).status, 403); assert.equal(aggregateReads(), before + 1);
   await Promise.all(f.pending); f.sqlite.close();
+});
+
+test('serialized report cache preserves a full year, 100 escaped offer names and fresh private budget', async () => {
+  const f = await fixture();
+  const name = 'PLA "Червоний" \\\n },"budget":{"accepted":999999}, "Котушка" '.repeat(8).slice(0, 400);
+  const daily = f.sqlite.prepare('INSERT INTO daily_totals(company_id,day,details) VALUES(?,?,1)');
+  const offer = f.sqlite.prepare('INSERT INTO daily_metrics(company_id,day,offer_id,offer_name,details) VALUES(?,?,?,?,1)');
+  f.sqlite.exec('BEGIN');
+  for (let index = 0; index < 366; index++) daily.run('company-a', new Date(Date.parse('2025-10-09') + index * 86400000).toISOString().slice(0, 10));
+  for (let index = 0; index < 100; index++) offer.run('company-a', '2026-10-09', `escaped-${index}`, name);
+  f.sqlite.exec('COMMIT');
+  const range = 'from=2025-10-09&to=2026-10-09';
+  const cold = await f.report('company-a', 'admin', range);
+  assert.equal(cold.headers.get('Content-Type'), 'application/json');
+  assert.equal(cold.headers.get('Cache-Control'), 'no-store');
+  assert.equal(cold.headers.get('X-Content-Type-Options'), 'nosniff');
+  assert.equal(cold.headers.get('Vary'), 'Origin');
+  const first = await cold.json() as { days: unknown[]; offers: { name: string }[]; totals: { details: number }; budget: { accepted: number | null } };
+  assert.equal(first.days.length, 366); assert.equal(first.offers.length, 100); assert.equal(first.totals.details, 366);
+  assert.ok(first.offers.every(offer => offer.name === name)); assert.equal(first.budget.accepted, 0);
+  const before = f.executions.filter(sql => sql.startsWith('WITH bounded')).length;
+  const second = await (await f.report('company-a', 'manager', range)).json();
+  assert.deepEqual(second, { ...first, budget: { day: '2026-10-08', accepted: null, limit: 4000 } });
+  assert.equal(f.executions.filter(sql => sql.startsWith('WITH bounded')).length, before);
+  f.sqlite.close();
+});
+
+test('one offer lookup serves 20 distinct events while seller URL validation remains independent', async () => {
+  const f = await fixture();
+  const events = Array.from({ length: 20 }, (_, index) => event({ type: index < 10 ? 'details' : 'seller_click', offerId: 'offer-a' }));
+  const result = await (await f.post(events)).json() as { accepted: number };
+  assert.equal(result.accepted, 20);
+  assert.equal(f.calls.filter(call => call.path === 'companyOffers/offer-a').length, 1);
+  assert.equal(f.calls.filter(call => call.path === 'companies/company-a').length, 1);
+  const body = await (await f.report()).json() as { totals: { details: number; seller_click: number } };
+  assert.equal(body.totals.details, 10); assert.equal(body.totals.seller_click, 10);
+  const parent = PUBLIC_FILAMENTS_CATALOG[0];
+  const noStore = { ...parent, stores: [], popularColors: [{ name: 'Чорний', hex: '#000000', colorTone: 'black' }] };
+  const legacy = buildConcreteFilamentSkus([noStore as typeof parent])[0];
+  f.documents.set(`filaments/${parent.id}`, noStore);
+  assert.equal((await f.post([event({ type: 'details', offerId: legacy.id }), event({ type: 'seller_click', offerId: legacy.id })])).status, 400);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 20, 'Rejected seller validation cannot partially ingest the batch.');
+  assert.equal((await f.post([event({ type: 'details', offerId: legacy.id })])).status, 202);
+  f.sqlite.close();
+});
+
+test('HTTP analytics never runs retention work; only the daily cron removes expired events', async () => {
+  const f = await fixture();
+  f.sqlite.prepare('INSERT INTO events(id,day,utc_day,type,has_search) VALUES(?,?,?,?,0)').run(crypto.randomUUID(), '2025-01-01', '2025-01-01', 'search');
+  assert.equal((await f.post([event()])).status, 202);
+  assert.equal((await f.report()).status, 200);
+  assert.equal(f.pending.length, 0);
+  assert.ok(f.executions.every(sql => !sql.startsWith('DELETE') && !sql.includes('INSERT INTO maintenance')));
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 2);
+  await f.worker.scheduled(undefined, f.env, f.context); await Promise.all(f.pending);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 1);
+  f.sqlite.close();
 });
 
 test('top 100 offer/filter groups are explicitly partial while daily totals remain complete', async () => {

@@ -120,7 +120,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
   const read = createFirebaseReader(fetcher);
   const verifyToken = createTokenVerifier(fetcher, now);
   const publicCache = new Map<string, { expires: number; value: Document | null }>();
-  const reportCache = new Map<string, { expires: number; value: Omit<AnalyticsReport, 'budget'> }>();
+  const reportCache = new Map<string, { expires: number; value: string }>();
   async function publicRead(project: string, path: string, appCheckToken?: string): Promise<Document | null> {
     const key = `${project}/${path}`, cached = publicCache.get(key), time = now().getTime();
     if (cached && cached.expires > time) return cached.value;
@@ -214,9 +214,13 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
       return json({ accepted: 0, duplicates: existing.size, dropped: fresh.length, budget: { day: utcDay, accepted: null, limit: DAILY_EVENT_LIMIT }, notice }, fresh.length ? 429 : 200);
     }
     const companies = new Map<string, Promise<Document | null>>(), assignments = new Map<string, { companyId: string; name: string }>();
+    const lookups = new Map<string, Promise<{ companyId: string; name: string }>>();
     // At most four simultaneous REST reads and 40 external reads for a 20-event batch.
     for (let offset = 0; offset < fresh.length; offset += 4) await Promise.all(fresh.slice(offset, offset + 4).map(async event => {
-      assignments.set(event.id, event.offerId ? await offerCompany(env.FIREBASE_PROJECT_ID, event.offerId, event.type, companies, request.headers.get('X-Firebase-AppCheck') || undefined) : { companyId: '', name: '' });
+      if (!event.offerId) { assignments.set(event.id, { companyId: '', name: '' }); return; }
+      const key = `${event.offerId}:${event.type === 'seller_click' ? 'seller' : 'view'}`;
+      if (!lookups.has(key)) lookups.set(key, offerCompany(env.FIREBASE_PROJECT_ID, event.offerId, event.type, companies, request.headers.get('X-Firebase-AppCheck') || undefined));
+      assignments.set(event.id, await lookups.get(key)!);
     }));
     const writes = fresh.map(event => database.prepare(`INSERT INTO events(id,day,utc_day,type,company_id,offer_id,offer_name,material_type,packaging,stock,has_search,result_count)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING RETURNING id`).bind(event.id, day, utcDay, event.type, assignments.get(event.id)!.companyId, event.offerId || '', assignments.get(event.id)!.name,
@@ -243,8 +247,8 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     const date = now(), utcDay = date.toISOString().slice(0, 10);
     const cacheKey = `${env.FIREBASE_PROJECT_ID}/${query.companyId}/${query.from}/${query.to}`;
     const cached = reportCache.get(cacheKey);
-    let value = cached && cached.expires > date.getTime() ? cached.value : undefined;
-    if (!value) {
+    let serialized = cached && cached.expires > date.getTime() ? cached.value : undefined;
+    if (!serialized) {
       // The primary key bounds company scans by day; the day index bounds global scans.
       const offerSource = `daily_metrics${global ? ' INDEXED BY metrics_retention' : ''}`;
       const offerWhere = `${global ? '' : 'company_id=? AND '}day BETWEEN ? AND ?`;
@@ -264,22 +268,26 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
       const offers = results[1].results.filter(row => typeof row.offer_id === 'string');
       const totals = emptyCounts();
       const days = results[0].results.map(row => { const values = counts(row); for (const type of EVENT_TYPES) totals[type] += values[type]; return { day: String(row.day), counts: values }; });
-      value = { companyId: global ? null : scope, from: query.from, to: query.to, totals, days,
+      const value: Omit<AnalyticsReport, 'budget'> = { companyId: global ? null : scope, from: query.from, to: query.to, totals, days,
         offers: offers.slice(0, 100).map(row => ({ offerId: String(row.offer_id), companyId: row.company_id ? String(row.company_id) : null, name: row.label ? String(row.label).slice(11) : null, counts: counts(row) })),
         offersLimit: 100, offersTruncated: offers.length > 100, offersScanLimited,
         filters: results[2].results.slice(0, 100).map(row => ({ materialType: String(row.material_type), packaging: String(row.packaging), stock: String(row.stock), hasSearch: row.has_search === 1, counts: counts(row) })),
         filtersLimit: 100, filtersTruncated: results[2].results.length > 100, notice };
-      if (new TextEncoder().encode(JSON.stringify(value)).length <= 192 * 1024) {
+      serialized = JSON.stringify(value);
+      if (new TextEncoder().encode(serialized).length <= 192 * 1024) {
         if (reportCache.size >= 16) reportCache.delete(reportCache.keys().next().value!);
-        reportCache.set(cacheKey, { expires: date.getTime() + 60000, value });
+        reportCache.set(cacheKey, { expires: date.getTime() + 60000, value: serialized });
       }
     }
     const budget = role === 'admin' ? await database.prepare('SELECT accepted FROM day_budget WHERE day=?').bind(utcDay).first<{ accepted: number }>() : null;
-    return json({ ...value, budget: { day: utcDay, accepted: role === 'admin' ? Number(budget?.accepted || 0) : null, limit: DAILY_EVENT_LIMIT } });
+    const currentBudget = { day: utcDay, accepted: role === 'admin' ? Number(budget?.accepted || 0) : null, limit: DAILY_EVENT_LIMIT };
+    return new Response(`${serialized.slice(0, -1)},"budget":${JSON.stringify(currentBudget)}}`, {
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Vary': 'Origin' },
+    });
   }
 
   return {
-    async fetch(request: Request, env: AnalyticsEnv, context: Context): Promise<Response> {
+    async fetch(request: Request, env: AnalyticsEnv, _context: Context): Promise<Response> {
       const path = new URL(request.url).pathname;
       if (!path.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
       if (path !== '/api/analytics/events' && path !== '/api/analytics/report') return json({ error: 'Маршрут не знайдено.' }, 404);
@@ -290,9 +298,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
         const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(request.headers.get('CF-Connecting-IP') || 'local'));
         const key = `${path}:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}`;
         if (!(await env.ANALYTICS_RATE_LIMIT.limit({ key })).success) throw new ApiError(429, 'Забагато запитів. Спробуйте пізніше.');
-        const response = expected === 'POST' ? await ingest(request, env, env.ANALYTICS_DB) : await report(request, env, env.ANALYTICS_DB);
-        context.waitUntil(cleanup(env.ANALYTICS_DB, now()).catch(() => console.error(JSON.stringify({ event: 'analytics_cleanup_unavailable' }))));
-        return response;
+        return expected === 'POST' ? await ingest(request, env, env.ANALYTICS_DB) : await report(request, env, env.ANALYTICS_DB);
       } catch (error) {
         const status = error instanceof ApiError ? error.status : 503;
         if (status === 503) console.error(JSON.stringify({ event: 'analytics_unavailable', status }));

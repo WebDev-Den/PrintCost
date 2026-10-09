@@ -16,7 +16,7 @@ export default {
   },
   queue(batch: { messages: ImportMessage[] }, env: ImportEnv) { return imports.queue(batch, env); },
   async scheduled(controller: { cron: string }, env: AnalyticsEnv & ImportEnv, context: Parameters<typeof analytics.fetch>[2]) {
-    if (controller.cron === '0 2 * * *') await analytics.scheduled(controller, env, context);
-    context.waitUntil(imports.scheduled(env).catch(() => console.error('import_outbox_unavailable')));
+    if (controller.cron === '0 2 * * *') return analytics.scheduled(controller, env, context);
+    if (controller.cron === '*/5 * * * *') context.waitUntil(imports.scheduled(env).catch(() => console.error('import_outbox_unavailable')));
   },
 };

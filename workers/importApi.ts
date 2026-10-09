@@ -154,7 +154,8 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         try { payload = normalizeImportPayload(JSON.parse(await boundedText(new Response(request.body, { headers: request.headers }), IMPORT_LIMITS.bytes))); }
         catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(422, error instanceof Error ? error.message : 'Некоректний JSON.'); }
         if (scope.role !== 'admin' && payload.companies.length) throw new ApiError(403, 'Компанії додає лише адміністратор.');
-        const hash = await digest(JSON.stringify(payload));
+        const serialized = JSON.stringify(payload);
+        const hash = await digest(serialized);
         const existing = await db.prepare('SELECT * FROM import_jobs WHERE owner_uid=? AND idempotency=?').bind(scope.uid, idempotency).first<JobRow>();
         if (existing) {
           if (existing.payload_hash !== hash) throw new ApiError(409, 'Idempotency-Key вже використано для іншого JSON.');
@@ -163,7 +164,7 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         const id = crypto.randomUUID(), time = seconds();
         try {
           await db.prepare('INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,payload,total,interval_seconds,created_at,updated_at,expires_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM import_jobs WHERE owner_uid=? AND idempotency=?)')
-            .bind(id, scope.uid, key.hash, scope.fingerprint, idempotency, hash, JSON.stringify(payload), payload.companies.length + payload.offers.length,
+            .bind(id, scope.uid, key.hash, scope.fingerprint, idempotency, hash, serialized, payload.companies.length + payload.offers.length,
               scope.role === 'admin' ? IMPORT_LIMITS.adminInterval : IMPORT_LIMITS.managerInterval, time, time, time + IMPORT_LIMITS.lifetime, scope.uid, idempotency).all();
         } catch (error) {
           const message = String(error);

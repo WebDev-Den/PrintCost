@@ -12,6 +12,8 @@ test('transactional import respects ownership, profiles, live roles and crash re
   const secret = JSON.stringify({ project_id: project, client_email: 'import@' + project + '.iam.gserviceaccount.com', private_key: keys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() });
   const users = new Map(['admin', 'manager', 'user'].map(uid => [uid, { localId: uid, emailVerified: true, validSince: '0' }]));
   const scopeBatches: string[][] = [];
+  const documentReads: string[] = [];
+  let authChecks = 0;
   let invalidScopeBatch = '';
   const adapter = createImportFirebase(async (input, init) => {
     const url = String(input);
@@ -23,6 +25,7 @@ test('transactional import respects ownership, profiles, live roles and crash re
       return Response.json({ access_token: 'fixture-access', expires_in: 3600 });
     }
     if (url.startsWith('https://identitytoolkit.googleapis.com/')) {
+      authChecks++;
       const uid = JSON.parse(init?.body as string).localId[0];
       return Response.json({ users: users.has(uid) ? [users.get(uid)] : [] });
     }
@@ -30,6 +33,7 @@ test('transactional import respects ownership, profiles, live roles and crash re
     const response = await fetch(url.replace('https://firestore.googleapis.com/v1/projects/' + project + '/databases/(default)/documents', root), { ...init, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' } });
     if (url.endsWith(':batchGet') && response.ok) {
       const documents = JSON.parse(init?.body as string).documents as string[];
+      documentReads.push(...documents);
       const rows = (await response.json()).reverse();
       if (documents.length === 4) {
         scopeBatches.push(documents);
@@ -95,6 +99,50 @@ test('transactional import respects ownership, profiles, live roles and crash re
   assert.equal((await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-fallback', fallback, 0))[0].companyId, companyId);
   await seed('memberships/manager', { active: true, companyId, version: 1, changeId: 'membership-a' });
   const manager = await adapter.scope(project, secret, 'manager');
+  await t.test('transaction read reuse includes missing profiles and never survives the next delivery', async () => {
+    const repeated = normalizeImportPayload({ offers: Array.from({ length: 8 }, (_, index) => ({
+      ...IMPORT_EXAMPLE.offers[0], companyId, externalId: 'cached-read-' + index,
+    })) });
+    const count = (path: string) => documentReads.filter(name => name.endsWith('/' + path)).length;
+    const companyBefore = count('companies/' + companyId), profileBefore = count('temperatureProfiles/PLA'), authBefore = authChecks;
+    const first = await adapter.process(project, secret, 'manager', manager.fingerprint, 'job-cached-reads', repeated, 0);
+    assert.equal(first.length, 5); assert.ok(first.every(result => result.success));
+    assert.equal(count('companies/' + companyId) - companyBefore, 2, 'Fresh scope and one resolver read, instead of one company read per offer.');
+    assert.equal(count('temperatureProfiles/PLA') - profileBefore, 1, 'A missing profile is reused only inside this transaction.');
+    await seed('temperatureProfiles/PLA', { plasticType: 'PLA', family: 'Композитні', nozzleRange: '190–225 °C' });
+    const second = await adapter.process(project, secret, 'manager', manager.fingerprint, 'job-cached-reads', repeated, 5);
+    assert.equal(second.length, 8); assert.ok(second.every(result => result.success));
+    for (const result of second.slice(5)) assert.equal((await read('companyOffers/' + result.offerId)).family, 'Композитні');
+    assert.equal(count('temperatureProfiles/PLA') - profileBefore, 2, 'The next delivery reads the newly created profile.');
+    assert.equal(authChecks - authBefore, 2, 'Account state is checked freshly for every delivery.');
+    const removed = await fetch(root + '/temperatureProfiles/PLA', { method: 'DELETE', headers: { Authorization: 'Bearer owner' } });
+    assert.ok(removed.ok);
+    const company = await read('companies/' + companyId);
+    const changed = await fetch(root + '/companies/' + companyId + '?updateMask.fieldPaths=allowedDomains', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+      body: JSON.stringify({ fields: encodeFields({ allowedDomains: ['new-shop.example.com'] }) }),
+    });
+    assert.ok(changed.ok);
+    const denied = await adapter.process(project, secret, 'manager', manager.fingerprint, 'job-domain-changed', repeated, 0);
+    assert.ok(denied.every(result => !result.success), 'A later transaction cannot use the old authorized domains.');
+    const restored = await fetch(root + '/companies/' + companyId + '?updateMask.fieldPaths=allowedDomains', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+      body: JSON.stringify({ fields: encodeFields({ allowedDomains: company.allowedDomains }) }),
+    });
+    assert.ok(restored.ok);
+  });
+  await t.test('pending company writes override cached reads and per-item rollback does not retain a failed auto company', async () => {
+    const change = normalizeImportPayload({ companies: [{ companyId, website: 'https://shop.example.com/',
+      allowedDomains: ['shop.example.com', 'new-shop.example.com'] }], offers: [
+      { ...IMPORT_EXAMPLE.offers[0], externalId: 'failed-auto', type: 'PA12', productUrl: 'https://rollback.example.com/first' },
+      { ...IMPORT_EXAMPLE.offers[0], externalId: 'pending-domain', companyId, productUrl: 'https://new-shop.example.com/pla' },
+      { ...IMPORT_EXAMPLE.offers[0], externalId: 'valid-auto', productUrl: 'https://rollback.example.com/second' },
+    ] });
+    const outcome = await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-pending-reuse', change, 0);
+    assert.deepEqual(outcome.map(result => result.success), [true, false, true, true]);
+    assert.equal((await read('companyOffers/' + outcome[2].offerId)).productUrl, 'https://new-shop.example.com/pla');
+    assert.equal((await read('companies/' + outcome[3].companyId)).version, 1, 'Only the successful item commits the auto company.');
+  });
   const foreign = normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], productUrl: 'https://foreign.example.com/p' }] });
   assert.equal((await adapter.process(project, secret, 'manager', manager.fingerprint, 'job-c', foreign, 0))[0].success, false);
   const blocked = normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], status: 'blocked' }] });

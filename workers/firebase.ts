@@ -40,9 +40,11 @@ export async function boundedText(response: Response, limit: number): Promise<st
       chunks.push(next.value);
     }
   } finally { reader.releaseLock(); }
-  const joined = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.length; }
+  const joined = chunks.length === 1 ? chunks[0] : new Uint8Array(size);
+  if (chunks.length > 1) {
+    let offset = 0;
+    for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.length; }
+  }
   return new TextDecoder('utf-8', { fatal: true }).decode(joined);
 }
 
@@ -74,26 +76,26 @@ function base64url(value: string): Uint8Array<ArrayBuffer> {
 
 export function createTokenVerifier(fetcher: typeof fetch, now: () => Date) {
   // Only Google's public keys are cached; identities and access decisions are always fresh.
-  let keys: { expires: number; fetched: number; values: Record<string, CryptoKey> } | undefined;
-  let loading: Promise<void> | undefined;
+  let keys: { expires: number; fetched: number; jwks: Record<string, JsonWebKey>; values: Record<string, CryptoKey> } | undefined;
+  let generation = 0;
   async function loadKeys(seconds: number) {
-    if (loading) return loading;
-    loading = (async () => {
-      let response: Response;
-      try { response = await fetcher(FIREBASE_JWKS_URL, { redirect: 'manual', signal: AbortSignal.timeout(8000) }); }
-      catch { throw new ApiError(503, 'Перевірка сесії тимчасово недоступна.'); }
-      if (!response.ok) throw new ApiError(503, 'Перевірка сесії тимчасово недоступна.');
-      const jwks = JSON.parse(await boundedText(response, 32 * 1024)) as { keys?: (JsonWebKey & { kid?: string })[] };
-      if (!Array.isArray(jwks.keys) || jwks.keys.length > 20) throw new ApiError(503, 'Перевірка сесії тимчасово недоступна.');
-      const imported: Record<string, CryptoKey> = Object.create(null);
-      for (const key of jwks.keys) if (typeof key.kid === 'string' && key.kid.length <= 200 && key.kty === 'RSA' &&
-          (!key.alg || key.alg === 'RS256') && (!key.use || key.use === 'sig')) {
-        imported[key.kid] = await crypto.subtle.importKey('jwk', key, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
-      }
-      const maxAge = Math.min(3600, Number(/max-age=(\d+)/.exec(response.headers.get('Cache-Control') || '')?.[1] || 300));
-      keys = { values: imported, expires: seconds + maxAge, fetched: seconds };
-    })();
-    try { await loading; } finally { loading = undefined; }
+    const started = ++generation;
+    let response: Response;
+    try { response = await fetcher(FIREBASE_JWKS_URL, { redirect: 'manual', signal: AbortSignal.timeout(8000) }); }
+    catch { throw new ApiError(503, 'Перевірка сесії тимчасово недоступна.'); }
+    if (!response.ok) throw new ApiError(503, 'Перевірка сесії тимчасово недоступна.');
+    const jwks = JSON.parse(await boundedText(response, 32 * 1024)) as { keys?: (JsonWebKey & { kid?: string })[] };
+    if (!Array.isArray(jwks.keys) || jwks.keys.length > 20) throw new ApiError(503, 'Перевірка сесії тимчасово недоступна.');
+    const publicKeys: Record<string, JsonWebKey> = Object.create(null);
+    for (const key of jwks.keys) if (typeof key.kid === 'string' && key.kid.length <= 200 && key.kty === 'RSA' &&
+        (!key.alg || key.alg === 'RS256') && (!key.use || key.use === 'sig')) {
+      publicKeys[key.kid] = key;
+    }
+    const maxAge = Math.min(3600, Number(/max-age=(\d+)/.exec(response.headers.get('Cache-Control') || '')?.[1] || 300));
+    // Cache resolved public data, never another request's in-flight fetch.
+    const loaded = { jwks: publicKeys, values: Object.create(null) as Record<string, CryptoKey>, expires: seconds + maxAge, fetched: seconds };
+    if (started === generation) keys = loaded;
+    return loaded;
   }
   return async (token: string, project: string): Promise<string> => {
     try {
@@ -110,8 +112,13 @@ export function createTokenVerifier(fetcher: typeof fetch, now: () => Date) {
           typeof claims.iat !== 'number' || !Number.isSafeInteger(claims.iat) || claims.iat < 0 || claims.iat > seconds || claims.exp <= claims.iat ||
           typeof claims.auth_time !== 'number' || !Number.isSafeInteger(claims.auth_time) || claims.auth_time < 0 || claims.auth_time > seconds ||
           claims.auth_time > claims.iat) throw new ApiError(401, 'Некоректна або прострочена сесія.');
-      if (!keys || keys.expires <= seconds || (!keys.values[header.kid] && keys.fetched <= seconds - 60)) await loadKeys(seconds);
-      const key = keys!.values[header.kid];
+      let current = keys;
+      if (!current || current.expires <= seconds || (!current.jwks[header.kid] && current.fetched <= seconds - 60)) current = await loadKeys(seconds);
+      let key = current.values[header.kid];
+      if (!key && current.jwks[header.kid]) {
+        key = await crypto.subtle.importKey('jwk', current.jwks[header.kid], { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+        current.values[header.kid] = key;
+      }
       if (!key || !await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, base64url(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`))) {
         throw new ApiError(401, 'Некоректна сесія.');
       }

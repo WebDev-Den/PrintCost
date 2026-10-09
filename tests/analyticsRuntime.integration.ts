@@ -215,8 +215,10 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       }
       await db.prepare('DELETE FROM maintenance WHERE day=?').bind(utcDay).run();
       assert.equal((await report(managerToken)).status, 200);
-      // dispatchFetch exposes waitUntil completion through the local worker proxy.
-      await mf!.getD1Database('ANALYTICS_DB');
+      assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM events WHERE utc_day<?').bind(expired + 'z').first<{ count: number }>())?.count, 4001,
+        'HTTP reports never spend their CPU budget on retention maintenance.');
+      const worker = await mf!.getWorker() as unknown as { scheduled(controller: { cron: string }): Promise<unknown> };
+      await worker.scheduled({ cron: '0 2 * * *' });
       let remaining = (await db.prepare('SELECT COUNT(*) AS count FROM events WHERE utc_day<?').bind(expired + 'z').first<{ count: number }>())?.count;
       for (let attempt = 0; remaining === 4001 && attempt < 10; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 10));
@@ -225,7 +227,8 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       assert.equal(remaining, 1);
       assert.equal((await db.prepare("SELECT SUM(search) AS count FROM daily_totals WHERE company_id='' AND day IN (?,?)").bind(expired, secondExpired).first<{ count: number }>())?.count, 4001, 'Deleting raw events never decrements retained daily aggregates.');
       assert.equal((await report(managerToken)).status, 200);
-      assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM events WHERE utc_day<?').bind(expired + 'z').first<{ count: number }>())?.count, 1, 'The second request cannot run the cleanup twice.');
+      await worker.scheduled({ cron: '0 2 * * *' });
+      assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM events WHERE utc_day<?').bind(expired + 'z').first<{ count: number }>())?.count, 1, 'The second daily cron cannot run the cleanup twice.');
     });
     await t.test('one bounded report snapshot protects full-month and full-year capacity', async () => {
       await db.prepare(`WITH RECURSIVE days(d) AS (SELECT 0 UNION ALL SELECT d+1 FROM days WHERE d<29), offers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM offers WHERE n<4000)
