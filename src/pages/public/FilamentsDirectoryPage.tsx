@@ -4,14 +4,12 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import {
   Search,
   ExternalLink,
-  Plus,
   Thermometer,
   Gauge,
   ShoppingCart,
   Check,
   ArrowRight,
   Filter,
-  Sparkles,
   Building2,
   Globe,
   Flame,
@@ -445,53 +443,38 @@ export const FilamentsDirectoryPage: React.FC = () => {
       <PublicNavbar />
 
       <main className="flex-1">
-        {!firebaseConfigured && !isDemoSession && <p role="status" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-amber-700">Каталог використовує початкові дані. Для акаунтів і синхронізації потрібне налаштування Firebase.</p>}
+        {!firebaseConfigured && !isDemoSession && <p role="status" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-amber-700">Показано базовий каталог.</p>}
         {catalogError && <p role="alert" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-red-700">{catalogError}</p>}
-        <div className="px-4 sm:px-6 lg:px-8 py-3 text-xs text-neutral-500 space-y-1"><label className="flex items-center gap-2"><input type="checkbox" checked={!analyticsDisabled} onChange={event => { const disabled = !event.target.checked; setAnalyticsDisabled(disabled); analyticsService.setOptedOut(disabled); }} />Дозволити знеособлену аналітику каталогу</label><p>Рахуємо перегляди, переходи, фільтри й додавання матеріалів без тексту пошуку та особистих даних. Вибір зберігається лише у цьому браузері. У демо аналітика вимкнена. <NavLink to="/privacy" className="underline hover:text-primary-600">Дані та приватність</NavLink>.</p></div>
+        <div className="px-4 sm:px-6 lg:px-8 py-2 text-xs text-neutral-500 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!analyticsDisabled} onChange={event => { const disabled = !event.target.checked; setAnalyticsDisabled(disabled); analyticsService.setOptedOut(disabled); }} />Дозволити анонімну аналітику</label>
+          <NavLink to="/privacy" className="underline hover:text-primary-600">Приватність</NavLink>
+        </div>
         {/* Header Hero Section */}
-        <section className="bg-white dark:bg-neutral-900/60 border-b border-neutral-200 dark:border-neutral-800 py-10 px-4 sm:px-6 lg:px-8">
+        <section className="bg-white dark:bg-neutral-900/60 border-b border-neutral-200 dark:border-neutral-800 py-6 px-4 sm:px-6 lg:px-8">
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="inline-flex items-center gap-2 text-xs font-medium text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 px-3 py-1 rounded-full border border-emerald-200 dark:border-emerald-800/80">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400" />
-                <span>Відкритий каталог пластиків KILO·G</span>
+              <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-neutral-900 dark:text-white">Каталог пластиків</h1>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {(!isDemoSession && user?.isAdmin === true) && (
+                  <NavLink
+                    to="/app/admin/catalog"
+                    className="inline-flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:text-emerald-600 dark:hover:text-emerald-400 bg-white dark:bg-neutral-800 px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors shadow-2xs font-bold"
+                    title="Керувати каталогом"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>Керувати каталогом</span>
+                  </NavLink>
+                )}
+                {!isDemoSession && (user?.role === 'manager' || user?.role === 'admin') && <NavLink to="/app/company/offers" className="text-xs font-semibold text-emerald-600 underline">Пропозиції компанії</NavLink>}
+                <NavLink to="/app/calculator" className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">
+                  Розрахувати вартість <ArrowRight className="w-3.5 h-3.5" />
+                </NavLink>
               </div>
-
-              {/* Quick Admin & Add Filament Link */}
-              {(!isDemoSession && user?.isAdmin === true) && <div className="flex items-center gap-2">
-                <NavLink
-                  to="/app/admin/catalog"
-                  className="inline-flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:text-emerald-600 dark:hover:text-emerald-400 bg-white dark:bg-neutral-800 px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors shadow-2xs font-bold"
-                  title="Додати новий філамент або бренд"
-                >
-                  <Plus className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                  <span>+ Додати позицію / бренд</span>
-                </NavLink>
-
-                <NavLink
-                  to="/app/admin/catalog"
-                  className="inline-flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 bg-neutral-100 dark:bg-neutral-800/80 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors"
-                  title="Панель адміністратора каталогу"
-                >
-                  <Lock className="w-3.5 h-3.5" />
-                  <span>Адмінка</span>
-                </NavLink>
-              </div>}
-              {!isDemoSession && (user?.role === 'manager' || user?.role === 'admin') && <NavLink to="/app/company/offers" className="text-xs font-semibold text-emerald-600 underline">Керувати пропозиціями компанії</NavLink>}
             </div>
 
-            <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
-              <div>
-                <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-neutral-900 dark:text-white">
-                  Каталог пластиків та виробників 3D-друку
-                </h1>
-                <p className="text-sm sm:text-base text-neutral-600 dark:text-neutral-300 max-w-3xl leading-relaxed mt-2">
-                  Кожна картка — це одна конкретна позиція: <strong>1 виробник</strong>, <strong>1 колір</strong>, <strong>1 вага котушки</strong>, <strong>1 профіль друку</strong> та <strong>1 пряме посилання</strong> на сторінку товару продавця.
-                </p>
-              </div>
-
               {/* Navigation Tabs */}
-              <div className="flex items-center gap-1.5 p-1 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-xs shrink-0 self-start lg:self-auto overflow-x-auto no-scrollbar max-w-full">
+              <div className="flex items-center gap-1.5 p-1 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-xs w-fit overflow-x-auto no-scrollbar max-w-full">
                 <button
                   type="button"
                   onClick={() => setActiveTab('catalog')}
@@ -501,7 +484,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
                       : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900'
                   }`}
                 >
-                  Каталог карток ({concreteSkus.length} завантажено)
+                  Пластики ({concreteSkus.length})
                 </button>
                 <button
                   type="button"
@@ -525,26 +508,9 @@ export const FilamentsDirectoryPage: React.FC = () => {
                   }`}
                 >
                   <Flame className="w-3.5 h-3.5 text-amber-500" />
-                  Температурні стандарти
+                  Профілі друку
                 </button>
               </div>
-            </div>
-
-            <div className="p-3 bg-neutral-100/80 dark:bg-neutral-800/60 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-neutral-600 dark:text-neutral-300">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>
-                  <strong>Сумісність:</strong> нарізані <strong>.3mf / .gcode.3mf</strong> Bambu Studio та OrcaSlicer і текстові <strong>.gcode</strong> PrusaSlicer, OrcaSlicer та Bambu Studio з підтримуваними даними часу друку й витрат кожного філаменту.
-                </span>
-              </div>
-              <NavLink
-                to="/app/calculator"
-                className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 font-semibold whitespace-nowrap flex items-center gap-1 self-end sm:self-auto"
-              >
-                <span>Розрахувати собівартість</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </NavLink>
-            </div>
           </div>
         </section>
 
@@ -559,9 +525,8 @@ export const FilamentsDirectoryPage: React.FC = () => {
                 const company = sellerCompanies.find(item => item.id === id);
                 if (company && !(id in companyOffers) && !offersLoading.includes(id)) void loadSellerOffers(company);
               }}>
-                <option value="all">Усі завантажені пропозиції</option><option value="directory">Початковий каталог</option>{sellerCompanies.map(company => <option key={company.id} value={company.id}>{company.name}</option>)}
+                <option value="all">Усі пропозиції</option><option value="directory">Каталог KILO·G</option>{sellerCompanies.map(company => <option key={company.id} value={company.id}>{company.name}</option>)}
               </select>
-              <p className="text-xs text-neutral-500">Пошук, фільтри й сортування працюють серед завантажених позицій. Пропозиції компаній завантажуються частинами по 50.</p>
               {(companiesLoading || offersLoading.length > 0) && <p role="status" className="text-xs text-neutral-500">Завантаження пропозицій компаній…</p>}
               {offersError && <p role="alert" className="text-xs text-red-600">Не вдалося завантажити частину пропозицій. {offersError}</p>}
               {logoErrors.length > 0 && <p role="status" className="text-xs text-neutral-500">Частину логотипів компаній не вдалося завантажити. Пропозиції доступні. <button type="button" className="underline hover:text-emerald-600" onClick={() => { logoErrors.slice(0, 3).forEach(id => { if (pendingLogos.current.has(id)) return; requestedLogos.current.delete(id); void loadSellerLogo(id); }); }}>Повторити завантаження логотипів</button></p>}
@@ -572,13 +537,13 @@ export const FilamentsDirectoryPage: React.FC = () => {
                 {companyCursor && <Button variant="outline" size="sm" disabled={companiesLoading || offersLoading.length > 0} onClick={() => { void loadSellerCompanies(true); }}>Завантажити ще компанії</Button>}
                 {offersError && <Button variant="outline" size="sm" disabled={companiesLoading || offersLoading.length > 0} onClick={() => { void loadSellerCompanies(); }}>Повторити завантаження компаній</Button>}
               </div>
-              {(companyCursor || sellerCompanies.some(company => !(company.id in companyOffers) || offerCursors[company.id])) && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">Ще є незавантажені компанії або пропозиції. Поточна кількість не охоплює весь каталог.</p>}
+              {(companyCursor || sellerCompanies.some(company => !(company.id in companyOffers) || offerCursors[company.id])) && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">Є ще пропозиції. Завантажте їх для повного пошуку.</p>}
             </div>}
             {/* Filter Toolbar Header & Toggle Bar */}
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold text-neutral-900 dark:text-white">
-                  Знайдено серед завантажених: {filteredSkus.length}
+                  Показано: {filteredSkus.length}
                 </span>
                 {activeFiltersCount > 0 && (
                   <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
