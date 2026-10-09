@@ -456,7 +456,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
               <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-neutral-900 dark:text-white">Каталог пластиків</h1>
 
               <div className="flex flex-wrap items-center gap-2">
-                {(!isDemoSession && user?.isAdmin === true) && (
+                {(!isDemoSession && (user?.role === 'admin' || user?.role === 'manager')) && (
                   <NavLink
                     to="/app/admin/catalog"
                     className="inline-flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:text-emerald-600 dark:hover:text-emerald-400 bg-white dark:bg-neutral-800 px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors shadow-2xs font-bold"
@@ -466,7 +466,6 @@ export const FilamentsDirectoryPage: React.FC = () => {
                     <span>Керувати каталогом</span>
                   </NavLink>
                 )}
-                {!isDemoSession && (user?.role === 'manager' || user?.role === 'admin') && <NavLink to="/app/company/offers" className="text-xs font-semibold text-emerald-600 underline">Пропозиції компанії</NavLink>}
                 <NavLink to="/app/calculator" className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">
                   Розрахувати вартість <ArrowRight className="w-3.5 h-3.5" />
                 </NavLink>

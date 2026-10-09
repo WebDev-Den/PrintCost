@@ -92,7 +92,8 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   assert.ok(!JSON.stringify(await (await request('api-key', adminJwt)).json()).includes(adminKey));
   assert.ok(!(await db.prepare('SELECT * FROM import_keys').all()).results.some((row: Record<string, unknown>) => JSON.stringify(row).includes(managerKey)));
   assert.equal((await request('api-key', adminKey)).status, 401);
-  const managerPayload = { offers: Array.from({ length: 12 }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: 'p-' + index, productUrl: 'https://company-a.example.com/p-' + index })) };
+  const managerPayload = { offers: Array.from({ length: 12 }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: 'p-' + index,
+    status: 'published', productUrl: 'https://company-a.example.com/p-' + index })) };
   const idempotency = randomUUID();
   failCommitOnce = true;
   const accepted = await request('imports', managerKey, 'POST', managerPayload, idempotency);
@@ -120,6 +121,9 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   assert.equal(completed.status, 'completed', JSON.stringify(completed));
   assert.equal(completed.succeeded, 12);
   assert.equal((await read('companyOffers/' + completed.results[0].offerId)).version, 1, 'ambiguous commit and redelivery did not duplicate writes');
+  for (const result of completed.results) {
+    assert.equal((await read('companyOffers/' + result.offerId)).status, 'hidden', 'HTTP publication flags cannot bypass draft review');
+  }
   assert.equal((await request('imports/' + job.id, otherKey)).status, 404);
   assert.equal((await request('imports/' + job.id, adminKey)).status, 200);
   assert.equal((await request('imports', managerKey, 'POST', managerPayload, idempotency)).status, 202);
@@ -135,10 +139,16 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   assert.equal((await request('imports', oldKey)).status, 401);
   assert.equal((await request('imports', managerKey, 'POST', managerPayload)).status, 429, 'rotating keys cannot reset cooldown');
   await db.prepare('UPDATE import_limits SET next_allowed=0 WHERE uid=?').bind('manager').run();
-  const concurrentIds = await Promise.all(Array.from({ length: 6 }, () => request('imports', managerKey, 'POST', managerPayload)));
+  const firstPath = 'companyOffers/' + completed.results[0].offerId;
+  await seed(firstPath, { ...await read(firstPath), status: 'published' });
+  const managerUpdate = { offers: managerPayload.offers.map(({ status: _status, ...offer }) => ({ ...offer, priceUah: 615 })) };
+  const concurrentIds = await Promise.all(Array.from({ length: 6 }, () => request('imports', managerKey, 'POST', managerUpdate)));
   assert.equal(concurrentIds.filter(response => response.status === 202).length, 1, 'atomic trigger reserves only one concurrent import');
   const second = await concurrentIds.find(response => response.status === 202)!.json() as any;
-  await waitJob(second.id, managerKey);
+  const updated = await waitJob(second.id, managerKey);
+  assert.equal(updated.status, 'completed');
+  assert.equal((await read(firstPath)).status, 'hidden', 'a queued update with omitted status returns the offer to drafts');
+  assert.equal((await read(firstPath)).priceUah, 615);
   await seed('accountAccess/manager', { blocked: true, changeId: 'blocked' });
   assert.equal((await request('imports', managerKey)).status, 403);
   await seed('accountAccess/manager', { blocked: false, changeId: 'unblocked' });

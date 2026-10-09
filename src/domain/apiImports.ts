@@ -66,8 +66,9 @@ export function normalizeImportPayload(value: unknown): ImportPayload {
     const type = normalizeMaterialType(row.type);
     if (type.includes('/')) throw new Error('Тип пластику не може містити /.');
     const offer = normalizeCompanyOfferInput({ description: '', packagingType: 'spool', diameterMm: 1.75, colorTone: 'special',
-      status: 'published', ...Object.fromEntries(OFFER_INPUT_FIELDS.filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]])),
+      status: 'hidden', ...Object.fromEntries(OFFER_INPUT_FIELDS.filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]])),
       type, family: row.family ?? profileForImport(type)?.family ?? 'Стандартні' } as CompanyOfferInput);
+    offer.status = offer.status === 'blocked' ? 'blocked' : 'hidden';
     const companyId = row.companyId === undefined ? undefined : importId(row.companyId);
     const domain = importDomain(offer.productUrl);
     const identity = JSON.stringify([companyId || domain, row.externalId.trim()]);

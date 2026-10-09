@@ -8,10 +8,15 @@ import { authService } from './authService.ts';
 import { deriveAccess, type Company } from '../domain/organizations.ts';
 import {
   assertCompanyOfferWrite, isOfferProductUrlAllowed, normalizeCompanyOfferInput, OFFER_INPUT_FIELDS,
+  MAX_COMPANY_OFFER_BULK_ITEMS,
   validateCompanyOfferInput, type CompanyOffer, type CompanyOfferInput, type CompanyOfferStatus, type SaveCompanyOfferInput,
 } from '../domain/companyOffers.ts';
 
 export interface CompanyOfferPage<T = CompanyOffer> { items: T[]; nextCursor: QueryDocumentSnapshot | null }
+export type CompanyOfferBulkAction = 'publish' | 'hide' | 'delete';
+export interface CompanyOfferBulkResult {
+  offers: CompanyOffer[]; updatedIds: string[]; deletedIds: string[]; failures: { id: string; message: string }[]; reloadError?: string;
+}
 
 function database() {
   if (!firestoreDb) throw new Error('Firebase не налаштовано.');
@@ -99,6 +104,62 @@ export const companyOfferRepository = {
     });
     authService.assertSession(user.uid);
     return savedOffer(id, user.uid);
+  },
+
+  async bulkAction(companyId: string, selected: Pick<CompanyOffer, 'id' | 'version'>[], action: CompanyOfferBulkAction): Promise<CompanyOfferBulkResult> {
+    validId(companyId);
+    if (!['publish', 'hide', 'delete'].includes(action)) throw new Error('Невідома масова дія.');
+    if (!Array.isArray(selected) || !selected.length || selected.length > MAX_COMPANY_OFFER_BULK_ITEMS) {
+      throw new Error(`Оберіть від 1 до ${MAX_COMPANY_OFFER_BULK_ITEMS} пропозицій.`);
+    }
+    const ids = new Set<string>();
+    selected.forEach(item => {
+      validId(item?.id);
+      if (!Number.isSafeInteger(item.version) || item.version < 1 || ids.has(item.id)) throw new Error('Перевірте ідентифікатори та версії обраних пропозицій.');
+      ids.add(item.id);
+    });
+    const user = actor();
+    const committed = await runTransaction(database(), async transaction => {
+      const scope = await writeScope(transaction, companyId, user);
+      assertCompanyOfferWrite(scope.access, scope.company, null, undefined, 'hidden');
+      const snapshots = await Promise.all(selected.map(item => transaction.get(doc(database(), 'companyOffers', item.id))));
+      const result = { updatedIds: [] as string[], deletedIds: [] as string[], failures: [] as CompanyOfferBulkResult['failures'] };
+      const status = action === 'publish' ? 'published' : 'hidden';
+      for (const [index, snapshot] of snapshots.entries()) {
+        const item = selected[index];
+        try {
+          if (!snapshot.exists()) throw new Error('Пропозицію вже видалено. Оновіть список.');
+          const current = decodeOffer(item.id, snapshot.data());
+          assertCompanyOfferWrite(scope.access, scope.company, current, item.version, action === 'delete' ? 'hidden' : status);
+          if (action !== 'delete' && current.status === 'blocked') throw new Error('Спершу розблокуйте пропозицію окремо.');
+          if (action !== 'delete' && !isOfferProductUrlAllowed(current.productUrl, scope.company.allowedDomains)) {
+            throw new Error('Оновіть посилання: його домен більше не дозволений компанією.');
+          }
+          if (action === 'delete') {
+            transaction.delete(snapshot.ref);
+            result.deletedIds.push(item.id);
+          } else {
+            transaction.update(snapshot.ref, { status, version: current.version + 1, updatedAt: serverTimestamp(), updatedBy: user.uid });
+            result.updatedIds.push(item.id);
+          }
+        } catch (error) {
+          result.failures.push({ id: item.id, message: error instanceof Error ? error.message : 'Не вдалося змінити пропозицію.' });
+        }
+      }
+      authService.assertSession(user.uid);
+      return result;
+    });
+    const offers: CompanyOffer[] = [];
+    let reloadError: string | undefined;
+    try {
+      authService.assertSession(user.uid);
+      for (let offset = 0; offset < committed.updatedIds.length; offset += 20) {
+        offers.push(...await Promise.all(committed.updatedIds.slice(offset, offset + 20).map(id => savedOffer(id, user.uid))));
+      }
+    } catch {
+      reloadError = 'Зміни збережено, але не вдалося оновити список. Оновіть сторінку перед наступною дією.';
+    }
+    return { offers, updatedIds: committed.updatedIds, deletedIds: committed.deletedIds, failures: committed.failures, ...(reloadError ? { reloadError } : {}) };
   },
 
   async getForCompany(companyId: string, cursor?: QueryDocumentSnapshot): Promise<CompanyOfferPage> {

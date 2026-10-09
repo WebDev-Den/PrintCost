@@ -6,6 +6,7 @@ import {
 import type { AccessState, Company } from './organizations.ts';
 
 export type CompanyOfferStatus = 'published' | 'hidden' | 'blocked';
+export const MAX_COMPANY_OFFER_BULK_ITEMS = 100;
 export interface CompanyOfferInput {
   name: string; brand: string; type: string; family: PublicFilamentItem['family'];
   colorName: string; colorHex: string; colorTone: ColorTone; packagingType: PackagingType;
@@ -96,6 +97,7 @@ export function assertCompanyOfferWrite(access: AccessState, company: Pick<Compa
   if (access.role === 'manager' && (access.companyId !== company.id || company.status !== 'active')) {
     throw new Error('Менеджер може керувати лише своєю активною компанією.');
   }
+  if (status === 'published' && company.status !== 'active') throw new Error('Публікувати можна лише пропозиції активної компанії.');
   if (current && current.companyId !== company.id) throw new Error('Не можна передати пропозицію іншій компанії.');
   if (current && (!Number.isSafeInteger(expectedVersion) || current.version !== expectedVersion)) {
     throw new Error('Пропозицію вже змінили. Оновіть список і повторіть дію.');

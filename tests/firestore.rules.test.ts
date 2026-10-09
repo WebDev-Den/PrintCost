@@ -611,8 +611,9 @@ test('offers support own-company manager create/edit and public bounded publishe
   await assertFails(getDocs(query(collection(anonymous, 'companyOffers'), where('companyId', '==', 'company-a'), limit(50))));
   await assertFails(getDocs(query(collection(anonymous, 'companyOffers'), where('companyId', '==', 'company-a'), where('status', '==', 'published'), limit(51))));
   await assertFails(getDocs(collection(administrator, 'companyOffers')));
-  await assertFails(deleteDoc(ref));
-  await assertFails(deleteDoc(doc(administrator, 'companyOffers/offer-a')));
+  await assertSucceeds(deleteDoc(ref));
+  await assertSucceeds(setDoc(ref, offerData()));
+  await assertSucceeds(deleteDoc(doc(administrator, 'companyOffers/offer-a')));
 });
 
 test('hidden and blocked offers are readable only by their active company manager or administrator', async () => {
@@ -631,6 +632,27 @@ test('hidden and blocked offers are readable only by their active company manage
   }
   await assertSucceeds(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'published', version: 3, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
   await assertSucceeds(getDoc(doc(anonymous, 'companyOffers/offer-a')));
+});
+
+test('offer deletes require current own-company rights and preserve administrator moderation', async () => {
+  const { manager, otherManager, administrator, anonymous } = await setupOffers();
+  const ref = doc(manager, 'companyOffers/offer-a');
+  await setDoc(ref, offerData('alice', 'company-a', 'offer-a', { status: 'hidden' }));
+  for (const denied of [otherManager, anonymous, user('customer'), user('alice', { email_verified: false })]) {
+    await assertFails(deleteDoc(doc(denied, 'companyOffers/offer-a')));
+  }
+  await assertSucceeds(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'blocked', version: 2, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertFails(deleteDoc(ref));
+  await assertSucceeds(deleteDoc(doc(administrator, 'companyOffers/offer-a')));
+  await setDoc(ref, offerData('alice', 'company-a', 'offer-a', { status: 'hidden' }));
+  await (await roleBatch(administrator, 'administrator', 'alice', 'user')).commit();
+  await assertFails(deleteDoc(ref));
+  await (await roleBatch(administrator, 'administrator', 'alice', 'manager', { companyId: 'company-a' })).commit();
+  await (await companyBatch(administrator, 'administrator', 'company-a', { status: 'disabled' })).commit();
+  await assertFails(deleteDoc(ref));
+  await assertFails(updateDoc(doc(administrator, 'companyOffers/offer-a'), { status: 'published', version: 2, updatedAt: serverTimestamp(), updatedBy: 'administrator' }));
+  await assertFails(setDoc(doc(administrator, 'companyOffers/disabled-published'), offerData('administrator', 'company-a', 'disabled-published')));
+  await assertSucceeds(deleteDoc(doc(administrator, 'companyOffers/offer-a')));
 });
 
 test('offer ownership and actors cannot be forged or moved across companies', async () => {

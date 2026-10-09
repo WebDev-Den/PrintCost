@@ -36,7 +36,8 @@ export const AppLayout: React.FC = () => {
   const { theme, setTheme, isLoading, loadError, actionError, clearActionError, retryLoad } = useAppData();
   const navigate = useNavigate();
   const location = useLocation();
-  const canManageCatalog = !isDemoSession && user?.isAdmin === true;
+  const canManageAccess = !isDemoSession && user?.isAdmin === true;
+  const canManageCatalog = canManageAccess || (!isDemoSession && user?.role === 'manager');
 
   // Mobile menu drawer state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -87,14 +88,14 @@ export const AppLayout: React.FC = () => {
     { to: '/filaments', label: 'Каталог пластиків', icon: BookOpen },
     { to: '/app/admin/catalog', label: 'Адмінка каталогу', icon: ShieldCheck },
     { to: '/app/admin/access', label: 'Користувачі та компанії', icon: ShieldCheck },
-    { to: '/app/company/offers', label: 'Пропозиції компанії', icon: Layers },
     { to: '/app/analytics', label: 'Аналітика каталогу', icon: BarChart3 },
     { to: '/app/api', label: 'API та імпорт', icon: KeyRound },
     { to: '/app/printers', label: 'Принтери', icon: Printer },
     { to: '/app/settings', label: 'Налаштування', icon: Settings },
     { to: '/app/account', label: 'Акаунт', icon: User },
-  ].filter((item) => (!item.to.startsWith('/app/admin') || canManageCatalog)
-    && (!['/app/company/offers', '/app/analytics', '/app/api'].includes(item.to) || (!isDemoSession && (user?.role === 'manager' || user?.role === 'admin'))));
+  ].filter((item) => (item.to !== '/app/admin/catalog' || canManageCatalog)
+    && (item.to !== '/app/admin/access' || canManageAccess)
+    && (!['/app/analytics', '/app/api'].includes(item.to) || canManageCatalog));
 
   const handleLogout = async () => {
     setLogoutError(null);
@@ -125,7 +126,7 @@ export const AppLayout: React.FC = () => {
   if (!isDemoSession && !user.emailVerified) return <Navigate to="/auth/check-email" replace />;
   if (isLoading) return <div role="status" className="p-12 flex justify-center"><Loader2 className="animate-spin" aria-label="Завантаження даних" /></div>;
   if (loadError) return <ErrorPage error={new Error(loadError)} resetErrorBoundary={retryLoad} />;
-  if (location.pathname.startsWith('/app/admin') && !canManageCatalog) return <Navigate to="/app/dashboard" replace />;
+  if (location.pathname.startsWith('/app/admin') && !(location.pathname.startsWith('/app/admin/catalog') ? canManageCatalog : canManageAccess)) return <Navigate to="/app/dashboard" replace />;
   if (location.pathname.startsWith('/app/company') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;
   if (location.pathname.startsWith('/app/analytics') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;
   if (location.pathname.startsWith('/app/api') && (isDemoSession || !['manager', 'admin'].includes(user.role || 'user'))) return <Navigate to="/app/dashboard" replace />;

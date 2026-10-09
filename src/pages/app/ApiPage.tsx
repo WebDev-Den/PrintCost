@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { NavLink } from 'react-router-dom';
 import { Copy, KeyRound, RefreshCw, Upload } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage, authService, reauthenticateAccount } from '../../services/authService.ts';
@@ -87,6 +88,7 @@ export function ApiPage() {
     </section>
     <section className={panel}>
       <h2 className="font-semibold">Імпорт JSON</h2>
+      <p className="text-sm">Імпортовані товари та оновлення зберігаються як чернетки. Перевірте їх і опублікуйте обрані у <NavLink to="/app/admin/catalog" className="text-emerald-600 underline">адмінці каталогу</NavLink>.</p>
       <p className="text-sm text-neutral-500">До 100 записів та 128 КіБ за запит. Менеджер — раз на годину, адміністратор — раз на 5 хвилин. Один активний імпорт на акаунт.</p>
       {metadata?.nextImportAt && new Date(metadata.nextImportAt).getTime() > Date.now() && <p className="text-sm">Наступний імпорт: {date(metadata.nextImportAt)}</p>}
       <label htmlFor="api-json-file" className="block text-sm font-medium">Завантажити файл JSON</label>
@@ -127,7 +129,7 @@ export function ApiPage() {
       <pre className={code}>{`curl -X POST "${base}/imports" \\\n  -H "Authorization: Bearer $KILOG_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "Idempotency-Key: batch-2026-10-09-001" \\\n  --data-binary @offers.json`}</pre>
       <p className="text-sm">У JSON передавайте <code>offers</code>. Обов’язкові поля позиції: externalId, name, brand, type, colorName, colorHex, spoolWeightGrams, priceUah, productUrl, inStock. <code>externalId</code> має залишатися сталим у вашій системі: повторний імпорт оновить позицію цієї компанії. Пропущені позиції не видаляються.</p>
       <pre className={code}>{JSON.stringify(IMPORT_EXAMPLE, null, 2)}</pre>
-      <p className="text-sm">priceUah — ціна упаковки у гривнях, spoolWeightGrams — її вага у грамах. Додаткові поля: companyId, family, colorTone, packagingType (spool / refill), diameterMm, description, status (published / hidden; blocked — лише адміністратор). При оновленні пропущені необов’язкові поля зберігаються. Тип нормалізується до великих літер, температурний профіль підбирається з каталогу. Якщо профілю немає, вкажіть family: Стандартні, Інженерні, Гнучкі, Композитні або Підтримки.</p>
+      <p className="text-sm">priceUah — ціна упаковки у гривнях, spoolWeightGrams — її вага у грамах. Додаткові поля: companyId, family, colorTone, packagingType (spool / refill), diameterMm, description, status (hidden; blocked — лише адміністратор). Значення published також імпортується як чернетка; після кожного імпорту товар потрібно опублікувати в адмінці. Блокування адміністратором зберігається. При оновленні інші пропущені необов’язкові поля зберігаються. Тип нормалізується до великих літер, температурний профіль підбирається з каталогу. Якщо профілю немає, вкажіть family: Стандартні, Інженерні, Гнучкі, Композитні або Підтримки.</p>
       <p className="text-sm">Менеджер імпортує лише свою активну компанію та її точні дозволені домени. WWW і піддомени додаються адміністратором окремо.</p>
       {user?.role === 'admin' && <>
         <p className="text-sm">Адміністратор також передає масив <code>companies</code>. Компанію визначає companyId або точний домен website/productUrl. Якщо її немає, створюється компанія з назвою домену. Її дані можна доповнити у вкладці «Користувачі та компанії». Для неоднозначного домену обов’язковий companyId.</p>

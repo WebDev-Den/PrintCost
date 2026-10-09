@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import {
   ShieldCheck,
   Building2,
@@ -43,6 +44,7 @@ import { formatUah } from '../../domain/formatters.ts';
 import { FilamentColorVisual } from '../../components/filaments/FilamentColorVisual.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
+import { CompanyOffersPanel } from '../../components/companies/CompanyOffersPanel.tsx';
 
 const EMPTY_TEMPERATURE_PROFILE: TemperatureProfile = {
   plasticType: '', nozzleRange: '', bedRange: '', chamberRange: '', fanSpeed: '',
@@ -50,6 +52,21 @@ const EMPTY_TEMPERATURE_PROFILE: TemperatureProfile = {
 };
 
 export const CatalogAdminPage: React.FC = () => {
+  const { user, isDemoSession } = useAuth();
+  const [params, setParams] = useSearchParams();
+  const isAdmin = user?.role === 'admin' && user.isAdmin === true;
+  const showGlobal = isAdmin && params.get('source') === 'global';
+  if (isDemoSession || !user?.emailVerified || user.isBlocked || (!isAdmin && user.role !== 'manager')) return <Navigate to="/app/dashboard" replace />;
+  return <div className="w-full space-y-5">
+    {isAdmin && <div className="flex flex-wrap gap-2" aria-label="Розділи адмінки каталогу">
+      <Button variant={showGlobal ? 'outline' : 'primary'} size="sm" aria-pressed={!showGlobal} onClick={() => { const next = new URLSearchParams(params); next.delete('source'); setParams(next); }}>Пропозиції компаній</Button>
+      <Button variant={showGlobal ? 'primary' : 'outline'} size="sm" aria-pressed={showGlobal} onClick={() => { const next = new URLSearchParams(params); next.set('source', 'global'); setParams(next); }}>Загальний каталог та довідники</Button>
+    </div>}
+    {showGlobal ? <GlobalCatalogAdmin key={user.id} /> : <CompanyOffersPanel key={`${user.id}:${user.role}:${user.companyId || ''}`} />}
+  </div>;
+};
+
+const GlobalCatalogAdmin: React.FC = () => {
   const { user, isDemoSession } = useAuth();
   const canEdit = !isDemoSession && user?.isAdmin === true;
   const [saveError, setSaveError] = useState<string | null>(null);

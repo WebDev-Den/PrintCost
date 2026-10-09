@@ -6,10 +6,18 @@ test('import normalizes offers, derives profiles and never invents an unknown ma
   const payload = normalizeImportPayload(IMPORT_EXAMPLE);
   assert.equal(payload.offers[0].offer.family, 'Стандартні');
   assert.equal(payload.offers[0].offer.type, 'PLA');
+  assert.equal(payload.offers[0].offer.status, 'hidden');
   assert.equal(profileForImport(' petg ')?.nozzleRange, '225–250 °C');
   assert.equal(profileForImport('PA12'), undefined);
   assert.equal(normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], type: 'PA12' }] }).offers[0].familyExplicit, false);
   assert.equal(normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], type: 'PA12', family: 'Інженерні' }] }).offers[0].offer.family, 'Інженерні');
+});
+test('import accepts legacy publication flags but always stages non-blocked offers as drafts', () => {
+  for (const status of ['published', 'hidden'] as const) {
+    assert.equal(normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], status }] }).offers[0].offer.status, 'hidden');
+  }
+  assert.equal(normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], status: 'blocked' }] }).offers[0].offer.status, 'blocked');
+  assert.throws(() => normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], status: 'unknown' }] }));
 });
 test('import rejects unknown fields, ownership forgery, duplicates, unsafe URLs and unbounded batches', () => {
   assert.throws(() => normalizeImportPayload({ ...IMPORT_EXAMPLE, uid: 'other' }));

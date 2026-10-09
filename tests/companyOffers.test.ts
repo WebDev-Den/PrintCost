@@ -53,6 +53,7 @@ test('CAS and company boundaries prevent stale writes, reassignment and manager 
   assert.throws(() => assertCompanyOfferWrite(manager, company, null, undefined, 'blocked'), /адміністратор/);
   const admin = { role: 'admin' as const, companyId: null, blocked: false };
   assert.doesNotThrow(() => assertCompanyOfferWrite(admin, { ...company, status: 'disabled' }, { ...old, status: 'blocked' }, 2, 'hidden'));
+  assert.throws(() => assertCompanyOfferWrite(admin, { ...company, status: 'disabled' }, old, 2, 'published'), /активної компанії/);
   assert.throws(() => assertCompanyOfferWrite({ ...admin, blocked: true }, company, old, 2, 'hidden'), /Потрібні права/);
   assert.throws(() => assertCompanyOfferWrite(admin, { ...company, id: 'seller-b' }, old, 2, 'hidden'), /передати/);
 });

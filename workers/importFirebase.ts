@@ -192,9 +192,11 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
               const family = item.familyExplicit ? item.offer.family :
                 profile?.family ?? (profileDoc?.deleted !== true ? profileForImport(item.offer.type)?.family : undefined);
               if (!family) throw new ApiError(422, 'Для цього типу немає профілю. Вкажіть family або додайте профіль у каталозі.');
-              const preserved = current ? Object.fromEntries(['description', 'packagingType', 'diameterMm', 'colorTone', 'status']
+              const preserved = current ? Object.fromEntries(['description', 'packagingType', 'diameterMm', 'colorTone']
                 .filter(key => !item.optionalFields.includes(key)).map(key => [key, current[key]])) : {};
               const input = validateCompanyOfferInput({ ...item.offer, ...preserved, family }, company.allowedDomains as string[]);
+              // Every import needs manual publication; API updates cannot lift administrator moderation.
+              input.status = current?.status === 'blocked' || input.status === 'blocked' ? 'blocked' : 'hidden';
               assertCompanyOfferWrite({ role: scope.role, companyId: scope.companyId, blocked: false }, company as unknown as Company,
                 current as unknown as CompanyOffer | null, current ? Number(current.version) : undefined, input.status);
               pending.set('companyOffers/' + id, { ...input, id, companyId: company.id, version: current ? Number(current.version) + 1 : 1,

@@ -34,6 +34,8 @@ rules_version = '2';
 //   immutable id/companyId/createdBy/createdAt; exact allowed HTTPS product host,
 //   published/hidden/blocked status, integer version and server updatedAt.
 //   Public visibility requires published status and an active company.
+//   Deletes require a current administrator or an active own-company manager;
+//   managers cannot delete offers blocked by an administrator.
 // filaments, manufacturers, temperatureProfiles: explicitly public catalog;
 //   mutations require the current authorization registry, never custom claims.
 // temperatureProfiles: optional family enum and positive densityGPerCm3 <=100;
@@ -262,6 +264,7 @@ service cloud.firestore {
         && data.productUrl.matches('^https://[a-z0-9.-]+([/?#][!-~]*)?$')
         && exists(/databases/$(database)/documents/companies/$(data.companyId))
         && data.inStock is bool && data.status in ['published', 'hidden', 'blocked']
+        && (data.status != 'published' || activeCompany(data.companyId))
         && data.version is int && data.version >= 1 && data.createdAt is timestamp && data.updatedAt == request.time;
     }
     function allowedOfferHost(data) {
@@ -576,6 +579,8 @@ service cloud.firestore {
           || (adminWriter() && request.resource.data.status == 'blocked' && request.resource.data.productUrl == resource.data.productUrl))
         && (adminWriter() || (companyManager(resource.data.companyId) && resource.data.status != 'blocked' && request.resource.data.status != 'blocked'
           && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid))));
+      allow delete: if adminWriter() || (companyManager(resource.data.companyId) && resource.data.status != 'blocked'
+        && !existsAfter(/databases/$(database)/documents/accountDeletion/$(request.auth.uid)));
     }
     match /companyLogos/{id} {
       allow get: if admin() || activeCompany(id);
