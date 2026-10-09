@@ -41,6 +41,9 @@
   "overrides": {
     "@firebase/firestore": {
       "@grpc/grpc-js": "^1.13.6"
+    },
+    "firebase-tools": {
+      "basic-ftp": "6.2.3"
     }
   },
   "devDependencies": {
