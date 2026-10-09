@@ -26,7 +26,7 @@ export function ApiPage() {
   const [detail, setDetail] = useState<(ImportJobSummary & { error?: string }) | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [action, setAction] = useState<'rotate' | 'revoke' | null>(null);
   const [password, setPassword] = useState('');
   const [confirmationMethod, setConfirmationMethod] = useState<'google.com' | 'password' | null>(null);
@@ -46,10 +46,16 @@ export function ApiPage() {
   useEffect(() => {
     let active = true;
     identity.current = uid;
-    setBusy(false); setError(''); setNotice('');
+    setBusy(true); setError(''); setNotice('');
     setSecret(''); setMetadata(null); setJobs([]); setDetail(null); setPassword(''); setAction(null); setConfirmationMethod(null);
-    Promise.all([api.metadata(), api.jobs()]).then(([data, history]) => { if (active) { setMetadata(data); setJobs(history.jobs); } })
-      .catch(error => { if (active) setError(authErrorMessage(error)); });
+    // Serialize these reads to avoid duplicate cold OAuth exchanges on Workers Free.
+    void (async () => {
+      const data = await api.metadata();
+      if (!active) return;
+      const history = await api.jobs();
+      if (active) { setMetadata(data); setJobs(history.jobs); }
+    })().catch(error => { if (active) setError(authErrorMessage(error)); })
+      .finally(() => { if (active) setBusy(false); });
     return () => { active = false; identity.current = ''; };
   }, [api]);
   async function run(operation: () => Promise<void>) {
@@ -61,7 +67,8 @@ export function ApiPage() {
     finally { if (identity.current === currentUid) setBusy(false); }
   }
   async function refresh() {
-    const [data, history] = await Promise.all([api.metadata(), api.jobs()]);
+    const data = await api.metadata();
+    const history = await api.jobs();
     setMetadata(data); setJobs(history.jobs);
   }
   const base = window.location.origin + '/api/v1';

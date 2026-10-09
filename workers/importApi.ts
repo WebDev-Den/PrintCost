@@ -89,10 +89,13 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
   async function dispatch(env: ImportEnv, id: string, cursor: number) {
     const db = configured(env);
     // The durable job is the outbox; a failed send is recovered by the cron.
-    const claimed = await db.prepare('UPDATE import_jobs SET dispatch_at=? WHERE id=? AND cursor=? AND ' + active + ' RETURNING id').bind(seconds() + 300, id, cursor).all();
+    // Keep these adjacent in one D1 transaction: changes() refers to the job claim.
+    const [claimed, budget] = await db.batch([
+      db.prepare('UPDATE import_jobs SET dispatch_at=? WHERE id=? AND cursor=? AND ' + active + ' RETURNING id').bind(seconds() + 300, id, cursor),
+      db.prepare('INSERT INTO import_daily(day,dispatches) SELECT ?,1 WHERE changes()=1 ON CONFLICT(day) DO UPDATE SET dispatches=dispatches+1 WHERE dispatches<? RETURNING day')
+        .bind(now().toISOString().slice(0, 10), IMPORT_LIMITS.dailyQueueMessages),
+    ]);
     if (!claimed.results.length) return;
-    const budget = await db.prepare('INSERT INTO import_daily(day,dispatches) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET dispatches=dispatches+1 WHERE dispatches<? RETURNING day')
-      .bind(now().toISOString().slice(0, 10), IMPORT_LIMITS.dailyQueueMessages).all();
     if (!budget.results.length) {
       await db.prepare('UPDATE import_jobs SET dispatch_at=?,error=? WHERE id=? AND ' + active)
         .bind(seconds() + 86400 - seconds() % 86400, 'Денний ліміт черги вичерпано; завдання збережено до наступної доби UTC.', id).all();

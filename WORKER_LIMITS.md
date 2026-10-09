@@ -21,7 +21,9 @@
 - D1 preflight об'єднує резервування UID-перевірки й читання квоти в batch; остаточна спільна квота використовує свіжу роль Firebase. Cron об'єднує expiration/recovery та очищення counters, зберігаючи порядок, leases і ліміти.
 - Список імпортів отримує лише підсумки 30 jobs. Correlated JSON aggregate матеріалізує 30 малих записів замість передачі до Worker до 3000 повних результатів; детальний endpoint зберігає повні результати й перевірку власності.
 - POST використовує `INSERT RETURNING` малих підсумків; replay/detail не передають payload або приватні поля авторизації з D1. Конкурентні повтори зберігають одне завдання, атомарні квоти й інтервал.
+- Claim відправлення й резерв добової квоти Queue виконуються одним послідовним D1 batch; `changes()=1` списує квоту лише для отриманого job. Скасування перед claim, вичерпана квота й конкурентний останній слот перевірені в реальному D1 runtime.
 - Календар Europe/Kyiv створюється лише при використанні дат аналітики; REST API не витрачає CPU на його ініціалізацію. Літній/зимовий час і межа retention перевірені.
+- Початкове та ручне оновлення вкладки API читають метадані й історію послідовно, щоб не дублювати холодні OAuth exchanges. Під час першого завантаження кнопки зайняті; зміна акаунта/помилки зберігають наявні session guards.
 
 ## Обмеження, які вже діють
 
@@ -53,7 +55,11 @@ Native перевірки третього блоку: перші API-ключ /
 
 Четвертий блок повторно використовує один готовий неекспортований RSA signing key точного project/secret під час OAuth refresh; кожен refresh створює свіжий підпис і власний мережевий запит. Декодування base64 використовує прямий заповнений byte buffer. Локальні **147 application/runtime tests** і незалежний security review — PASS. Ролі, відкликання й стан користувача читаються свіжо. Публікація цього блоку та перенесення повної перевірки записів у наявний Queue consumer ще в роботі.
 
-Кандидат із четвертим, п'ятим і шостим блоками: **149 application/runtime tests PASS**, scoped Worker/D1/Queue/Firestore **6/6 PASS**, lint/build/deployment validator/Wrangler dry-run — PASS. Незалежний review не знайшов регресій. Перевірено помилку останнього зі 100 записів (202 → failed, нуль Firestore writes, один ack, без retry), конкурентний raw replay, legacy queued job/retry, профіль і чернетки. Повний exact-source CI і native CPU цього кандидата ще очікують публікації.
+Четвертий, п'ятий і шостий блоки, source `3e8c8784dc092a04de4cc839dcf834d63a046566`: [push CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37988577118) / [PR CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37988582696) — **149 + 117 = 266 PASS**, lint/build/deployment validator/Wrangler dry-run — PASS. Незалежний review не знайшов регресій. Worker `5d1e4750-360b-4d0d-9fb6-d32d32477f39`, 100% traffic від 20:43 UTC; 66 asset comparisons / 10 негативних API перевірок і ще 4 негативні auth перевірки — PASS.
+
+Живий контроль `e153cd25-292a-4819-9f32-8d728d42a920`: 100 записів / 129990 байтів, остання ціна некоректна; HTTP 202 → failed / `HTTP_422`, processed **0/100**, results порожні. Повтор через кабінет повернув той самий ID без дубля. Native CPU: перший API-key **11 мс**, список **4 мс**, наступні key/list **4–5 мс**, звіт **7 мс**, POST **11 мс**, Queue consumer **14 мс**, порожній Cron **3 мс**. Queue consumer має іншу межу — 30 секунд CPU, а HTTP ще потребує запасу до 10 мс. Перший GraphQL readback мав 15 sampled requests / 0 errors / max bucket P99 11.154 мс; він ще не містив усіх пізніших подій.
+
+Наступний блок об'єднав dispatch claim/reserve й прибрав одночасні холодні читання вкладки API. Scoped D1 runtime **6/6 PASS**, lint PASS; його exact-source CI/deploy/native приймання ще в роботі.
 
 **Відкат:** версії до нового consumer не розуміють активні `raw:` jobs та нові hash повторів. Не повертати старий consumer/API з такими jobs; зберегти сумісний consumer або спочатку завершити активні завдання й врахувати зміну replay для історії. Міграцій, нових bindings чи зміни тарифу немає.
 

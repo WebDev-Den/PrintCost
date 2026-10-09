@@ -340,9 +340,10 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   counters = await db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day).first<any>();
   assert.equal(counters.admin_access_checks, IMPORT_LIMITS.dailyAdminAccessChecks);
   const batches: number[] = [];
+  let beforeBatch: ((index: number) => Promise<void>) | undefined;
   let historyRowsRead = 0;
   const instrumented = new Proxy(db, { get(target, property) {
-    if (property === 'batch') return (statements: Parameters<typeof db.batch>[0]) => { batches.push(statements.length); return target.batch(statements); };
+    if (property === 'batch') return async (statements: Parameters<typeof db.batch>[0]) => { batches.push(statements.length); await beforeBatch?.(batches.length); return target.batch(statements); };
     if (property === 'prepare') return (sql: string) => {
       const statement = target.prepare(sql);
       if (!sql.includes('json_each')) return statement;
@@ -440,11 +441,14 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     for (let index = 0; index < 6; index++) retained.push(await cronJob('retention-' + index, clock - 31 * 86400 + index));
     const previousDay = new Date((clock - 31 * 86400) * 1000).toISOString().slice(0, 10);
     await db.prepare('INSERT INTO import_access_daily(day,uid,checks,limit_checks) VALUES(?,?,1,10)').bind(previousDay, 'old-counter').run();
+    batches.length = 0;
     await scheduler.scheduled(cronEnv);
     const expired = await db.prepare('SELECT status,payload FROM import_jobs WHERE id=?').bind(expiredId).first<any>();
     assert.equal(expired.status, 'failed'); assert.equal(expired.payload, null);
     assert.equal((await db.prepare('SELECT status FROM import_jobs WHERE id=?').bind(leasedId).first<any>()).status, 'processing');
     assert.deepEqual(sent.map(message => message.id), ready.slice(0, 5), 'Expired rows leave the active set before the bounded outbox SELECT.');
+    assert.deepEqual(batches, Array(7).fill(2), 'Each claimed job reserves its queue budget in the same two-statement batch.');
+    assert.equal((await db.prepare('SELECT dispatches FROM import_daily WHERE day=?').bind(day).first<any>()).dispatches, 5);
     assert.equal((await db.prepare('SELECT dispatch_at FROM import_jobs WHERE id=?').bind(ready[5]).first<any>()).dispatch_at, 0);
     let remaining = 0;
     for (const id of retained) if (await db.prepare('SELECT id FROM import_jobs WHERE id=?').bind(id).first()) remaining++;
@@ -452,5 +456,35 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     assert.equal(await db.prepare('SELECT day FROM import_daily WHERE day=?').bind(previousDay).first(), null);
     assert.equal(await db.prepare('SELECT uid FROM import_access_daily WHERE uid=?').bind('old-counter').first(), null);
     assert.ok(await db.prepare('SELECT day FROM import_daily WHERE day=?').bind(day).first(), 'Current budgets remain present.');
+
+    // Cancellation after the outbox SELECT makes the UPDATE match zero rows.
+    batches.length = 0;
+    beforeBatch = async index => {
+      if (index === 2) await db.prepare("UPDATE import_jobs SET status='cancelled',payload=NULL WHERE id=?").bind(ready[5]).run();
+    };
+    try { await scheduler.scheduled(cronEnv); } finally { beforeBatch = undefined; }
+    assert.deepEqual(batches, [2, 2, 2]);
+    assert.equal(sent.length, 5);
+    assert.equal((await db.prepare('SELECT dispatches FROM import_daily WHERE day=?').bind(day).first<any>()).dispatches, 5,
+      'A stale outbox entry cannot reserve a queue message when changes() is zero.');
+
+    const exhaustedId = await cronJob('exhausted', clock);
+    await db.prepare("UPDATE import_jobs SET status='queued',payload='{}' WHERE id=?").bind(exhaustedId).run();
+    await db.prepare('UPDATE import_daily SET dispatches=? WHERE day=?').bind(IMPORT_LIMITS.dailyQueueMessages, day).run();
+    await scheduler.scheduled(cronEnv);
+    const exhausted = await db.prepare('SELECT status,payload,dispatch_at,error FROM import_jobs WHERE id=?').bind(exhaustedId).first<any>();
+    assert.equal(exhausted.status, 'queued'); assert.equal(exhausted.payload, '{}');
+    assert.equal(exhausted.dispatch_at, clock + 86400 - clock % 86400); assert.match(exhausted.error, /ліміт черги/);
+    assert.equal(sent.length, 5, 'An exhausted reserve defers the durable job without sending.');
+    assert.equal((await db.prepare('SELECT dispatches FROM import_daily WHERE day=?').bind(day).first<any>()).dispatches, IMPORT_LIMITS.dailyQueueMessages);
+
+    for (const label of ['concurrent-a', 'concurrent-b']) {
+      const id = await cronJob(label, clock);
+      await db.prepare("UPDATE import_jobs SET status='queued',payload='{}' WHERE id=?").bind(id).run();
+    }
+    await db.prepare('UPDATE import_daily SET dispatches=? WHERE day=?').bind(IMPORT_LIMITS.dailyQueueMessages - 1, day).run();
+    await Promise.all([scheduler.scheduled(cronEnv), scheduler.scheduled(cronEnv)]);
+    assert.equal(sent.length, 6, 'Concurrent schedulers can send only one message for the last daily slot.');
+    assert.equal((await db.prepare('SELECT dispatches FROM import_daily WHERE day=?').bind(day).first<any>()).dispatches, IMPORT_LIMITS.dailyQueueMessages);
   });
 });
