@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { TURNSTILE_ACTIONS } from '../src/domain/turnstile.ts';
-import analytics, { type AnalyticsDatabase } from '../workers/analytics.ts';
+import type { AnalyticsDatabase } from '../workers/analytics.ts';
 import worker from '../workers/index.ts';
 import { createTurnstileWorker, type TurnstileEnv } from '../workers/turnstile.ts';
 
@@ -222,7 +222,17 @@ test('entrypoint composes Turnstile without changing assets, analytics authoriza
   const notFound = await worker.fetch(new Request(`${origin}/api/turnstile/unknown`), configuration, context);
   assert.equal(notFound.status, 404);
   assert.equal(pending.length, 0);
-  assert.equal(worker.scheduled, analytics.scheduled);
+  const cleanupQueries: string[] = [];
+  const cleanupDatabase: AnalyticsDatabase = { prepare: sql => {
+    cleanupQueries.push(sql);
+    return { bind() { return this; }, all: async () => ({ results: [], meta: {}, success: true }), first: async () => null };
+  }, batch: async statements => statements.map(() => ({ results: [], meta: { changes: 0 }, success: true })) };
+  await worker.scheduled({ cron: '*/5 * * * *' }, { ...configuration, ANALYTICS_DB: cleanupDatabase }, context);
+  await Promise.all(pending.splice(0));
+  assert.equal(cleanupQueries.length, 0, 'import outbox cron does not run analytics cleanup');
+  await worker.scheduled({ cron: '0 2 * * *' }, { ...configuration, ANALYTICS_DB: cleanupDatabase }, context);
+  await Promise.all(pending.splice(0));
+  assert.ok(cleanupQueries.some(sql => sql.includes('DELETE FROM events')), 'daily analytics cleanup is retained');
   const database: AnalyticsDatabase = { prepare: () => { throw new Error('Unexpected database access'); }, batch: async () => { throw new Error('Unexpected database access'); } };
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const report = await worker.fetch(new Request(`${origin}/api/analytics/report?companyId=all&from=${today}&to=${today}`),

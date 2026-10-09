@@ -31,6 +31,7 @@ const AdministrationPage = lazy(() => import('./pages/app/AdministrationPage.tsx
 const CompanyOffersPage = lazy(() => import('./pages/app/CompanyOffersPage.tsx').then((m) => ({ default: m.CompanyOffersPage })));
 const TemplatesPage = lazy(() => import('./pages/app/TemplatesPage.tsx').then((m) => ({ default: m.TemplatesPage })));
 const AnalyticsPage = lazy(() => import('./pages/app/AnalyticsPage.tsx').then((m) => ({ default: m.AnalyticsPage })));
+const ApiPage = lazy(() => import('./pages/app/ApiPage.tsx').then(m => ({ default: m.ApiPage })));
 const PrivacyPage = lazy(() => import('./pages/public/PrivacyPage.tsx').then((m) => ({ default: m.PrivacyPage })));
 const AccountDeletionPage = lazy(() => import('./pages/public/AccountDeletionPage.tsx').then((m) => ({ default: m.AccountDeletionPage })));
 
@@ -62,6 +63,7 @@ export default function App() {
               <Route path="calculator" element={<CalculatorPage />} />
               <Route path="templates" element={<TemplatesPage />} />
               <Route path="analytics" element={<AnalyticsPage />} />
+              <Route path="api" element={<ApiPage />} />
               <Route path="calculations" element={<CalculationsHistoryPage />} />
               <Route path="calculations/:id" element={<CalculationDetailsPage />} />
               <Route path="materials" element={<MaterialsPage />} />

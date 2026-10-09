@@ -4,9 +4,12 @@ import { validateDeployment } from '../scripts/deploy-validation.ts';
 
 const sitekey = '0x4AAAAAAFR_dav3sbi3wfEO';
 const config = { name: 'kilo-g', vars: { FIREBASE_PROJECT_ID: 'kilo-g', TURNSTILE_HOSTNAMES: 'web-dev.pp.ua,kilo-g.web-developer-den.workers.dev' },
-  secrets: { required: ['TURNSTILE_SECRET_KEY'] }, assets: { binding: 'ASSETS', run_worker_first: ['/api/*'] },
+  secrets: { required: ['TURNSTILE_SECRET_KEY', 'FIREBASE_IMPORT_SERVICE_ACCOUNT'] }, assets: { binding: 'ASSETS', run_worker_first: ['/api/*'] },
+  queues: { producers: [{ binding: 'IMPORT_QUEUE', queue: 'kilog-imports' }], consumers: [{ queue: 'kilog-imports', max_concurrency: 1, max_batch_size: 1, max_retries: 3 }] },
+  triggers: { crons: ['*/5 * * * *'] },
   d1_databases: [{ binding: 'ANALYTICS_DB', database_id: 'a2bcb470-785c-44f6-9b77-5dbd9702a9ca' }],
-  ratelimits: [{ name: 'ANALYTICS_RATE_LIMIT', namespace_id: '129761', simple: { limit: 60, period: 60 } }] };
+  ratelimits: [{ name: 'ANALYTICS_RATE_LIMIT', namespace_id: '129761', simple: { limit: 60, period: 60 } },
+    { name: 'IMPORT_RATE_LIMIT', namespace_id: '129762', simple: { limit: 30, period: 60 } }] };
 
 test('deployment rejects placeholder D1, mismatched Firebase and accidental paid CPU configuration', () => {
   assert.doesNotThrow(() => validateDeployment(config, 'kilo-g', sitekey));
@@ -25,7 +28,7 @@ test('deployment rejects missing or invalid native analytics rate limiter', () =
     assert.throws(() => validateDeployment({ ...config, ratelimits }, 'kilo-g', sitekey), /ANALYTICS_RATE_LIMIT/);
   }
   assert.doesNotThrow(() => validateDeployment({ ...config,
-    ratelimits: [{ ...limiter, simple: { limit: 1, period: 10 } }] }, 'kilo-g', sitekey));
+    ratelimits: [{ ...limiter, simple: { limit: 1, period: 10 } }, config.ratelimits[1]] }, 'kilo-g', sitekey));
 });
 
 test('deployment rejects unsafe Turnstile hostnames, missing secrets and public secret storage', () => {

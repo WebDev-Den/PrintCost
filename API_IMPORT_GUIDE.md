@@ -1,0 +1,93 @@
+# REST API імпорту KILO·G
+
+Код підготовлений і перевірений локально. Production ще не змінений. Перед наступним релізом потрібні Queue, міграція D1 і окремий сервісний акаунт Firebase. Не запускайте команди активації до дозволу на публікацію.
+
+## API для зовнішнього програмного забезпечення
+
+Базова адреса після активації: https://web-dev.pp.ua/api/v1. Використовуйте HTTPS. Вкладка **API та імпорт** доступна лише активним admin/manager із підтвердженою поштою.
+
+Створіть власний ключ у кабінеті, підтвердивши поточний вхід. Він діє 90 днів, показується один раз, у D1 зберігається лише SHA-256. Зберігайте plaintext у захищених налаштуваннях свого ПЗ; не додавайте до URL, JSON, Git або логів. Ротація/відкликання негайно забороняє старий ключ і скасовує незавершену частину імпортів. Уже почата порція до 5 записів може завершитися. Після зміни ролі/компанії, блокування/розблокування або відкликання Firebase сесій потрібен новий ключ.
+
+| Метод і шлях | Результат |
+|---|---|
+| POST /imports | JSON у чергу; 202, id, statusUrl |
+| GET /imports | Останні 30 імпортів; менеджер лише власні, admin усі |
+| GET /imports/{id} | Стан, лічильники, помилки та результат кожного запису |
+| GET /api-key | Метадані власного ключа; лише Firebase сесія кабінету |
+| POST /api-key | Створення/ротація власного ключа; свіжий Firebase вхід до 5 хвилин |
+| DELETE /api-key | Відкликання власного ключа; свіжий Firebase вхід |
+
+У зовнішніх запитах: `Authorization: Bearer <ключ>`. POST також потребує `Content-Type: application/json` та `Idempotency-Key` (1–128 латинських букв/цифр, дефіс чи підкреслення).
+
+Для повтору того самого запиту після мережевого збою використовуйте той самий Idempotency-Key. Інший JSON з тим самим ключем отримує 409. Для наступного оновлення використовуйте новий ID. Ідемпотентність діє протягом зберігання історії, 30 днів.
+
+```json
+{
+  "offers": [{
+    "externalId": "pla-white-1000",
+    "name": "PLA White 1 kg",
+    "brand": "Example",
+    "type": "PLA",
+    "colorName": "Білий",
+    "colorHex": "#ffffff",
+    "spoolWeightGrams": 1000,
+    "priceUah": 600,
+    "productUrl": "https://shop.example.com/pla-white",
+    "inStock": true
+  }]
+}
+```
+
+Усі поля прикладу обов’язкові. `externalId` — сталий ID із вашої системи, 1–160 символів: повтор оновлює той самий документ у межах компанії. ID між компаніями незалежні. API не видаляє позиції, яких немає у JSON; для приховування надішліть `status: "hidden"`. Вручну створені позиції та API-позиції мають різні IDs, автоматичного злиття за назвою немає.
+
+`priceUah` — ціна всієї упаковки, до двох знаків після коми; `spoolWeightGrams` — вага упаковки в грамах. Ціна за кг рахується каталогом. Необов’язкові поля: companyId, family, colorTone, packagingType (spool/refill), diameterMm, description, status (published/hidden/blocked; blocked лише admin). На створенні: spool, 1.75 мм, порожній description, special, published. На оновленні пропущені description/packagingType/diameterMm/colorTone/status зберігаються, зокрема адміністраторське блокування.
+
+Тип нормалізується до великих літер; профіль підбирається з актуальних temperatureProfiles або стандартних PLA/PETG/ABS/ASA/TPU/PA/PLA-CF/PC. Температури не дублюються у пропозиції: каталог застосовує актуальний профіль. Без профілю потрібна явна family: Стандартні / Інженерні / Гнучкі / Композитні / Підтримки. Видалений адміністратором профіль не відновлюється імпортом.
+
+Менеджер працює лише зі своєю призначеною активною компанією та точними allowedDomains. WWW, інші піддомени, IP, HTTP, порт і URL із user/password не отримують автоматичного дозволу. Адміністратор може додавати домени у компанії.
+
+Адміністратор також передає `companies` перед обробкою offers:
+
+```json
+{"companies":[{"name":"Магазин пластику","website":"https://shop.example.com/","allowedDomains":["shop.example.com"],"status":"active"}]}
+```
+
+Компанія визначається за companyId або точним доменом URL. Якщо admin companyId не знайдений, виконується пошук за доменом. Якщо компанії немає — створюється активна компанія з назвою домену, website=https://домен/, allowedDomains=[домен]. Admin доповнює її у «Користувачі та компанії». Менеджер не може створювати компанії чи автоматично отримувати права на домен. Для неоднозначного домену потрібен companyId. Сервер не відвідує сайти і не збирає з них дані.
+
+```sh
+curl -X POST "https://web-dev.pp.ua/api/v1/imports" \
+  -H "Authorization: Bearer $KILOG_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: batch-2026-10-09-001" \
+  --data-binary @offers.json
+```
+
+## Ліміти і відновлення
+
+- 100 записів сумарно companies+offers та 128 КіБ за запит; один активний імпорт на користувача.
+- Manager — раз на 3600 секунд; admin — раз на 300 секунд. Ротація ключа не скидає інтервал.
+- Спільні ліміти за добу UTC: 5 000 записів, 100 імпортів, 1 000 авторизованих HTTP-перевірок доступу, 1 500 відправлень Queue. Додатково 30 HTTP-запитів/хвилину/IP. Неправильні ключі не запускають читання Firebase.
+- Queue обробляє по 5 записів, один consumer. Повторює тимчасову помилку до 3 разів з паузою 60 секунд. D1 outbox відновлює втрату відправлення кожні 5 хвилин. Приватна Firestore квитанція забезпечує відновлення після неоднозначного commit.
+- Вичерпання ліміту Queue залишає JSON у D1 до наступної доби. Через 24 години незавершений job переходить у failed. Payload очищається у terminal state; історія/receipt очищаються після 30 днів.
+- Стани: queued / processing / completed / partial / failed / cancelled. Перевіряйте статус не частіше ніж раз на 30 секунд і припиніть polling після terminal state. Перевірка статусу теж витрачає денну квоту.
+- Помилки повертаються як `{"error":{"code":"HTTP_429","message":"…"}}`. 401 — ключ/сесія; 403 — права; 409 — idempotency; 413 — розмір; 415 — Content-Type; 422 — JSON; 429 — квота з Retry-After; 503 — недоступність сервісу. Помилки окремих позицій повертаються у results, інші позиції можуть бути застосовані.
+
+Великий імпорт не є однією транзакцією. Зміни ролі/ключа чи збій можуть залишити вже оброблену частину. Якщо неможливо прочитати квитанцію останньої порції, job явно попереджає про можливий запис. Звірте каталог і results перед новим імпортом; незмінний externalId запобігає створенню нового дубліката.
+
+## Активація після дозволу на реліз
+
+1. У Firebase/Google Cloud проєкті **kilo-g**, акаунтом його власника, створити окремий service account `kilog-import-worker`. Надати **Cloud Datastore User** (`roles/datastore.user`) для транзакцій Firestore та **Firebase Authentication Viewer** (`roles/firebaseauth.viewer`) для перевірки enabled/emailVerified/revocation. Створити JSON key; зберігати поза репозиторієм у каталозі з ACL лише власника. Не використовувати особистий refresh token, Firebase web API key чи VITE_*.
+2. OAuth цього service account використовує IAM і обходить Firestore Rules. Саме Worker повторно перевіряє поточний акаунт, роль, memberships, блокування, accountDeletion, компанію, домен і blocked status у кожній порції. Rules не послаблюються; нова приватна collection importReceipts залишається недоступною клієнтам.
+3. Створити Queue `npx wrangler queues create kilog-imports --message-retention-period-secs 86400`. Залишити max_concurrency=1, max_batch_size=1, max_retries=3; не підключати стороннього consumer.
+4. Зберегти резервну копію D1, потім `npx wrangler d1 migrations apply kilog-analytics --remote`. Міграція 0002 лише додає import_* tables/triggers/indexes; каталог Firestore не переміщується.
+5. Підготувати захищений secrets JSON поза Git: поле `FIREBASE_IMPORT_SERVICE_ACCOUNT` зі **string**, який містить увесь JSON service account. Не друкувати значення в терміналі/логах. Існуючий TURNSTILE_SECRET_KEY не видаляється: secrets-file застосовується додатково.
+6. `npm run lint`, `npm test`, `npm run test:emulators`, `npm run build`, `npx tsx scripts/deploy-validation.ts`, `npx wrangler deploy --dry-run`. Лише після дозволу — `npx wrangler deploy --secrets-file <захищений-файл>`. Не використовувати secret put як окремий передчасний реліз.
+7. На окремій тестовій компанії виконати живий admin/manager імпорт, перевірити Auto company, denied foreign URL, rotation/revoke, Queue/crons, журнал і фактичний billed CPU. Без цього не стверджувати, що новий API прийнятий у production. Старий сайт до активації не змінюється.
+
+Для rollback спочатку зупинити consumer Queue в консолі, відкликати IAM-доступ service account і повернути попередню Worker version. D1 import_* таблиці залишити для розбору/відновлення. Уже записані Firestore пропозиції не видаляти автоматично. Видалення ключа service account припиняє minting нових токенів; для негайного відключення потрібне відкликання IAM-доступу, оскільки виданий OAuth token може ще діяти.
+
+## Межі безкоштовного плану
+
+За [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/) Free має 10 000 операцій/день; квота 1 500 sends з трьома retries дає до 9 000 операцій цього API. Інші Queue в акаунті також можуть витрачати спільний ліміт. [Free retention](https://developers.cloudflare.com/queues/platform/limits/) — 24 години. [Workers Free](https://developers.cloudflare.com/workers/platform/limits/) має суворий CPU budget; локальні тести не вимірюють production billed CPU. [Firebase REST](https://firebase.google.com/docs/firestore/use-rest-api) описує різницю між Rules та IAM.
+
+Ліміти залишають запас для Spark, але інші функції сайту використовують ті самі ресурси Firebase. Безкоштовний план не гарантує необмежене навантаження або 100% доступність. При квоті/недоступності API закриває доступ чи відкладає job замість неконтрольованих записів.

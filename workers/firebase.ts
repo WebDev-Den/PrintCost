@@ -1,8 +1,8 @@
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public retryAfter?: number) { super(message); }
 }
 
-type FirestoreValue = {
+export type FirestoreValue = {
   stringValue?: string; booleanValue?: boolean; integerValue?: string; doubleValue?: number;
   nullValue?: null; timestampValue?: string; arrayValue?: { values?: FirestoreValue[] };
   mapValue?: { fields?: Record<string, FirestoreValue> };
@@ -21,7 +21,7 @@ function decodeValue(value: FirestoreValue): unknown {
   if (value.mapValue) return decodeFields(value.mapValue.fields || {});
   throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
 }
-function decodeFields(fields: Record<string, FirestoreValue>): Document {
+export function decodeFields(fields: Record<string, FirestoreValue>): Document {
   return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)]));
 }
 
