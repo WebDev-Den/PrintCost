@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
@@ -16,6 +16,7 @@ test('bulk catalog actions update/delete 100 atomically, preserve other records 
   const fixture = { db: adminDb, auth: { currentUser: { uid: 'administrator' } } };
   const globals = globalThis as typeof globalThis & { catalogBulkFixture?: typeof fixture };
   globals.catalogBulkFixture = fixture;
+  await mkdir(join(process.cwd(), 'output'), { recursive: true });
   const directory = await mkdtemp(join(process.cwd(), 'output/catalog-bulk-test-'));
   const bundlePath = join(directory, 'api.mjs');
   const base = PUBLIC_FILAMENTS_CATALOG[0];

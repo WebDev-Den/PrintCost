@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
@@ -16,6 +16,7 @@ test('merged types persist without products and rename products with their profi
   const fixture = { db: adminDb, auth: { currentUser: { uid: 'administrator' } } };
   const globals = globalThis as typeof globalThis & { catalogTypeFixture?: typeof fixture };
   globals.catalogTypeFixture = fixture;
+  await mkdir(join(process.cwd(), 'output'), { recursive: true });
   const directory = await mkdtemp(join(process.cwd(), 'output/catalog-test-'));
   const bundlePath = join(directory, 'api.mjs');
   try {
