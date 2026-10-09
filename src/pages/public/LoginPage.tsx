@@ -114,20 +114,6 @@ export const LoginPage: React.FC = () => {
             </div>
           )}
 
-          {captcha.field}
-          <GoogleSignInButton onClick={handleGoogleLogin} disabled={isSubmitting || !captcha.ready} />
-
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-neutral-200 dark:border-neutral-800" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-white dark:bg-neutral-900 px-2 text-neutral-500">
-                або за адресою email
-              </span>
-            </div>
-          </div>
-
           <form onSubmit={handleSubmit} className="space-y-4">
             <Input
               label="Електронна пошта"
@@ -190,6 +176,20 @@ export const LoginPage: React.FC = () => {
             </Button>
 
           </form>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-neutral-200 dark:border-neutral-800" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white dark:bg-neutral-900 px-2 text-neutral-500">
+                або
+              </span>
+            </div>
+          </div>
+
+          {captcha.field}
+          <GoogleSignInButton onClick={handleGoogleLogin} disabled={isSubmitting || !captcha.ready} />
 
           <div className="text-center text-xs text-neutral-500 dark:text-neutral-400 pt-2 border-t border-neutral-200 dark:border-neutral-800">
             <span>Ще немає акаунта? </span>

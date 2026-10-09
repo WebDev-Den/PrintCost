@@ -1,8 +1,14 @@
 # KILO·G — стан проєкту та задач
 
-Стан перевірено **9 жовтня 2026, 14:23 Europe/Kyiv** (11:23 UTC). Це знімок стану для продовження роботи; докладний план — [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), інструкції випуску й відновлення — [OPERATIONS.md](./OPERATIONS.md).
+Стан оновлено **9 жовтня 2026, 14:34 Europe/Kyiv** (11:34 UTC). Поточний production-реліз перевірений о 14:23; нижче також зазначено нове локальне оновлення. Докладний план — [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), інструкції випуску й відновлення — [OPERATIONS.md](./OPERATIONS.md).
 
 **Висновок:** оновлення Turnstile, кнопки Google, UI, масових дій та спільних типів/профілів опубліковане разом із виправленням метаданих усіх восьми стандартних пластиків. **224 автоматичні перевірки**, обидва CI, основний сайт, резервний домен, файли й API — PASS. Реальний Google-вхід власника, збереження сесії, авторизований admin-звіт і 3D-прев’ю працюють. Firebase API відхилив зміну email action URL; налаштування через консоль й повне живе приймання ще відкриті.
+
+## Підготовлено локально: блок входу Google внизу форми
+
+За скриншотом власника у `LoginPage` капчу й Google-кнопку перенесено після email/password форми, перед посиланням на реєстрацію. Розділювач тепер «або». Обидва способи входу зберегли потрібний CAPTCHA token, блокування до його отримання та reset; змінився тільки порядок JSX.
+
+TypeScript, production build і **9 auth/Google/Turnstile client tests PASS**. У локальному браузері перевірено геометрію порядку email submit → CAPTCHA → Google → signup, відсутність горизонтальної прокрутки й активацію обох кнопок після автоматичного тестового widget. Використано ізольований demo Firebase config та Cloudflare test sitekey; реального входу чи production writes не було. Нових тестів для переміщення JSX не додано. Докази: `output/login-bottom-ui-proof.json`, `output/login-bottom-ui.png`, `output/login-bottom-build.log`. **Зміна ще не опублікована**, активний Worker нижче збережений.
 
 ## Перевірка й випуск 9 жовтня
 
@@ -114,7 +120,7 @@ Cloudflare Turnstile реалізовано для входу, реєстрац�
 | Source commit опублікованого коду | `d03c1226d4a985e2d379c27279d6b49d123a9a17` |
 | Активна версія Worker | `79fccdd2-049f-4c52-8eac-e8251ccc2941`, **100% трафіку**, перевірена 9 жовтня 2026 |
 | Попередня версія для відкату | `0813b907-7f18-4807-a07f-49ae01025d6a`; уже має чинний секрет Turnstile |
-| Git | `codex/user-platform`; код релізу збережений і відправлений на GitHub, наступні зміни — документація |
+| Git | `codex/user-platform`; код production-релізу збережений на GitHub; нове переміщення Google/CAPTCHA блоку підготовлене окремо й ще не опубліковане |
 | GitHub | [WebDev-Den/PrintCost](https://github.com/WebDev-Den/PrintCost), [draft PR #1](https://github.com/WebDev-Den/PrintCost/pull/1) у `main` |
 | Firebase | Проєкт `kilo-g`, Firestore `(default)`, Standard / `eur3`, **Spark**, billing вимкнений, billing account не прив’язаний |
 | Authentication | Email/Password і Google увімкнені, email enumeration protection увімкнений; обидва production domains дозволені; Google-вхід власника перевірений |
@@ -173,6 +179,7 @@ Cloudflare Free / $0 підтверджено через консоль під �
 
 ## Відкриті задачі для завершення живого приймання
 
+- [ ] **LOGIN-LAYOUT-RELEASE:** локально перевірене переміщення капчі та Google під email/password форму; опублікувати разом із наступним дозволеним релізом. Поточний Worker не змінювався.
 - [x] **GOOGLE-CONFIG / RELEASE:** Google у Firebase й кнопка на сайті опубліковані; справжній вхід наявного власника, роль і збереження сесії перевірені. Парольний вхід збережений.
 - [ ] **GOOGLE-ACCEPTANCE:** новий акаунт, закриття/блокування popup, mobile та повторна Google-аутентифікація чутливих дій. Незворотне UI-видалення — лише за підтвердженням для визначеного одноразового акаунта.
 - [x] **CATALOG-BULK-RELEASE:** код масових дій опублікований, live UI перевірений; 100/450 та cancel/атомарність перевірені локально й з емуляторами.
