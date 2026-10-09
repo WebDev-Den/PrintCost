@@ -35,7 +35,7 @@
 - [ ] Після нової команди опрацювати SEC-002–005 зі звіту: прямі Firebase Auth запити поза CAPTCHA, Firestore quota abuse, CSP, development dependencies. Не вмикати paid plan й не застосовувати сліпий `npm audit fix --force`.
 
 - [ ] Перевірити GitHub CI цього checkpoint; повторити інтеграційні тести остаточного коду й усунути помилки, якщо вони з'являться.
-- [ ] Завершити локальне наскрізне приймання створення, ротації та відкликання API-ключа через UI після повторної авторизації, без реальних credentials у тестах.
+- [x] Локальне наскрізне приймання ключів через UI завершене 9 жовтня: неправильний пароль відхиляється, правильний дозволяє ротацію; відкликання та повторне створення працюють. Новий імпорт проходить Worker → D1 → Queue → Firestore: completed, 1/1; пропозиція видима менеджеру власної компанії. Ізольовані demo-* акаунти, без production writes і логування plaintext ключів.
 - [ ] Після окремої команди на публікацію створити Queue `kilog-imports` з retention 24 години; перевірити доступність у Cloudflare Free.
 - [ ] Створити окремий Firebase service account `kilog-import-worker` у `kilo-g` з `roles/datastore.user` і `roles/firebaseauth.viewer`; захищено підготувати секрет `FIREBASE_IMPORT_SERVICE_ACCOUNT`. Не використовувати пароль, browser refresh token або відкриті credentials у Git.
 - [ ] Зробити backup D1 й застосувати `0002_import_api.sql` у production. Правила Firestore не послаблювати.

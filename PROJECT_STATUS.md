@@ -231,3 +231,6 @@ Cloudflare Free / $0 підтверджено через консоль під �
 
 ### CSP — локальне приймання 9 жовтня 2026
 Enforced CSP і зовнішній theme-init.js пройшли 5 deployment tests та production build. У браузері перевірено блокування inline script/onclick, Turnstile test widget, графік, G-code parser Worker, 3D canvas і тему після reload. Локальний Google popup зупинився на network error Firebase iframe, CSP-порушень не виявлено; повний Google sign-in залишається live acceptance перед релізом. Production не змінено.
+
+### API — локальне наскрізне приймання 9 жовтня 2026
+Завершено UI acceptance менеджера на demo-kilog-api-ui: неправильна повторна авторизація відхилена, правильна ротація успішна, відкликання прибирає ключ, повторне створення повертає новий. JSON через новий ключ завершився 1/1 успішно; товар видимий у власній компанії. Fixture використовує міграції 0001–0003 і справжній production handler у Miniflare з локальними Auth/Firestore. Plaintext не виводився в логи; screenshot без ключа: output/resume-api-company-proof.png. Це локальне приймання, не live API activation.
