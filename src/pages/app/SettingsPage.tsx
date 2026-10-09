@@ -128,7 +128,7 @@ export const SettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="w-full max-w-7xl mx-auto space-y-6">
       {error && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{error}</p>}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -141,15 +141,15 @@ export const SettingsPage: React.FC = () => {
         </div>
 
         {savedSuccess && (
-          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+          <span role="status" className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
             <Check className="w-4 h-4" /> Налаштування збережено
           </span>
         )}
       </div>
 
-      <form onSubmit={handleSave} onChange={() => setSavedSuccess(false)} className="space-y-6">
+      <form onSubmit={handleSave} onChange={() => setSavedSuccess(false)} className="grid grid-cols-1 xl:grid-cols-3 items-start gap-6">
         {/* Section 1: Energy */}
-        <div className="bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
+        <div className="min-w-0 bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
           <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 pb-3">
             <Zap className="w-4 h-4 text-amber-500" />
             <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
@@ -157,7 +157,7 @@ export const SettingsPage: React.FC = () => {
             </h3>
           </div>
 
-          <div className="max-w-xs">
+          <div>
             <NumberInput
               label="Тариф на електроенергію майстерні"
               unit="грн/кВт·год"
@@ -170,7 +170,7 @@ export const SettingsPage: React.FC = () => {
         </div>
 
         {/* Section 2: Pricing & Margins */}
-        <div className="bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
+        <div className="min-w-0 xl:col-span-2 bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
           <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 pb-3">
             <DollarSign className="w-4 h-4 text-emerald-600" />
             <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
@@ -178,15 +178,16 @@ export const SettingsPage: React.FC = () => {
             </h3>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3 gap-4">
             <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+              <label htmlFor="settings-pricing-mode" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
                 Типовий режим розрахунку ціни
               </label>
               <select
+                id="settings-pricing-mode"
                 value={form.pricingMode}
                 onChange={(e) => setForm({ ...form, pricingMode: e.target.value as PricingMode })}
-                className="w-full py-2 px-3 text-xs rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900"
+                className="w-full py-2 px-3 text-sm rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
               >
                 <option value="markup">Націнка на собівартість (%)</option>
                 <option value="target_margin">Цільова маржа від ціни продажу (%)</option>
@@ -228,13 +229,14 @@ export const SettingsPage: React.FC = () => {
             />
 
             <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+              <label htmlFor="settings-rounding-mode" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
                 Округлення ціни клієнту
               </label>
               <select
+                id="settings-rounding-mode"
                 value={form.roundingMode}
                 onChange={(e) => setForm({ ...form, roundingMode: e.target.value as RoundingMode })}
-                className="w-full py-2 px-3 text-xs rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900"
+                className="w-full py-2 px-3 text-sm rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
               >
                 <option value="none">Без округлення</option>
                 <option value="up_1">Вгору до 1 грн</option>
@@ -248,7 +250,7 @@ export const SettingsPage: React.FC = () => {
         </div>
 
         {/* Section 3: Default Order Labor & Prep Fees */}
-        <div className="bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
+        <div className="min-w-0 xl:col-span-3 bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
           <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 pb-3">
             <Shield className="w-4 h-4 text-blue-600" />
             <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
@@ -288,10 +290,10 @@ export const SettingsPage: React.FC = () => {
           </div>
         </div>
 
-        <TaxSettingsPanel value={form.tax} onChange={tax => { setForm({ ...form, tax }); setSavedSuccess(false); }} disabled={isPending} />
+        <div className="min-w-0 xl:col-span-3"><TaxSettingsPanel value={form.tax} onChange={tax => { setForm({ ...form, tax }); setSavedSuccess(false); }} disabled={isPending} /></div>
 
         {/* Section 4: Interface & System */}
-        <div className="bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
+        <div className="min-w-0 xl:col-span-3 bg-white dark:bg-neutral-900 p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 space-y-4 shadow-2xs">
           <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 pb-3">
             <SettingsIcon className="w-4 h-4 text-neutral-600" />
             <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
@@ -327,10 +329,11 @@ export const SettingsPage: React.FC = () => {
             </div>
 
             <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+              <label htmlFor="settings-timezone" className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
                 Часовий пояс
               </label>
               <input
+                id="settings-timezone"
                 type="text"
                 value={form.timezone}
                 onChange={(e) => setForm({ ...form, timezone: e.target.value })}
@@ -341,8 +344,8 @@ export const SettingsPage: React.FC = () => {
         </div>
 
         {/* Save button */}
-        <div className="flex items-center justify-between pt-2">
-          <Button type="submit" variant="primary" size="md" isLoading={isPending}>
+        <div className="xl:col-span-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+          <Button type="submit" variant="primary" size="md" isLoading={isPending} className="h-auto min-h-10 whitespace-normal">
             Зберегти зміни в налаштуваннях
           </Button>
 
@@ -364,11 +367,11 @@ export const SettingsPage: React.FC = () => {
         <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
           Резервне копіювання конфігурації (JSON)
         </h3>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
           Ви можете експортувати поточні налаштування майстерні у JSON або відновити їх на іншому комп'ютері.
         </p>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button
             variant="outline"
             size="sm"

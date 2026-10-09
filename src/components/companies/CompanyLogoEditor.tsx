@@ -84,10 +84,10 @@ export const CompanyLogoEditor: React.FC<{ company: Company }> = ({ company }) =
   };
 
   return <section className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 space-y-3" aria-label="Логотип компанії">
-    <div className="flex items-center gap-3"><CompanyLogo name={company.name} imageDataUrl={draft} className="h-16 w-16" /><div><h4 className="text-sm font-semibold">Логотип компанії</h4><p className="text-xs text-neutral-500">PNG, JPEG або WebP до 2 МБ. Збережене зображення: 128 × 128.</p>{dirty && <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">Попередній перегляд. Зміни ще не збережено.</p>}</div></div>
-    {!canEdit && <p className="text-xs text-neutral-500">Змінити логотип може адміністратор або менеджер цієї активної компанії.</p>}
-    {loading && <p role="status" className="text-xs text-neutral-500">Завантаження логотипа…</p>}
-    {preparing && <p role="status" className="text-xs text-neutral-500">Підготовка зображення…</p>}
+    <div className="flex items-center gap-3"><CompanyLogo name={company.name} imageDataUrl={draft} className="h-16 w-16" /><div><h4 className="text-sm font-semibold">Логотип компанії</h4><p className="text-xs text-neutral-500 dark:text-neutral-400">PNG, JPEG або WebP до 2 МБ. Збережене зображення: 128 × 128.</p>{dirty && <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">Попередній перегляд. Зміни ще не збережено.</p>}</div></div>
+    {!canEdit && <p className="text-xs text-neutral-500 dark:text-neutral-400">Змінити логотип може адміністратор або менеджер цієї активної компанії.</p>}
+    {loading && <p role="status" className="text-xs text-neutral-500 dark:text-neutral-400">Завантаження логотипа…</p>}
+    {preparing && <p role="status" className="text-xs text-neutral-500 dark:text-neutral-400">Підготовка зображення…</p>}
     {error && <p role="alert" className="text-xs text-red-700 dark:text-red-300">{error}</p>}
     {success && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{success}</p>}
     <div className="space-y-1"><label htmlFor={inputId} className="block text-xs font-medium">Обрати зображення логотипа</label><input id={inputId} type="file" accept="image/png,image/jpeg,image/webp" aria-label="Обрати зображення логотипа" disabled={!canEdit || !ready || busy} onChange={event => { void chooseFile(event); }} className="block w-full text-xs file:mr-3 file:rounded-md file:border file:border-neutral-300 dark:file:border-neutral-700 file:px-3 file:py-2 file:bg-white dark:file:bg-neutral-800 file:text-neutral-800 dark:file:text-neutral-200 disabled:opacity-50" /></div>

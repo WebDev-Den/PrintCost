@@ -297,8 +297,8 @@ export const AppLayout: React.FC = () => {
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
           {/* Top Bar Header */}
-          <header className="h-14 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 px-3 sm:px-6 lg:px-8 flex items-center justify-between sticky top-0 z-30">
-            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <header className="h-14 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 px-3 sm:px-6 lg:px-8 flex items-center justify-between gap-3 sticky top-0 z-30">
+            <div className="flex-1 flex items-center gap-2 sm:gap-3 min-w-0">
               {/* Mobile hamburger button */}
               <button
                 type="button"
@@ -315,7 +315,7 @@ export const AppLayout: React.FC = () => {
               </h1>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="shrink-0 flex items-center gap-2">
               {/* Quick Theme Switcher in Header */}
               <button
                 type="button"
@@ -333,20 +333,22 @@ export const AppLayout: React.FC = () => {
 
               <NavLink
                 to="/filaments"
+                aria-label="Каталог пластиків"
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors border border-neutral-200 dark:border-neutral-700"
               >
                 <BookOpen className="w-3.5 h-3.5 text-emerald-600" />
                 <span className="hidden sm:inline">Каталог пластиків</span>
-                <span className="sm:hidden">Каталог</span>
+                <span className="hidden min-[400px]:inline sm:hidden">Каталог</span>
               </NavLink>
 
               <NavLink
                 to="/app/calculator"
+                aria-label="Новий розрахунок"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs"
               >
                 <Calculator className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Новий розрахунок</span>
-                <span className="sm:hidden">Розрахунок</span>
+                <span className="hidden min-[400px]:inline sm:hidden">Розрахунок</span>
               </NavLink>
             </div>
           </header>
