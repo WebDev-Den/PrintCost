@@ -4,6 +4,16 @@ import { assertCompanyOfferWrite, isOfferProductUrlAllowed, normalizeOfferProduc
   validateCompanyOfferInput, type CompanyOffer, type CompanyOfferInput } from '../src/domain/companyOffers.ts';
 import { STANDARD_TEMPERATURE_PROFILES } from '../src/domain/filamentsDirectory.ts';
 
+test('all standard polymer profiles retain their metadata without catalog products', () => {
+  for (const [type, profile] of Object.entries(STANDARD_TEMPERATURE_PROFILES)) {
+    assert.ok(profile.family, `${type} needs its own material group`);
+    assert.ok(Number.isFinite(profile.densityGPerCm3) && profile.densityGPerCm3! > 0, `${type} needs its own density`);
+  }
+  assert.equal(STANDARD_TEMPERATURE_PROFILES.PC.family, 'Інженерні');
+  assert.equal(STANDARD_TEMPERATURE_PROFILES.PC.densityGPerCm3, 1.2);
+  assert.equal(STANDARD_TEMPERATURE_PROFILES.PETG.densityGPerCm3, 1.25);
+});
+
 const fixture = (): CompanyOfferInput => ({ name: 'PLA Black 500g', brand: 'Own Brand', type: 'PLA', family: 'Стандартні',
   colorName: 'Black', colorHex: '#AABBCC', colorTone: 'black', packagingType: 'spool', spoolWeightGrams: 500,
   priceUah: 99.99, diameterMm: 1.75, description: '', productUrl: 'https://shop.example.com/pla-black', inStock: true, status: 'published' });

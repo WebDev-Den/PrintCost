@@ -33,7 +33,7 @@ import {
   ColorTone,
   ColorType,
   COLOR_TONES_CONFIG,
-  PUBLIC_FILAMENTS_CATALOG,
+  STANDARD_TEMPERATURE_PROFILES,
   PackagingType,
   MAX_CATALOG_BULK_ITEMS,
   type FilamentBulkAction,
@@ -480,12 +480,11 @@ export const CatalogAdminPage: React.FC = () => {
     setEditingPlasticTypeOriginal(typeName);
     setPlasticTypeFormName(typeName);
     const existingTemp = temperatures[typeName];
-    const relatedFilament = filaments.find((f) => f.type.toLowerCase() === typeName.toLowerCase())
-      || PUBLIC_FILAMENTS_CATALOG.find((f) => f.type.toLowerCase() === typeName.toLowerCase());
+    const relatedFilament = filaments.find((f) => f.type.toLowerCase() === typeName.toLowerCase());
     setFormError(null);
     setSaveError(null);
-    setPlasticTypeFormFamily(existingTemp?.family || relatedFilament?.family || 'Стандартні');
-    setPlasticTypeFormDensity(existingTemp?.densityGPerCm3 || relatedFilament?.densityGPerCm3 || 1.24);
+    setPlasticTypeFormFamily(existingTemp?.family || relatedFilament?.family || STANDARD_TEMPERATURE_PROFILES[typeName.toUpperCase()]?.family || 'Стандартні');
+    setPlasticTypeFormDensity(existingTemp?.densityGPerCm3 || relatedFilament?.densityGPerCm3 || STANDARD_TEMPERATURE_PROFILES[typeName.toUpperCase()]?.densityGPerCm3 || 1.24);
     setTempForm(existingTemp ? { ...existingTemp } : { ...EMPTY_TEMPERATURE_PROFILE, plasticType: typeName, notes: relatedFilament?.description || '' });
     setIsPlasticTypeModalOpen(true);
   };
@@ -915,9 +914,8 @@ export const CatalogAdminPage: React.FC = () => {
             {plasticTypes.map((typeKey) => {
               const matchedFilaments = filaments.filter((f) => f.type.toLowerCase() === typeKey.toLowerCase());
               const tempProfile = temperatures[typeKey];
-              const relatedFilament = matchedFilaments[0] || PUBLIC_FILAMENTS_CATALOG.find((f) => f.type.toLowerCase() === typeKey.toLowerCase());
-              const family = tempProfile?.family || relatedFilament?.family || 'Стандартні';
-              const density = tempProfile?.densityGPerCm3 || relatedFilament?.densityGPerCm3 || 1.24;
+              const family = tempProfile?.family || matchedFilaments[0]?.family || STANDARD_TEMPERATURE_PROFILES[typeKey.toUpperCase()]?.family || 'Стандартні';
+              const density = tempProfile?.densityGPerCm3 || matchedFilaments[0]?.densityGPerCm3 || STANDARD_TEMPERATURE_PROFILES[typeKey.toUpperCase()]?.densityGPerCm3 || 1.24;
 
               return (
                 <div
