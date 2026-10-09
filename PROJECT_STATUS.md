@@ -234,3 +234,6 @@ Enforced CSP і зовнішній theme-init.js пройшли 5 deployment tes
 
 ### API — локальне наскрізне приймання 9 жовтня 2026
 Завершено UI acceptance менеджера на demo-kilog-api-ui: неправильна повторна авторизація відхилена, правильна ротація успішна, відкликання прибирає ключ, повторне створення повертає новий. JSON через новий ключ завершився 1/1 успішно; товар видимий у власній компанії. Fixture використовує міграції 0001–0003 і справжній production handler у Miniflare з локальними Auth/Firestore. Plaintext не виводився в логи; screenshot без ключа: output/resume-api-company-proof.png. Це локальне приймання, не live API activation.
+
+### Email action handler — 9 жовтня 2026
+Завершено recoverEmail callback: перевірка Firebase operation до applyActionCode, відхилення чужого/простроченого коду, правильний результат і перехід до відновлення пароля без автоматичного надсилання листа. Promise прив'язаний до mode/code, щоб інше посилання не отримувало результат попереднього. Lint і 6 auth tests PASS; справжній Auth emulator відновив стару email-адресу й відхилив повторне використання коду. Браузер перевірив повідомлення недійсного recovery-коду. Production action URL не змінено.

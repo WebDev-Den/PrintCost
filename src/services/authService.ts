@@ -1,5 +1,6 @@
 import {
   applyActionCode,
+  checkActionCode,
   confirmPasswordReset,
   createUserWithEmailAndPassword,
   EmailAuthProvider,
@@ -308,10 +309,16 @@ export class FirebaseAuthService implements AuthService {
     this.assertSession(user.uid);
   }
 
-  async verifyEmail(code: string): Promise<void> {
+  async completeEmailAction(code: string, mode: 'verifyEmail' | 'recoverEmail'): Promise<void> {
     if (!code) throw new Error('У посиланні немає коду підтвердження.');
-    await applyActionCode(requireAuth(), code);
-    await this.refreshCurrentUser();
+    if (mode !== 'verifyEmail' && mode !== 'recoverEmail') throw new Error('Непідтримувана дія з електронною поштою.');
+    const auth = requireAuth();
+    const info = await checkActionCode(auth, code);
+    if (info.operation !== (mode === 'recoverEmail' ? 'RECOVER_EMAIL' : 'VERIFY_EMAIL')) {
+      throw new Error('Код у листі не відповідає цій дії. Відкрийте повне посилання з листа.');
+    }
+    await applyActionCode(auth, code);
+    if (mode === 'verifyEmail') await this.refreshCurrentUser();
   }
 
   async refreshCurrentUser(): Promise<UserProfile | null> {

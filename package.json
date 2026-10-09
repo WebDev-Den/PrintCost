@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test": "tsx --test tests/calculator.test.ts tests/fileAnalysis.test.ts tests/printPreview.test.ts tests/printPreviewService.test.ts tests/auth.test.ts tests/googleAuth.test.ts tests/organizations.test.ts tests/companyOffers.test.ts tests/companyLogos.test.ts tests/taxes.test.ts tests/taxPersistence.test.ts tests/matchingTemplates.test.ts tests/templatePersistence.test.ts tests/analyticsClient.test.ts tests/analyticsWorker.test.ts tests/accountData.test.ts tests/deployValidation.test.ts tests/turnstileClient.test.ts tests/turnstileWorker.test.ts tests/turnstileRuntime.integration.ts tests/apiImports.test.ts tests/apiImportClient.test.ts",
+    "test": "tsx --test tests/calculator.test.ts tests/fileAnalysis.test.ts tests/printPreview.test.ts tests/printPreviewService.test.ts tests/auth.test.ts tests/authEmailActions.test.ts tests/googleAuth.test.ts tests/organizations.test.ts tests/companyOffers.test.ts tests/companyLogos.test.ts tests/taxes.test.ts tests/taxPersistence.test.ts tests/matchingTemplates.test.ts tests/templatePersistence.test.ts tests/analyticsClient.test.ts tests/analyticsWorker.test.ts tests/accountData.test.ts tests/deployValidation.test.ts tests/turnstileClient.test.ts tests/turnstileWorker.test.ts tests/turnstileRuntime.integration.ts tests/apiImports.test.ts tests/apiImportClient.test.ts",
     "test:rules": "firebase emulators:exec --project demo-kilog --only firestore \"tsx --test tests/firestore.rules.test.ts\"",
     "test:analytics:runtime": "tsx --test tests/analyticsRuntime.integration.ts",
     "test:account:integration": "tsx --test tests/accountData.integration.test.ts",
