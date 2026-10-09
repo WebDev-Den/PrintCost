@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { Miniflare, Response as RuntimeResponse, convertV4MiniflareOptions } from 'miniflare';
-import { IMPORT_EXAMPLE } from '../src/domain/apiImports.ts';
+import { IMPORT_EXAMPLE, IMPORT_LIMITS } from '../src/domain/apiImports.ts';
 import { encodeFields } from '../workers/importFirebase.ts';
 import { decodeFields } from '../workers/firebase.ts';
 import { createImportApi } from '../workers/importApi.ts';
@@ -66,8 +66,10 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   }));
   t.after(async () => { await mf.dispose(); await fetch('http://127.0.0.1:8080/emulator/v1/projects/' + project + '/databases/(default)/documents', { method: 'DELETE' }); });
   const db = await mf.getD1Database('ANALYTICS_DB');
-  const migration = await readFile('migrations/0002_import_api.sql', 'utf8');
-  for (const statement of migration.trim().split(/(?<=;)\s*(?=CREATE\b)/i)) await db.prepare(statement).run();
+  for (const file of ['0002_import_api.sql', '0003_import_access_limits.sql']) {
+    const migration = await readFile('migrations/' + file, 'utf8');
+    for (const statement of migration.trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER)\b)/i)) await db.prepare(statement).run();
+  }
   function jwt(uid: string, stale = false) {
     const time = Math.floor(Date.now() / 1000);
     const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'fixture' })).toString('base64url');
@@ -126,9 +128,8 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const parallel = await Promise.all(Array.from({ length: 10 }, () => request('imports', managerKey, 'POST', managerPayload)));
   assert.ok(parallel.every(response => response.status === 429), 'owner cooldown remains enforced under concurrent requests');
   assert.ok(Number(parallel[0].headers.get('Retry-After')) > 3000);
-  const keyRow = await db.prepare('SELECT * FROM import_keys WHERE uid=?').bind('manager').first<any>();
   const cooldown = await db.prepare('SELECT next_allowed FROM import_limits WHERE uid=?').bind('manager').first<any>();
-  assert.equal(cooldown.next_allowed - keyRow.created_at, 3600);
+  assert.equal(cooldown.next_allowed - Date.parse(job.createdAt) / 1000, IMPORT_LIMITS.managerInterval);
   const oldKey = managerKey;
   managerKey = (await (await request('api-key', managerJwt, 'POST')).json() as any).key;
   assert.equal((await request('imports', oldKey)).status, 401);
@@ -194,8 +195,31 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const cancelled = await db.prepare('SELECT status,payload FROM import_jobs WHERE id=?').bind(deferred.id).first<any>();
   assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.payload, null);
   assert.equal((await request('imports', adminKey)).status, 401);
+  const day = new Date().toISOString().slice(0, 10);
+  await db.prepare('UPDATE import_daily SET access_checks=?,admin_access_checks=0 WHERE day=?').bind(IMPORT_LIMITS.dailyManagerAccessChecks - 1, day).run();
+  const deniedBefore = firebaseRequests;
+  const userJwt = jwt('user');
+  // The initial denied request already used one of this UID's discovery checks.
+  for (let i = 1; i < IMPORT_LIMITS.dailyUnrecognizedUidChecks; i++) assert.equal((await request('api-key', userJwt)).status, 403);
+  const deniedAfter = firebaseRequests;
+  assert.ok(deniedAfter > deniedBefore);
+  const unknownOverflow = await Promise.all(Array.from({ length: 5 }, () => request('api-key', userJwt)));
+  assert.ok(unknownOverflow.every(response => response.status === 429));
+  assert.equal(firebaseRequests, deniedAfter, 'unknown UID quota stops Firebase reads before authorization');
+  let counters = await db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day).first<any>();
+  assert.equal(counters.access_checks, IMPORT_LIMITS.dailyManagerAccessChecks - 1, '403 cannot consume privileged quotas');
+  assert.equal(counters.admin_access_checks, 0);
+  assert.equal((await request('api-key', adminJwt)).status, 200, 'admin without an API key remains reachable after denied user requests');
+  const restoredAdminKey = (await (await request('api-key', adminJwt, 'POST')).json() as any).key;
+  await db.prepare('UPDATE import_daily SET access_checks=? WHERE day=?').bind(IMPORT_LIMITS.dailyManagerAccessChecks, day).run();
   const beforeBudget = firebaseRequests;
-  await db.prepare('UPDATE import_daily SET access_checks=1000').run();
   assert.equal((await request('imports', managerKey)).status, 429);
   assert.equal(firebaseRequests, beforeBudget, 'exhausted budget stops outbound authorization reads');
+  assert.equal((await request('imports', restoredAdminKey)).status, 200, 'manager quota exhaustion does not consume the admin reserve');
+  await db.prepare('UPDATE import_daily SET admin_access_checks=? WHERE day=?').bind(IMPORT_LIMITS.dailyAdminAccessChecks - 1, day).run();
+  const concurrentBudget = await Promise.all(Array.from({ length: 5 }, () => request('imports', restoredAdminKey)));
+  assert.equal(concurrentBudget.filter(response => response.status === 200).length, 1, 'admin reserve is atomic under concurrent requests');
+  assert.ok(concurrentBudget.every(response => [200,429].includes(response.status)));
+  counters = await db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day).first<any>();
+  assert.equal(counters.admin_access_checks, IMPORT_LIMITS.dailyAdminAccessChecks);
 });

@@ -6,6 +6,8 @@ import { validateCompany, type Company } from './organizations.ts';
 export const IMPORT_LIMITS = {
   items: 100, bytes: 128 * 1024, managerInterval: 3600, adminInterval: 300,
   dailyItems: 5000, dailyJobs: 100, dailyAccessChecks: 1000, dailyQueueMessages: 1500, activeJobs: 100,
+  dailyManagerAccessChecks: 500, dailyAdminAccessChecks: 500,
+  dailyUnrecognizedUidChecks: 10, dailyManagerUidChecks: 200, dailyAdminUidChecks: 500,
   batchItems: 5, retries: 3, lifetime: 86400, retentionDays: 30,
 } as const;
 export type ImportStatus = 'queued' | 'processing' | 'completed' | 'partial' | 'failed' | 'cancelled';

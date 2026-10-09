@@ -30,10 +30,28 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
     if (!env.ANALYTICS_DB || !env.FIREBASE_IMPORT_SERVICE_ACCOUNT || !env.IMPORT_QUEUE) throw new ApiError(503, 'API імпорту ще не активовано.');
     return env.ANALYTICS_DB;
   }
-  async function budget(db: AnalyticsDatabase) {
-    const result = await db.prepare('INSERT INTO import_daily(day,access_checks) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET access_checks=access_checks+1 WHERE access_checks<? RETURNING day')
-      .bind(now().toISOString().slice(0, 10), IMPORT_LIMITS.dailyAccessChecks).all();
-    if (!result.results.length) throw new ApiError(429, 'Денний ліміт перевірок API вичерпано. Спробуйте завтра (UTC).', 86400 - seconds() % 86400);
+  function exhaustedBudget(): never {
+    throw new ApiError(429, 'Денний ліміт перевірок API вичерпано. Спробуйте завтра (UTC).', 86400 - seconds() % 86400);
+  }
+  async function preliminaryBudget(db: AnalyticsDatabase, uid: string, key: KeyRow | null) {
+    const day = now().toISOString().slice(0, 10);
+    const known = key && key.expires_at > seconds() ? key : null;
+    const limit = known ? known.role === 'admin' ? IMPORT_LIMITS.dailyAdminUidChecks : IMPORT_LIMITS.dailyManagerUidChecks : IMPORT_LIMITS.dailyUnrecognizedUidChecks;
+    const result = await db.prepare('INSERT INTO import_access_daily(day,uid,checks,limit_checks) VALUES(?,?,1,?) ON CONFLICT(day,uid) DO UPDATE SET checks=checks+1,limit_checks=MAX(limit_checks,excluded.limit_checks) WHERE checks<MAX(limit_checks,excluded.limit_checks) RETURNING uid')
+      .bind(day, uid, limit).all();
+    if (!result.results.length) exhaustedBudget();
+    // A stored key selects only a quota; live Firebase permissions still decide access.
+    if (known) {
+      const daily = await db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day).first<{ access_checks: number; admin_access_checks: number }>();
+      if (daily && (known.role === 'admin' ? daily.admin_access_checks >= IMPORT_LIMITS.dailyAdminAccessChecks : daily.access_checks >= IMPORT_LIMITS.dailyManagerAccessChecks)) exhaustedBudget();
+    }
+  }
+  async function budget(db: AnalyticsDatabase, role: 'admin' | 'manager') {
+    const column = role === 'admin' ? 'admin_access_checks' : 'access_checks';
+    const limit = role === 'admin' ? IMPORT_LIMITS.dailyAdminAccessChecks : IMPORT_LIMITS.dailyManagerAccessChecks;
+    const result = await db.prepare(`INSERT INTO import_daily(day,${column}) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET ${column}=${column}+1 WHERE ${column}<? RETURNING day`)
+      .bind(now().toISOString().slice(0, 10), limit).all();
+    if (!result.results.length) exhaustedBudget();
   }
   async function authorize(request: Request, env: ImportEnv, jwtOnly = false) {
     const db = configured(env);
@@ -55,10 +73,11 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
       key = await db.prepare('SELECT * FROM import_keys WHERE uid=?').bind(uid).first<KeyRow>();
     }
     if (env.IMPORT_RATE_LIMIT && !(await env.IMPORT_RATE_LIMIT.limit({ key: 'uid:' + uid })).success) throw new ApiError(429, 'Забагато запитів для цього акаунта. Спробуйте через хвилину.');
-    await budget(db);
+    await preliminaryBudget(db, uid, key);
     const scope = await firebase.scope(env.FIREBASE_PROJECT_ID, env.FIREBASE_IMPORT_SERVICE_ACCOUNT!, uid);
     if (authTime !== undefined && authTime < scope.validSince) throw new ApiError(401, 'Сесію відкликано. Увійдіть знову.');
     if (authTime === undefined && key?.fingerprint !== scope.fingerprint) throw new ApiError(403, 'Права змінилися. Оновіть API-ключ у кабінеті.');
+    await budget(db, scope.role);
     return { db, scope, key, authTime };
   }
   async function dispatch(env: ImportEnv, id: string, cursor: number) {
@@ -221,6 +240,7 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         await db.prepare('DELETE FROM import_jobs WHERE id=?').bind(job.id).all();
       }
       await db.prepare('DELETE FROM import_daily WHERE day<?').bind(new Date((time - IMPORT_LIMITS.retentionDays * 86400) * 1000).toISOString().slice(0, 10)).all();
+      await db.prepare('DELETE FROM import_access_daily WHERE day<?').bind(new Date((time - 2 * 86400) * 1000).toISOString().slice(0, 10)).all();
     },
   };
 }
