@@ -145,9 +145,11 @@ npm run deploy:worker
 
 ## Листи підтвердження та відновлення пароля
 
-Стандартний обробник листів Firebase працює без налаштування власної сторінки: після завершення дії він може повернути користувача у застосунок. Авторизація використовує URL поточного сайту, тому його hostname має бути дозволеним у Firebase.
+Firebase зараз формує листи зі стандартним обробником `https://kilo-g.firebaseapp.com/__/auth/action`. Параметр `url` у `sendEmailVerification` і `sendPasswordResetEmail` задає лише `continueUrl` для повернення після дії; він не змінює домен обробника. `web-dev.pp.ua` уже є в Authorized domains.
 
-За бажанням після деплою в **Authentication → Templates** задайте для листів підтвердження та скидання пароля **Action URL**: URL опублікованого Worker із доданим `/auth/callback`. Власний маршрут обробляє `mode=verifyEmail` та `mode=resetPassword` із `oobCode`; при скиданні відкриває `/auth/reset-password`. Копіювати або обривати параметри посилання з листа не потрібно. [Власний email handler](https://firebase.google.com/docs/auth/custom-email-handler).
+Щоб нові листи вели на домен KILO·G, у **Authentication → Templates → редагування шаблону → Customize action URL** потрібно задати **`https://web-dev.pp.ua/auth/callback`**. Збережена адреса застосовується до всіх email-шаблонів проєкту. Власний маршрут уже доступний і обробляє `mode=verifyEmail` та `mode=resetPassword` із `oobCode`; при скиданні відкриває `/auth/reset-password`. Уже надіслані листи автоматично не зміняться; після налаштування потрібен новий лист. Повний URL із кодом не копіювати в чат або журнали. [Власний email handler](https://firebase.google.com/docs/auth/custom-email-handler).
+
+**Публікацію й зміни live-конфігурації призупинено за командою власника «не деплой доки не скажу».** Action URL поки не змінено; це окрема задача `EMAIL-ACTION-URL` у [PROJECT_STATUS.md](./PROJECT_STATUS.md). Повторний деплой Worker для цього налаштування не потрібний.
 
 Публічний запуск потребує окремої перевірки доставлення реальних листів, повторного входу після підтвердження та входу з новим паролем після відновлення.
 
