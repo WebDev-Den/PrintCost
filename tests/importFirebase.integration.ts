@@ -11,6 +11,8 @@ test('transactional import respects ownership, profiles, live roles and crash re
   const keys = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const secret = JSON.stringify({ project_id: project, client_email: 'import@' + project + '.iam.gserviceaccount.com', private_key: keys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() });
   const users = new Map(['admin', 'manager', 'user'].map(uid => [uid, { localId: uid, emailVerified: true, validSince: '0' }]));
+  const scopeBatches: string[][] = [];
+  let invalidScopeBatch = '';
   const adapter = createImportFirebase(async (input, init) => {
     const url = String(input);
     if (url === 'https://oauth2.googleapis.com/token') {
@@ -25,7 +27,19 @@ test('transactional import respects ownership, profiles, live roles and crash re
       return Response.json({ users: users.has(uid) ? [users.get(uid)] : [] });
     }
     assert.ok(url.startsWith('https://firestore.googleapis.com/v1/projects/' + project + '/'));
-    return fetch(url.replace('https://firestore.googleapis.com/v1/projects/' + project + '/databases/(default)/documents', root), { ...init, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' } });
+    const response = await fetch(url.replace('https://firestore.googleapis.com/v1/projects/' + project + '/databases/(default)/documents', root), { ...init, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' } });
+    if (url.endsWith(':batchGet') && response.ok) {
+      const documents = JSON.parse(init?.body as string).documents as string[];
+      const rows = (await response.json()).reverse();
+      if (documents.length === 4) {
+        scopeBatches.push(documents);
+        if (invalidScopeBatch === 'missing') rows.pop();
+        if (invalidScopeBatch === 'duplicate') rows[0] = rows[1];
+        if (invalidScopeBatch === 'foreign') rows[0] = { missing: 'projects/foreign/databases/(default)/documents/system/authorization' };
+      }
+      return Response.json(rows);
+    }
+    return response;
   });
   const seed = async (path: string, value: Record<string, unknown>) => {
     const response = await fetch(root + '/' + path, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' }, body: JSON.stringify({ fields: encodeFields(value) }) });
@@ -43,6 +57,9 @@ test('transactional import respects ownership, profiles, live roles and crash re
   const access = { blocked: false, changeId: 'initial' };
   for (const uid of users.keys()) await seed('accountAccess/' + uid, access);
   const admin = await adapter.scope(project, secret, 'admin');
+  assert.equal(scopeBatches.length, 1, 'one live batch reads all four authorization documents');
+  assert.equal(scopeBatches[0].length, 4);
+  assert.equal(admin.role, 'admin', 'unordered found/missing rows are mapped by document name');
   const payload = normalizeImportPayload(IMPORT_EXAMPLE);
   const results = await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-a', payload, 0);
   assert.equal(results[0].success, true);
@@ -84,6 +101,12 @@ test('transactional import respects ownership, profiles, live roles and crash re
   await seed('accountAccess/manager', { blocked: false, changeId: 'unblocked' });
   await assert.rejects(adapter.process(project, secret, 'manager', manager.fingerprint, 'job-h', update, 0), /Права змінилися/);
   await assert.rejects(adapter.scope(project, secret, 'user'), /Немає доступу/);
+  for (const failure of ['missing', 'duplicate', 'foreign']) {
+    invalidScopeBatch = failure;
+    await assert.rejects(adapter.scope(project, secret, 'admin'), /Некоректна відповідь сервісу доступу/);
+  }
+  invalidScopeBatch = '';
+  assert.equal((await adapter.scope(project, secret, 'admin')).fingerprint, admin.fingerprint);
   users.delete('admin');
   await assert.rejects(adapter.scope(project, secret, 'admin'), /видалений/);
 });

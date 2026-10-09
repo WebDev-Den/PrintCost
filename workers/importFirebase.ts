@@ -63,11 +63,24 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
     const headers = { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' };
     const call = (suffix: string, body?: unknown) => responseJson(root + suffix, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const name = (path: string) => root.slice('https://firestore.googleapis.com/v1/'.length) + '/' + path;
+    async function readMany(paths: string[], transaction?: string): Promise<(Document | null)[]> {
+      const documents = paths.map(name);
+      const rows = await call(':batchGet', { documents, ...(transaction ? { transaction } : {}) });
+      const found = new Map<string, Document | null>();
+      if (!Array.isArray(rows)) throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
+      for (const row of rows) {
+        const documentName = row?.found?.name ?? row?.missing;
+        if (typeof documentName !== 'string' || !documents.includes(documentName) || found.has(documentName) ||
+          (row.found && row.missing)) throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
+        found.set(documentName, row.found ? decodeFields(row.found.fields || {}) : null);
+      }
+      if (found.size !== documents.length) throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
+      // Firestore returns found and missing documents in an unspecified order.
+      return documents.map(documentName => found.get(documentName)!);
+    }
     async function read(path: string, transaction?: string): Promise<Document | null> {
       if (transaction) {
-        const rows = await call(':batchGet', { documents: [name(path)], transaction });
-        const found = rows.find((row: any) => row.found)?.found;
-        return found ? decodeFields(found.fields || {}) : null;
+        return (await readMany([path], transaction))[0];
       }
       const result = await call('/' + path.split('/').map(encodeURIComponent).join('/'));
       return result ? decodeFields(result.fields || {}) : null;
@@ -81,10 +94,9 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
       return validSince;
     }
     async function scope(uid: string, validSince: number, transaction?: string): Promise<ImportScope> {
-      const [registry, access, member, deletion] = await Promise.all([
-        read('system/authorization', transaction), read('accountAccess/' + uid, transaction),
-        read('memberships/' + uid, transaction), read('accountDeletion/' + uid, transaction),
-      ]);
+      const [registry, access, member, deletion] = await readMany([
+        'system/authorization', 'accountAccess/' + uid, 'memberships/' + uid, 'accountDeletion/' + uid,
+      ], transaction);
       if (!registry || access?.blocked === true || deletion) throw new ApiError(403, 'API доступне лише активним адміністраторам і менеджерам.');
       const admin = Array.isArray(registry.adminUids) && registry.adminUids.includes(uid);
       const companyId = !admin && member?.active === true && typeof member.companyId === 'string' ? member.companyId : null;
