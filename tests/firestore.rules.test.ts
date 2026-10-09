@@ -1220,7 +1220,8 @@ test('deletion requires a recent trusted auth time, immutable timestamp and exac
   }
   await assertFails(setDoc(doc(recentUser(), 'accountDeletion/bob'), { uid: 'bob', startedAt: serverTimestamp(), changeId: crypto.randomUUID() }));
   await assertFails(setDoc(doc(environment.unauthenticatedContext().firestore(), 'accountDeletion/alice'), { uid: 'alice', startedAt: serverTimestamp(), changeId: crypto.randomUUID() }));
-  const { batch } = await deletionBatch(recentUser('alice', 299));
+  // Second-rounded claims and request latency need headroom inside the five-minute window.
+  const { batch } = await deletionBatch(recentUser('alice', 295));
   await assertSucceeds(batch.commit());
 });
 
