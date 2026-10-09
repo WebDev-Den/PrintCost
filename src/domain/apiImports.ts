@@ -1,4 +1,4 @@
-import { normalizeCompanyOfferInput, OFFER_INPUT_FIELDS, type CompanyOfferInput } from './companyOffers.ts';
+import { normalizeCompanyOfferInput, OFFER_INPUT_FIELDS, type CompanyOfferInput } from './companyOfferValidation.ts';
 import { STANDARD_TEMPERATURE_PROFILES, type TemperatureProfile } from './filamentsDirectory.ts';
 import { normalizeMaterialType } from './materialMatching.ts';
 import { validateCompany, type Company } from './organizations.ts';

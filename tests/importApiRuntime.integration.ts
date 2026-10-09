@@ -33,7 +33,8 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     status: 'active', version: 1, createdBy: 'admin', createdAt: stamp, updatedAt: stamp, updatedBy: 'admin', changeId: 'initial' });
   await seed('memberships/manager', { active: true, companyId: 'company-a', changeId: 'initial', version: 1 });
   await seed('memberships/other-manager', { active: true, companyId: 'company-b', changeId: 'initial', version: 1 });
-  const bundle = await build({ entryPoints: ['workers/index.ts'], bundle: true, write: false, format: 'esm', platform: 'browser' });
+  const bundle = await build({ entryPoints: ['workers/index.ts'], bundle: true, write: false, format: 'esm', platform: 'browser', metafile: true });
+  assert.ok(Object.keys(bundle.metafile.inputs).every(path => !path.includes('node_modules/decimal.js/')), 'Worker validation must keep frontend Decimal initialization out of its bundle.');
   let failCommitOnce = false, failFirebase = false, firebaseRequests = 0;
   const transport = async (request: Pick<Request, 'url' | 'method' | 'text'>) => {
       const url = new URL(request.url);

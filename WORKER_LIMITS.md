@@ -43,6 +43,10 @@
 
 Повний CI й native CPU другого блоку очікують завершення. Найбільший production-імпорт/звіт та холодний isolate під навантаженням не вважати прийнятими без окремих фактичних вимірів.
 
+Другий блок, source `1b768d5408967cb2cfd13e550c887a8ea1fc9fa8`: [push CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37984467712) і [PR CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37984474669) — **145 + 114 = 259 PASS**. Worker `f5d2dae7-dc20-4667-bbef-bb62fb3bacef`, 100% traffic від 20:06 UTC; 68 assets / 10 негативних API перевірок — PASS. Перші авторизовані API-ключ/імпорти/аналітика — **14/19/11 мс**, повторні API-ключ/імпорти — **7/13 мс**, порожній Cron — **3 мс**. GraphQL цієї версії: 20 sampled requests / 0 errors / max bucket P99 **19.106 мс**. Free CPU ще не прийнятий: зменшення D1 роботи саме по собі не усуває витрат першого запуску.
+
+Наступний блок відділяє легку перевірку пропозицій від frontend-конвертації з Decimal. Worker bundle зменшується з 256019 до 193018 байтів (−24,6%); залежність Decimal повністю відсутня. Перевірка ціни до копійок зберігається, frontend-розрахунки з Decimal не змінюються. Це зменшення коду, а не доказ native CPU.
+
 ## Джерела
 
 [Workers Free: 10 мс CPU HTTP/Cron, 100000 requests/день, 50 subrequests](https://developers.cloudflare.com/workers/platform/limits/). Очікування мережі/D1 не є CPU. Поодинокий overrun може пройти завдяки внутрішній гнучкості платформи; стале перевищення може спричинити `exceededCpu` / 1102.

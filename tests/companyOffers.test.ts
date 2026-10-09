@@ -30,6 +30,23 @@ test('company offer validates real cents and bounded fields without accepting pr
   assert.equal(validateCompanyOfferInput(fixture(), ['shop.example.com']).colorHex, '#aabbcc');
 });
 
+test('cent validation preserves exact decimal prices and rejects their adjacent floats', () => {
+  const view = new DataView(new ArrayBuffer(8));
+  for (const priceUah of [0.01, 0.29, 1.1, 900.29, 599.99, 9999999.99, 10000000]) {
+    assert.equal(validateCompanyOfferInput({ ...fixture(), priceUah }, ['shop.example.com']).priceUah, priceUah);
+    view.setFloat64(0, priceUah);
+    const bits = view.getBigUint64(0);
+    for (const step of [-1n, 1n]) {
+      view.setBigUint64(0, bits + step);
+      const adjacent = view.getFloat64(0);
+      assert.throws(() => validateCompanyOfferInput({ ...fixture(), priceUah: adjacent }, ['shop.example.com']), /Ціна/);
+    }
+  }
+  for (const priceUah of [0.001, 1.005, 1.009, 600.333, Number.MIN_VALUE]) {
+    assert.throws(() => validateCompanyOfferInput({ ...fixture(), priceUah }, ['shop.example.com']), /Ціна/);
+  }
+});
+
 test('product URLs require the exact allowed HTTPS host and reject default ports before normalization', () => {
   assert.equal(normalizeOfferProductUrl('HTTPS://SHOP.EXAMPLE.COM/item?x=1#detail'), 'https://shop.example.com/item?x=1#detail');
   for (const productUrl of ['http://shop.example.com/item', 'javascript:alert(1)', 'https://user:pass@shop.example.com/item',

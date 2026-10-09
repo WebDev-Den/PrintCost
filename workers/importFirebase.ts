@@ -1,6 +1,6 @@
 import { ApiError, boundedText, decodeFields, type Document, type FirestoreValue } from './firebase.ts';
 import { IMPORT_LIMITS, importDomain, profileForImport, type ImportPayload, type ImportItemResult } from '../src/domain/apiImports.ts';
-import { assertCompanyOfferWrite, validateCompanyOfferInput, type CompanyOffer } from '../src/domain/companyOffers.ts';
+import { assertCompanyOfferWrite, validateCompanyOfferInput, type CompanyOffer } from '../src/domain/companyOfferValidation.ts';
 import { validateCompany, type Company } from '../src/domain/organizations.ts';
 import type { TemperatureProfile } from '../src/domain/filamentsDirectory.ts';
 
