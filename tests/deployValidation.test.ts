@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { validateDeployment } from '../scripts/deploy-validation.ts';
 
 const sitekey = '0x4AAAAAAFR_dav3sbi3wfEO';
@@ -11,6 +11,13 @@ const config = { name: 'kilo-g', vars: { FIREBASE_PROJECT_ID: 'kilo-g', TURNSTIL
   d1_databases: [{ binding: 'ANALYTICS_DB', database_id: 'a2bcb470-785c-44f6-9b77-5dbd9702a9ca' }],
   ratelimits: [{ name: 'ANALYTICS_RATE_LIMIT', namespace_id: '129761', simple: { limit: 60, period: 60 } },
     { name: 'IMPORT_RATE_LIMIT', namespace_id: '129762', simple: { limit: 30, period: 60 } }] };
+
+test('D1 migration files preserve LF on Windows for remote trigger parsing', async () => {
+  for (const file of (await readdir('migrations')).filter(name => name.endsWith('.sql'))) {
+    assert.ok(!(await readFile('migrations/' + file, 'utf8')).includes('\r'), file + ' must use LF');
+  }
+  assert.match(await readFile('.gitattributes', 'utf8'), /^migrations\/\*\.sql text eol=lf$/m);
+});
 
 test('static app enforces script CSP while allowing Firebase, Turnstile and parser workers', async () => {
   const headers = await readFile('public/_headers', 'utf8');
