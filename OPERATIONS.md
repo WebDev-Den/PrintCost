@@ -6,6 +6,8 @@
 
 ## Перед випуском
 
+Оновлення Turnstile підготовлене в `codex/user-platform`, але **ще не опубліковане через відсутній CLI-дозвіл**. Поточні source/version і докази попереднього релізу збережені нижче; вони не підтверджують живу капчу. Повний `npm test` пройшов 116 перевірок застосунку/Worker та 6 native runtime перевірок Turnstile, разом 122. Окремі 95 емуляторних перевірок також пройшли: усього 217 PASS. TypeScript, production build, deploy validator і Wrangler dry run пройшли; після останньої перевірки пробілів у token повторно пройшли 25 цільових Turnstile перевірок та dry run. Локальний dummy widget перевірений у браузері на вході, реєстрації та запиті відновлення; реальний widget і Siteverify потребують окремого приймання після публікації.
+
 Перевірити production build, TypeScript, тести застосунку, Rules, account cleanup, operations і реальний Worker/D1 runtime. Для CI потрібні Node 22 та Java 21 для емулятора. CI запускається на push/PR; розклад, автоматична оплата й деплой з неперевіреної гілки не потрібні. Не завантажувати `output/backups`, Auth exports, CLI credentials або журнали приватних даних як CI artifacts.
 
 Публікація заблокована, поки D1 `database_id` є placeholder, немає потрібних bindings або застосованої міграції. Фактичні CPU API на Workers Free треба виміряти на робочому релізі для холодного/прогрітого ключа, неправильних токенів, пакета подій і великого звіту. Локальний wall time і sampled V8 profile не підтверджують облік Cloudflare та межу **10 мс CPU**. Не вмикати paid plan для проходження перевірки: скоротити роботу запиту або залишити аналітику недоступною до усунення причини. Відмова API аналітики не повинна зупиняти статичний сайт і калькулятор.
@@ -13,6 +15,24 @@
 Перевірити дозволені Firebase Auth домени, реальні листи підтвердження/відновлення, роботу прямого URL, bootstrap власника і ролей. Зберегти git SHA, версію Worker, стан Rules/indexes та ідентифікатор міграції D1. Відкат коду або Rules не відновлює дані автоматично.
 
 Локальний remote — [WebDev-Den/PrintCost](https://github.com/WebDev-Den/PrintCost), робоча гілка `codex/user-platform`. [Workers Builds trigger inventory](https://developers.cloudflare.com/api/resources/workers_builds/subresources/triggers/methods/list/) повернув **403 / 10000** для наявного CLI OAuth; налаштування збережені й повторно перевірені через консоль 9 жовтня 2026: repository `WebDev-Den/PrintCost`, production branch `main`, root `/`, build `npm run lint && npm test`, deploy `npm run deploy:worker`. Preview builds та preview URLs вимкнені: окремі ресурси Firebase/D1 для preview не налаштовані. Нових scopes або credentials цей випуск не створює.
+
+## Turnstile: секрет, публікація та перевірка
+
+Публічна конфігурація збірки — `VITE_TURNSTILE_SITE_KEY`; runtime Secret Worker — `TURNSTILE_SECRET_KEY`. `secrets.required` вимагає секрет перед деплоєм. `TURNSTILE_HOSTNAMES` має точне значення `web-dev.pp.ua,kilo-g.web-developer-den.workers.dev`, а production build і deploy guard відхиляють відсутній або dummy sitekey. Сервер не приймає dummy secret/token; без секрету, hostname чи native limiter endpoint відмовляє з 503. Приватний ключ не є `VITE_*` або `vars` і не записується у Firebase/D1. Налаштування **Workers Logs та Traces залишаються вимкненими**; ключі, токени й дані форм не додаються до журналів.
+
+Для першої публікації підготувати файл JSON із єдиним секретом `TURNSTILE_SECRET_KEY` у новому захищеному каталозі `output/backups` за процедурою ACL нижче. Перевірити Git ignore, обмеження доступу й право CLI публікувати саме Worker `kilo-g`; значення ключа не виводити в команді, чаті або CI artifact. У файлі має бути лише секрет, без публічних `VITE_*`, Auth credentials чи інших випадкових змінних. Опублікувати код і секрет одночасно:
+
+```bash
+npm run deploy:worker -- --secrets-file output/backups/<protected-directory>/turnstile-secrets.json
+```
+
+Wrangler приймає JSON або dotenv secrets file та створює одну версію з кодом і секретом; інші секрети попередньої версії зберігає. Не використовувати tracked `.env.production` як secrets file: він містить публічну конфігурацію Vite. Звичайний `wrangler secret put` одразу розгортає нову версію, тому окремий secret-only деплой не є заміною процедури першого випуску. Після встановлення секрету звичайний `npm run deploy:worker` використовує наявний runtime Secret. [Worker secrets і одночасний upload](https://developers.cloudflare.com/workers/configuration/secrets/).
+
+Після публікації записати source SHA/Worker version, звірити assets, runtime bindings, точні hostname й ім’я секрету без читання значення. На обох доменах пройти п’ять дій `login`, `register`, `forgot_password`, `reset_password`, `resend_verification`; перевірити помилку, прострочення, retry, повторне використання токена й відмову без капчі. Коректний токен має пройти реальний Siteverify, неправильний action/hostname — отримати відмову. Пароль і email передаються лише Firebase SDK. Native limiter використовує наявний binding `ANALYTICS_RATE_LIMIT` із префіксом `turnstile:` та приблизною спільною межею 60/60 секунд для всіх дій; перевірки не звертаються до D1, не створюють подій аналітики й також витрачають квоту Worker. Цей preflight захищає форми сайта, але прямий Firebase Auth API залишається поза ним; App Check для Auth є окремою архітектурною зміною. [Siteverify](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/), [Firebase Auth REST](https://firebase.google.com/docs/reference/rest/auth).
+
+Для ротації в налаштуваннях існуючого Turnstile widget обрати **Rotate Secret Key** й підготувати новий секрет у захищеному файлі. Публічний sitekey не змінюється. Протягом двох годин старий і новий ключі чинні; у цей проміжок виконати той самий деплой із `--secrets-file`, потім перевірити живий Siteverify. Відкат Worker не повертає чинність ключа після завершення ротації. [Офіційна ротація секрету](https://developers.cloudflare.com/turnstile/troubleshooting/rotate-secret-key/).
+
+У локальній роботі bypass дозволено лише `DEV` + явним Firebase emulator flag + `demo-*` project ID + loopback hostname. Native runtime тести ізолюють транспорт Siteverify й не використовують production credentials; dummy browser key не є доказом production захисту. Відсутність провайдера в production блокує публічні форми, але перегляд сайта та локальний демокалькулятор залишаються доступними.
 
 ## Опублікований випуск 9 жовтня 2026
 

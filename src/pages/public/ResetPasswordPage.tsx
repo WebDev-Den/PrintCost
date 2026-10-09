@@ -4,6 +4,7 @@ import { Lock, Eye, EyeOff, CheckCircle, AlertTriangle } from 'lucide-react';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
 import { authService, authErrorMessage } from '../../services/authService.ts';
+import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const ResetPasswordPage: React.FC = () => {
   const navigate = useNavigate();
@@ -18,6 +19,7 @@ export const ResetPasswordPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [isChecking, setIsChecking] = useState(true);
+  const captcha = useTurnstile('reset_password', !isChecking && !linkError && !success);
 
   useEffect(() => {
     let active = true;
@@ -31,6 +33,7 @@ export const ResetPasswordPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || isChecking || linkError || !captcha.ready) return;
     setError(null);
 
     if (password.length < 6) {
@@ -44,11 +47,12 @@ export const ResetPasswordPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      await authService.resetPassword(password, code);
+      await authService.resetPassword(password, code, captcha.token);
       setSuccess(true);
     } catch (error) {
       setError(authErrorMessage(error));
     } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -167,13 +171,15 @@ export const ResetPasswordPage: React.FC = () => {
                 </div>
               </div>
 
+              {captcha.field}
+
               <Button
                 type="submit"
                 variant="primary"
                 size="md"
                 className="w-full"
                 isLoading={isSubmitting}
-                disabled={isChecking}
+                disabled={isChecking || !captcha.ready}
               >
                 {isChecking ? 'Перевірка посилання…' : 'Зберегти новий пароль'}
               </Button>

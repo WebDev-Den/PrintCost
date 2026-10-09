@@ -14,6 +14,7 @@
 - Користувач має приватні заготовки параметрів для повторних розрахунків.
 - У таблиці матеріалів розрахунку для кожного рядка показуються лише особисті матеріали відповідного типу з файлу: для PLA — PLA, для PETG — PETG тощо.
 - Платні тарифи не підключаються автоматично. План орієнтується на Workers Free, Firebase Spark та D1 Free.
+- Cloudflare Turnstile перевіряє публічні форми входу, реєстрації, запиту відновлення, збереження нового пароля й повторного надсилання підтвердження пошти.
 
 Початкова модель компаній: одна компанія може мати кількох менеджерів; один менеджер представляє одну компанію. Зміну цього обмеження потрібно зафіксувати до реалізації моделі членства.
 
@@ -44,7 +45,7 @@ React, TypeScript, Vite й наявний парсер залишаються о
 | Firebase Auth | Реєстрація, пароль, підтвердження пошти, відновлення, ID token |
 | Firestore Standard | Особисті дані, компанії, пропозиції, реєстр адміністраторів, членство, шаблони, журнал зміни прав |
 | Firebase Web SDK + Rules | Атомарні bootstrap, зміна ролей/доступу/компаній та їх журнал; однакова перевірка прямих SDK-запитів |
-| Worker `/api/*` | Перевірка запитів, приймання подій, звіти з перевіркою компанії |
+| Worker `/api/*` | Перевірка Turnstile перед публічними формами, приймання подій, звіти з перевіркою компанії |
 | D1 | Обмежені аналітичні події та денні агрегати; доступ лише через Worker |
 
 Статичні сторінки обслуговуються без запуску серверного коду. API маршрутизується окремо, щоб перевищення квоти скрипта не вимикало статичний сайт. Це відповідає [моделі Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/).
@@ -68,6 +69,16 @@ Worker отримує Firebase ID token у заголовку авторизац
 | Приватні обчислення інших користувачів | Ні | Ні | Ні; керування каталогом не надає цього доступу |
 
 Демо залишається окремим локальним прикладом, без адміністративних і менеджерських операцій та без запису подій у робочу аналітику.
+
+### Turnstile та межі захисту публічних форм
+
+Дії `login`, `register`, `forgot_password`, `reset_password`, `resend_verification` отримують токен Managed widget. `authService` перед Firebase SDK викликає same-origin `/api/turnstile/verify` лише з токеном і action; початковий лист підтвердження належить уже перевіреній реєстрації. Worker перевіряє HTTPS Origin, обмежений JSON, допустиму дію, Siteverify success, точний hostname/action та свіжість. Native limiter із префіксом `turnstile:` має спільний кошик 60/60 секунд для цих дій й не звертається до D1. Токен очищується після надсилання; expiry/error/retry і розмонтування віджета не дозволяють зберігати старий дозвіл. Публічний callback із одноразовим кодом листа, перевірка вже підтвердженої пошти, демо й читання каталогу не вимагають нової капчі.
+
+Браузерна збірка містить лише публічний `VITE_TURNSTILE_SITE_KEY`. Приватний `TURNSTILE_SECRET_KEY` оголошений у `secrets.required` і зберігається в Worker secrets; hostname allowlist складається рівно з `web-dev.pp.ua` та `kilo-g.web-developer-den.workers.dev`. Production build відхиляє missing/dummy sitekey; сервер відмовляє за missing/dummy secret/token, відсутніх bindings чи помилки провайдера. Паролі, email, секрети й токени капчі не записуються у Firebase/D1 або журнали endpoint. Workers Logs/Traces залишаються вимкненими. [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/).
+
+Локальний bypass вимагає одночасно `DEV`, явних Firebase emulators, `demo-*` project ID та loopback hostname. Production його не має. Тестові browser keys і native runtime fixtures ізольовані; їх успіх не засвідчує живий Siteverify. Порядок одночасного деплою коду/секрету та ротація описані в [OPERATIONS.md](./OPERATIONS.md).
+
+Це захист потоку форм сайта, а не блокування прямих Firebase Auth REST-запитів. Існуючі Firestore Rules, ролі й Firebase Spark зберігаються. Auth App Check потребував би окремої інтеграції; Identity Platform, service accounts і платні сервіси не додаються. [Firebase Auth REST](https://firebase.google.com/docs/reference/rest/auth), [Auth App Check](https://firebase.google.com/docs/auth/faq-and-troubleshooting).
 
 ## Модель даних і життєвий цикл
 
@@ -232,6 +243,14 @@ Firebase Functions і Cloud Storage не включаються в цей Spark-
 Зафіксовані ревізії встановлення: Cloudflare `41e0d19858946d18af9ee2c2feebbe2e11d829ff`; Firebase `bf6538ef0e147831adc04c31291549f7dc399e97`; архітектура `46891e7e60da0e52baf1050b7b6391b64e84c6d9`. Скіл OpenAI встановлено з curated main станом на дату плану. Наявні React, API design, Ponytail та засоби браузерної перевірки використовуються за відповідним завданням.
 
 ## Статус
+
+Turnstile реалізовано, але **живий деплой ще не виконано через CLI-дозвіл**. Додано п’ять форм/action, перевірку Siteverify, повторне отримання токена та guard production keys/hostnames/secret. Локальний dummy widget перевірено у браузері на вході, реєстрації та запиті відновлення; loader рендерить widget після події `load` скрипта. Повний `npm test` пройшов 116 перевірок застосунку/Worker плюс 6 native runtime перевірок Turnstile, разом 122. Окремий емуляторний набір 95 перевірок також пройшов: усього 217 PASS. Production Auth/Firestore fixtures для капчі не створено.
+
+- [x] Локальна реалізація публічних форм, fail-closed Siteverify та production конфігурації без змін Rules або схеми D1.
+- [x] Пройти 122 перевірки застосунку/Worker, 95 емуляторних перевірок, lint/build, deploy validator і dry run. Після останньої перевірки пробілів у token повторно пройшли 25 цільових Turnstile перевірок та dry run; CI повторить повний набір після commit.
+- [ ] Після потрібного CLI-дозволу одночасно опублікувати код і runtime secret у `kilo-g`, звірити новий source/version і живі форми на обох доменах. Перед публікацією не заявляти production Turnstile як перевірений.
+
+Наведені нижче source/version, CI та докази залишаються історією попередніх опублікованих релізів. `main` досі старіший за актуальний ручний реліз; його push до узгодженого злиття може відновити старий код.
 
 3D-прев’ю опубліковане з source `4f50eed791460956779f92ba6a197c1b303229c3` після двох успішних push/PR CI (190 перевірок). Worker `fc5cd99f-86bb-4675-bc17-4f36e28903bd` отримує 100% трафіку; 10 byte comparisons і 7 metadata checks PASS. На живому домені CUA завантажив 3MF, відобразив різні геометрії пластин 2/4, масштаб, клавіатуру та повний розрахунок 106,94 / 220,00 грн. Геометрія не надсилалася до серверного сховища; production Auth/Firestore fixtures не створювалися. Нових Firebase Rules, індексів або paid services блок не потребує. Докази попереднього випуску логотипів нижче залишені окремо.
 

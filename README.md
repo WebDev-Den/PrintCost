@@ -4,7 +4,7 @@
 
 [PROJECT_STATUS.md](./PROJECT_STATUS.md) — перевірений стан деплою, статус функціональних задач і наступні кроки для живого приймання.
 
-Поточний стек: React + TypeScript + Vite, **Cloudflare Workers Static Assets** для сайту, **Firebase Authentication** для акаунтів і **Cloud Firestore Standard** для даних. Worker **`kilo-g`** обслуговує статичну збірку `dist`; окремі `/api/*` маршрути працюють із **D1** для аналітики. Firebase Storage та Cloud Functions для цього запуску не потрібні. [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) містить актуальну архітектуру й статус перевірок; [SERVER_SPECIFICATION.md](./SERVER_SPECIFICATION.md) — попередня архітектура як історичний документ.
+Поточний стек: React + TypeScript + Vite, **Cloudflare Workers Static Assets** для сайту, **Firebase Authentication** для акаунтів і **Cloud Firestore Standard** для даних. Worker **`kilo-g`** обслуговує статичну збірку `dist`; окремі `/api/*` маршрути працюють із **D1** для аналітики та перевіряють **Cloudflare Turnstile** для публічних форм. Firebase Storage та Cloud Functions для цього запуску не потрібні. [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) містить актуальну архітектуру й статус перевірок; [SERVER_SPECIFICATION.md](./SERVER_SPECIFICATION.md) — попередня архітектура як історичний документ.
 
 ## Firebase Spark: початкове налаштування
 
@@ -41,6 +41,7 @@ VITE_FIREBASE_API_KEY=<apiKey з Firebase Console>
 VITE_FIREBASE_AUTH_DOMAIN=<authDomain з Firebase Console>
 VITE_FIREBASE_PROJECT_ID=kilo-g
 VITE_FIREBASE_APP_ID=<appId з Firebase Console>
+VITE_TURNSTILE_SITE_KEY=<публічний sitekey з Cloudflare Turnstile>
 VITE_USE_FIREBASE_EMULATORS=false
 ```
 
@@ -51,7 +52,7 @@ npm ci
 npm run dev
 ```
 
-Відкрийте `http://localhost:3000`. Реальна авторизація потребує Firebase-конфігурації; відсутність конфігурації або помилка мережі не перетворюються на успішний вхід. Демо вмикається окремою дією та зберігає демонстраційні дані локально, окремо від реальних акаунтів. Попередні локальні дані автоматично не імпортуються у Firebase.
+Відкрийте `http://localhost:3000`. Production-віджет Turnstile дозволяє лише два робочі домени, тому для локальних форм входу використовуйте емулятори з наступного розділу; реальні форми перевіряйте через HTTPS робочого сайта. Відсутність конфігурації або помилка мережі не перетворюються на успішний вхід. Демо вмикається окремою дією та зберігає демонстраційні дані локально, окремо від реальних акаунтів. Попередні локальні дані автоматично не імпортуються у Firebase.
 
 Перевірка та збірка:
 
@@ -62,7 +63,29 @@ npm run build
 npm run preview
 ```
 
-`npm run lint` перевіряє TypeScript. Production-збірка зупиняється, якщо бракує однієї з чотирьох Firebase-змінних, увімкнено емулятори або вказано `demo-*` project ID. Після зміни `VITE_*` сайт потрібно зібрати повторно.
+`npm run lint` перевіряє TypeScript. Production-збірка зупиняється, якщо бракує однієї з чотирьох Firebase-змінних або справжнього Turnstile sitekey, використано тестовий ключ, увімкнено емулятори або вказано `demo-*` project ID. Після зміни `VITE_*` сайт потрібно зібрати повторно.
+
+## Cloudflare Turnstile для публічних форм
+
+Капча передує п’ятьом діям сайта:
+
+| Форма / дія | Turnstile action |
+| --- | --- |
+| Вхід | `login` |
+| Реєстрація | `register` |
+| Запит листа відновлення | `forgot_password` |
+| Збереження нового пароля за кодом із листа | `reset_password` |
+| Повторне надсилання підтвердження пошти | `resend_verification` |
+
+У Cloudflare Turnstile створіть **Managed** widget для `web-dev.pp.ua` та `kilo-g.web-developer-den.workers.dev`. Публічний `VITE_TURNSTILE_SITE_KEY` потрібен браузерній збірці; приватний `TURNSTILE_SECRET_KEY` потрібен лише Worker. У `wrangler.jsonc` його назву внесено до `secrets.required`, а `TURNSTILE_HOSTNAMES` містить рівно ці два hostname. Секрет не зберігається у `VITE_*`, `vars`, D1, Firestore чи Git. [Створення widget](https://developers.cloudflare.com/turnstile/get-started/widget-management/dashboard/), [секрети Worker](https://developers.cloudflare.com/workers/configuration/secrets/).
+
+Форма надсилає до `/api/turnstile/verify` лише `action` і одноразовий токен. Worker перевіряє same-origin HTTPS, довжину й схему, викликає Siteverify та звіряє успіх, hostname, action і час. Native limiter має окремий префікс `turnstile:` і спільний кошик **60 запитів за 60 секунд** для всіх п’яти дій; це приблизний захист Cloudflare, не денна квота D1. Після кожного надсилання токен очищується; прострочення, помилка провайдера чи відсутність конфігурації блокують надсилання з можливістю повторити перевірку. Пароль та email обробляються існуючим Firebase SDK і не надсилаються до endpoint капчі. [Siteverify](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/).
+
+Turnstile захищає **потік публічних форм цього сайта**. Прямі запити до Firebase Authentication API не проходять через Worker; ця інтеграція їх не блокує й не замінює Firestore Rules. Firebase App Check із окремим налаштуванням Auth був би іншим етапом; Identity Platform, service account та платні сервіси цим оновленням не додаються. [Firebase REST Auth](https://firebase.google.com/docs/reference/rest/auth), [App Check і Authentication](https://firebase.google.com/docs/auth/faq-and-troubleshooting).
+
+Оновлена [сторінка політики приватності](./src/pages/public/PrivacyPage.tsx) описує завантаження віджета Cloudflare та серверну перевірку токена й технічної IP-адреси; її буде опубліковано разом із цим релізом. KILO·G не зберігає ці токени/IP у власній аналітиці; дані форм і credentials не передаються в перевірці Turnstile.
+
+Початкове встановлення секрету разом із кодом і подальша ротація описані в [OPERATIONS.md](./OPERATIONS.md). Живий деплой цього оновлення ще не виконано через відсутній CLI-дозвіл; докази нижче стосуються попереднього опублікованого релізу.
 
 ## Локальні емулятори та перевірка правил
 
@@ -84,7 +107,7 @@ VITE_FIREBASE_APP_ID=demo-kilog
 VITE_USE_FIREBASE_EMULATORS=true
 ```
 
-У першому терміналі запустіть `npm run emulators`, у другому — `npm run dev -- --mode emulator`. Відкрийте `http://localhost:3000`. Акаунти й дані емулятора не є реальними акаунтами `kilo-g`; листи емулятора не надходять у поштову скриньку. Цей режим призначений для локального тестування, а не публікації.
+У першому терміналі запустіть `npm run emulators`, у другому — `npm run dev -- --mode emulator`. Відкрийте `http://localhost:3000`. Акаунти й дані емулятора не є реальними акаунтами `kilo-g`; листи емулятора не надходять у поштову скриньку. Turnstile пропускається лише за одночасних умов `DEV`, `VITE_USE_FIREBASE_EMULATORS=true`, Firebase project ID `demo-*` та loopback hostname. Production-збірка цього обходу не має. Офіційні dummy keys використовуються тільки для локальної перевірки віджета й ніколи не допускаються до production. [Тестування Turnstile](https://developers.cloudflare.com/turnstile/troubleshooting/testing/).
 
 ## Cloudflare Workers через GitHub
 
@@ -105,7 +128,7 @@ VITE_USE_FIREBASE_EMULATORS=true
 
 [Налаштування збірки](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/), [версія Node.js](https://developers.cloudflare.com/workers/ci-cd/builds/build-image/).
 
-4. `.env.production` містить чотири публічні значення Web app проєкту `kilo-g`, тому Git-збірка працює без ручного перенесення конфігурації. Ці значення також доступні у браузерній збірці; адміністративних credentials у файлі немає. Для іншого Firebase-проєкту змініть файл або перевизначте значення у **Settings → Build → Build Variables and Secrets**. Там же можна задати `NODE_VERSION=22.23.2`; `.nvmrc` фіксує цю версію. `VITE_USE_FIREBASE_EMULATORS` має бути відсутнім або `false`. Runtime bindings не налаштовують статичний Vite-клієнт.
+4. `.env.production` містить чотири публічні значення Web app проєкту `kilo-g` і публічний `VITE_TURNSTILE_SITE_KEY`. Ці значення також доступні у браузерній збірці; адміністративних credentials і секрету Turnstile у файлі немає. Для іншого Firebase-проєкту змініть файл або перевизначте значення у **Settings → Build → Build Variables and Secrets**. Там же можна задати `NODE_VERSION=22.23.2`; `.nvmrc` фіксує цю версію. `VITE_USE_FIREBASE_EMULATORS` має бути відсутнім або `false`. Runtime bindings не налаштовують статичний Vite-клієнт; `TURNSTILE_SECRET_KEY` зберігається як runtime Secret Worker, а не build variable.
 5. Запустіть деплой. Використовуйте точну адресу `workers.dev` із результату деплою; піддомен акаунта не визначається лише назвою Worker. Внесіть її **hostname** у Firebase Authorized domains. Додавання домену не змінює вже зібрані Firebase-змінні.
 6. Перевірте головну сторінку та прямі адреси `/auth/login`, `/auth/callback`, `/app/calculator`. У `wrangler.jsonc` задано `assets.directory: "./dist"` і `not_found_handling: "single-page-application"`, тому маршрути SPA отримують `index.html`. Заголовки з `public/_headers` потрапляють у збірку. [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/).
 
@@ -118,7 +141,7 @@ npx wrangler login
 npm run deploy:worker
 ```
 
-`deploy:worker` спочатку створює свіжу production-збірку, перевіряє відповідність Firebase/Worker, робочий D1 замість placeholder та маршрути API, потім виконує `wrangler deploy`. Файл `wrangler.jsonc` містить цільовий Cloudflare `account_id`; для іншого акаунта його потрібно змінити. Консоль підтвердила зв’язок із `main` цього репозиторію; обидві команди з таблиці збережені й повторно перевірені. Процедури резервного копіювання, перенесення ролей, відкату й відновлення описані в [OPERATIONS.md](./OPERATIONS.md).
+`deploy:worker` спочатку створює свіжу production-збірку, перевіряє відповідність Firebase/Worker, робочий D1 замість placeholder, маршрути API, production sitekey та конфігурацію Turnstile, потім виконує `wrangler deploy`. Wrangler перевіряє обов’язковий runtime secret. Для першої публікації капчі використовуйте процедуру одночасного додавання секрету й коду з [OPERATIONS.md](./OPERATIONS.md). Файл `wrangler.jsonc` містить цільовий Cloudflare `account_id`; для іншого акаунта його потрібно змінити. Консоль підтвердила зв’язок із `main` цього репозиторію; обидві команди з таблиці збережені й повторно перевірені. `main` досі містить старий код: його push до узгодженого злиття PR може перезаписати актуальний ручний реліз.
 
 ## Листи підтвердження та відновлення пароля
 
@@ -184,6 +207,8 @@ Workers Free дозволяє **20 000 статичних файлів на ве
 Перевищення квот Spark може призупинити відповідну операцію або продукт до відновлення квоти. Підключення Cloud Billing переводить проєкт на Blaze з оплатою використання; для бюджету 0 грн залишайтеся на Spark і контролюйте Usage у Firebase Console. [Тарифи Firebase](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans).
 
 ## Стан перевірки
+
+Turnstile реалізовано в робочій гілці; **production-деплой ще не виконано через CLI-дозвіл**. Повний `npm test` пройшов 116 перевірок застосунку/Worker та 6 перевірок Turnstile у native runtime, разом 122. Окремий набір 95 емуляторних перевірок також пройшов: усього 217 PASS. TypeScript, production build, deploy validator і Wrangler dry run пройшли; після останньої перевірки пробілів у token повторно пройшли 25 цільових Turnstile перевірок та dry run. Локальний браузер перевірив віджет з офіційним dummy sitekey на вході, реєстрації та запиті відновлення; завантажувач використовує подію `load` скрипта для явного rendering. Dummy keys не доводять роботу справжнього production widget. Публікація та живі Siteverify/форма/повторне використання токена залишаються наступними кроками; історичні результати попередніх релізів наведено нижче.
 
 Оновлення 3D-прев’ю опубліковане 9 жовтня 2026 з source `4f50eed791460956779f92ba6a197c1b303229c3`, Worker `fc5cd99f-86bb-4675-bc17-4f36e28903bd`. Обидва CI пройшли повний набір 190 перевірок. Після деплою 10 порівнянь HTML/JS/preview-worker на двох доменах та 7 metadata перевірок PASS. Живий калькулятор у демосесії завантажив нарізаний 3MF, відобразив різні пластини 2/4 та керування камерою з повним розрахунком; production Auth/Firestore записи для цього не створювалися. Копія Rules/індексів з попереднього випуску залишається чинною: прев’ю не змінює Firebase або серверне сховище.
 

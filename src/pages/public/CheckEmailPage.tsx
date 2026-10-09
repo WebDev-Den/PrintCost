@@ -4,6 +4,7 @@ import { Mail } from 'lucide-react';
 import { Button } from '../../components/common/Button.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authService, authErrorMessage } from '../../services/authService.ts';
+import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const CheckEmailPage: React.FC = () => {
   const { user, isDemoSession, logout } = useAuth();
@@ -12,16 +13,18 @@ export const CheckEmailPage: React.FC = () => {
   const [sent, setSent] = useState(Boolean(location.state?.verificationSent));
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const captcha = useTurnstile('resend_verification', Boolean(user && !isDemoSession && !user.emailVerified));
 
   const sendVerification = async () => {
+    if (isLoading || !captcha.ready) return;
     setIsLoading(true);
     setError(null);
     try {
-      await authService.sendVerificationEmail();
+      await authService.resendVerificationEmail(captcha.token);
       setSent(true);
     } catch (error) {
       setError(authErrorMessage(error));
-    } finally { setIsLoading(false); }
+    } finally { captcha.reset(); setIsLoading(false); }
   };
 
   const checkVerification = async () => {
@@ -47,7 +50,8 @@ export const CheckEmailPage: React.FC = () => {
         {error && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{error}</p>}
         {user && !isDemoSession ? <div className="space-y-3">
           {!user.emailVerified && <>
-            <Button variant="outline" size="sm" className="w-full" onClick={sendVerification} isLoading={isLoading}>{sent ? 'Надіслати лист повторно' : 'Надіслати лист підтвердження'}</Button>
+            {captcha.field}
+            <Button variant="outline" size="sm" className="w-full" onClick={sendVerification} isLoading={isLoading} disabled={!captcha.ready}>{sent ? 'Надіслати лист повторно' : 'Надіслати лист підтвердження'}</Button>
             <Button variant="primary" size="sm" className="w-full" onClick={checkVerification} disabled={isLoading}>Я підтвердив пошту — перевірити</Button>
           </>}
           {user.emailVerified && <NavLink to="/app/onboarding" className="block text-xs text-emerald-600 dark:text-emerald-400 underline">Перейти до налаштування майстерні</NavLink>}

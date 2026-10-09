@@ -21,6 +21,7 @@ import type { UserProfile } from '../domain/types.ts';
 import { INITIAL_USER_PROFILE } from '../domain/defaultData.ts';
 import { firebaseAuth, firestoreDb } from './firebaseClient.ts';
 import { organizationRepository } from './organizationRepository.ts';
+import { verifyTurnstile } from './turnstileService.ts';
 
 const DEMO_KEY = 'printcost_is_demo_mode';
 const DEMO_PROFILE_KEY = 'printcost_demo_profile';
@@ -85,10 +86,10 @@ async function readProfile(user: User): Promise<UserProfile> {
 
 export interface AuthService {
   getCurrentUser(): Promise<UserProfile | null>;
-  login(email: string, password: string): Promise<UserProfile>;
-  register(email: string, password: string): Promise<UserProfile>;
-  forgotPassword(email: string): Promise<void>;
-  resetPassword(password: string, code?: string): Promise<void>;
+  login(email: string, password: string, captchaToken?: string): Promise<UserProfile>;
+  register(email: string, password: string, captchaToken?: string): Promise<UserProfile>;
+  forgotPassword(email: string, captchaToken?: string): Promise<void>;
+  resetPassword(password: string, code?: string, captchaToken?: string): Promise<void>;
   logout(): Promise<void>;
   isDemoSession(): boolean;
   enableDemoSession(): Promise<UserProfile>;
@@ -187,8 +188,11 @@ export class FirebaseAuthService implements AuthService {
 
   private notify() { for (const listener of this.listeners) listener(); }
 
-  async login(email: string, password: string): Promise<UserProfile> {
+  async login(email: string, password: string, captchaToken = ''): Promise<UserProfile> {
     const auth = requireAuth();
+    const identity = this.getSessionIdentity();
+    await verifyTurnstile('login', captchaToken);
+    this.assertSession(identity);
     localStorage.removeItem(DEMO_KEY);
     this.notify();
     const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
@@ -198,8 +202,11 @@ export class FirebaseAuthService implements AuthService {
     return profile;
   }
 
-  async register(email: string, password: string): Promise<UserProfile> {
+  async register(email: string, password: string, captchaToken = ''): Promise<UserProfile> {
     const auth = requireAuth();
+    const identity = this.getSessionIdentity();
+    await verifyTurnstile('register', captchaToken);
+    this.assertSession(identity);
     localStorage.removeItem(DEMO_KEY);
     this.notify();
     const { user } = await createUserWithEmailAndPassword(auth, email.trim(), password);
@@ -221,9 +228,11 @@ export class FirebaseAuthService implements AuthService {
     return profile;
   }
 
-  async forgotPassword(email: string): Promise<void> {
+  async forgotPassword(email: string, captchaToken = ''): Promise<void> {
+    const auth = requireAuth();
+    await verifyTurnstile('forgot_password', captchaToken);
     try {
-      await sendPasswordResetEmail(requireAuth(), email.trim(), { url: `${window.location.origin}/auth/login` });
+      await sendPasswordResetEmail(auth, email.trim(), { url: `${window.location.origin}/auth/login` });
     } catch (error) {
       // Keep the same response when an emulator or older project exposes missing accounts.
       if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'auth/user-not-found') throw error;
@@ -235,9 +244,19 @@ export class FirebaseAuthService implements AuthService {
     return verifyPasswordResetCode(requireAuth(), code);
   }
 
-  async resetPassword(password: string, code = ''): Promise<void> {
+  async resetPassword(password: string, code = '', captchaToken = ''): Promise<void> {
     if (!code) throw new Error('У посиланні немає коду відновлення. Запросіть новий лист.');
-    await confirmPasswordReset(requireAuth(), code, password);
+    const auth = requireAuth();
+    await verifyTurnstile('reset_password', captchaToken);
+    await confirmPasswordReset(auth, code, password);
+  }
+
+  async resendVerificationEmail(captchaToken = ''): Promise<void> {
+    const user = requireAuth().currentUser;
+    if (!user || this.isDemoSession()) throw new Error('Спочатку увійдіть у свій акаунт.');
+    await verifyTurnstile('resend_verification', captchaToken);
+    this.assertSession(user.uid);
+    await this.sendVerificationEmail();
   }
 
   async sendVerificationEmail(): Promise<void> {

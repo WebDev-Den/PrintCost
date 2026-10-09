@@ -7,8 +7,8 @@ interface AuthContextType {
   isLoading: boolean;
   isDemoSession: boolean;
   authError: string | null;
-  login: (email: string, pass: string) => Promise<void>;
-  register: (email: string, pass: string) => Promise<void>;
+  login: (email: string, pass: string, captchaToken?: string) => Promise<void>;
+  register: (email: string, pass: string, captchaToken?: string) => Promise<void>;
   logout: () => Promise<void>;
   enableDemoSession: () => Promise<void>;
   updateUser: (updates: Partial<Pick<UserProfile, 'fullName' | 'workshopName'>>) => Promise<void>;
@@ -52,8 +52,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const next = await operation;
     if (started === revision.current) acceptUser(next);
   };
-  const login = async (email: string, pass: string) => acceptOperation(authService.login(email, pass));
-  const register = async (email: string, pass: string) => acceptOperation(authService.register(email, pass));
+  const login = async (email: string, pass: string, captchaToken?: string) => acceptOperation(authService.login(email, pass, captchaToken));
+  const register = async (email: string, pass: string, captchaToken?: string) => acceptOperation(authService.register(email, pass, captchaToken));
   const logout = async () => { await authService.logout(); acceptUser(null); };
   const enableDemoSession = async () => acceptOperation(authService.enableDemoSession());
   const updateUser = async (updates: Partial<Pick<UserProfile, 'fullName' | 'workshopName'>>) => {

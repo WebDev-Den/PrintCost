@@ -5,6 +5,7 @@ coverage/
 .DS_Store
 *.log
 .env*
+.dev.vars*
 !.env.example
 !.env.production
 .firebase/

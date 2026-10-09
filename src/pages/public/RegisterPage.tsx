@@ -6,10 +6,12 @@ import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
+import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
   const { register, enableDemoSession } = useAuth();
+  const captcha = useTurnstile('register');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -20,6 +22,7 @@ export const RegisterPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || !captcha.ready) return;
     setError(null);
 
     if (!email || !email.includes('@')) {
@@ -37,11 +40,12 @@ export const RegisterPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      await register(email, password);
+      await register(email, password, captcha.token);
       navigate('/auth/check-email', { state: { verificationSent: true } });
     } catch (error) {
       setError(authErrorMessage(error));
     } finally {
+      captcha.reset();
       setIsSubmitting(false);
     }
   };
@@ -143,12 +147,15 @@ export const RegisterPage: React.FC = () => {
               </div>
             </div>
 
+            {captcha.field}
+
             <Button
               type="submit"
               variant="primary"
               size="md"
               className="w-full"
               isLoading={isSubmitting}
+              disabled={!captcha.ready}
             >
               Створити акаунт та почати
             </Button>

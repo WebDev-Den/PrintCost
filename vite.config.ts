@@ -10,6 +10,9 @@ export default defineConfig(({ command, mode }) => {
     throw new Error('Локальний proxy аналітики дозволений лише з емуляторами demo-* на 127.0.0.1.');
   }
   if (command === 'build' && mode === 'production') {
+    if (!/^0x[A-Za-z0-9_-]{20,100}$/.test(env.VITE_TURNSTILE_SITE_KEY?.trim() || '')) {
+      throw new Error('Production-збірка потребує справжнього публічного sitekey Cloudflare Turnstile; тестові ключі заборонені.');
+    }
     const required = ['VITE_FIREBASE_API_KEY', 'VITE_FIREBASE_AUTH_DOMAIN', 'VITE_FIREBASE_PROJECT_ID', 'VITE_FIREBASE_APP_ID'];
     if (required.some((key) => !env[key]?.trim())) throw new Error('Заповніть Firebase web config у .env.local або змінних збірки Cloudflare перед production-збіркою.');
     if (env.VITE_USE_FIREBASE_EMULATORS === 'true' || env.VITE_FIREBASE_PROJECT_ID.startsWith('demo-')) throw new Error('Production-збірка не може використовувати емулятори Firebase.');
