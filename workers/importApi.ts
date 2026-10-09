@@ -10,17 +10,18 @@ export interface ImportEnv {
 }
 interface KeyRow { uid: string; hash: string; prefix: string; role: 'admin' | 'manager'; company_id: string | null; fingerprint: string; valid_since: number; created_at: number; expires_at: number }
 interface JobRow { id: string; owner_uid: string; key_hash: string; fingerprint: string; payload: string | null; payload_hash: string; status: ImportJobSummary['status']; total: number; cursor: number; results: string; created_at: number; updated_at: number; expires_at: number; lease_until: number; attempts: number; error: string | null }
+type JobSummaryRow = Pick<JobRow, 'id' | 'status' | 'total' | 'cursor' | 'created_at' | 'updated_at'> & { succeeded: number; failed: number };
 export interface ImportMessage { body: { id: string; cursor: number }; ack(): void; retry(options?: { delaySeconds: number }): void }
 const active = "status IN ('queued','processing')";
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 function json(value: unknown, status = 200, extra: Record<string, string> = {}): Response {
   return Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra } });
 }
-function summary(job: JobRow, detail = false): ImportJobSummary & { error?: string } {
-  const results = JSON.parse(job.results) as ImportItemResult[];
-  return { id: job.id, status: job.status, total: job.total, processed: job.cursor, succeeded: results.filter(result => result.success).length,
-    failed: results.filter(result => !result.success).length, createdAt: iso(job.created_at), updatedAt: iso(job.updated_at),
-    ...(detail ? { results, ...(job.error ? { error: job.error } : {}) } : {}) };
+function summary(job: JobRow | JobSummaryRow, detail = false): ImportJobSummary & { error?: string } {
+  const results = 'results' in job ? JSON.parse(job.results) as ImportItemResult[] : [];
+  return { id: job.id, status: job.status, total: job.total, processed: job.cursor, succeeded: 'succeeded' in job ? job.succeeded : results.filter(result => result.success).length,
+    failed: 'failed' in job ? job.failed : results.filter(result => !result.success).length, createdAt: iso(job.created_at), updatedAt: iso(job.updated_at),
+    ...(detail ? { results, ...('error' in job && job.error ? { error: job.error } : {}) } : {}) };
 }
 export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date = () => new Date()) {
   const firebase = createImportFirebase(fetcher, now);
@@ -37,12 +38,14 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
     const day = now().toISOString().slice(0, 10);
     const known = key && key.expires_at > seconds() ? key : null;
     const limit = known ? known.role === 'admin' ? IMPORT_LIMITS.dailyAdminUidChecks : IMPORT_LIMITS.dailyManagerUidChecks : IMPORT_LIMITS.dailyUnrecognizedUidChecks;
-    const result = await db.prepare('INSERT INTO import_access_daily(day,uid,checks,limit_checks) VALUES(?,?,1,?) ON CONFLICT(day,uid) DO UPDATE SET checks=checks+1,limit_checks=MAX(limit_checks,excluded.limit_checks) WHERE checks<MAX(limit_checks,excluded.limit_checks) RETURNING uid')
-      .bind(day, uid, limit).all();
+    const statements = [db.prepare('INSERT INTO import_access_daily(day,uid,checks,limit_checks) VALUES(?,?,1,?) ON CONFLICT(day,uid) DO UPDATE SET checks=checks+1,limit_checks=MAX(limit_checks,excluded.limit_checks) WHERE checks<MAX(limit_checks,excluded.limit_checks) RETURNING uid')
+      .bind(day, uid, limit)];
+    if (known) statements.push(db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day));
+    const [result, dailyResult] = await db.batch(statements);
     if (!result.results.length) exhaustedBudget();
     // A stored key selects only a quota; live Firebase permissions still decide access.
     if (known) {
-      const daily = await db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day).first<{ access_checks: number; admin_access_checks: number }>();
+      const daily = dailyResult.results[0] as { access_checks: number; admin_access_checks: number } | undefined;
       if (daily && (known.role === 'admin' ? daily.admin_access_checks >= IMPORT_LIMITS.dailyAdminAccessChecks : daily.access_checks >= IMPORT_LIMITS.dailyManagerAccessChecks)) exhaustedBudget();
     }
   }
@@ -141,9 +144,15 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
             if (!job) throw new ApiError(404, 'Імпорт не знайдено.');
             return json(summary(job, true));
           }
-          const query = db.prepare('SELECT id,status,total,cursor,results,created_at,updated_at FROM import_jobs ' +
-            (scope.role === 'admin' ? '' : 'WHERE owner_uid=? ') + 'ORDER BY created_at DESC LIMIT 30');
-          const jobs = await (scope.role === 'admin' ? query : query.bind(scope.uid)).all<JobRow>();
+          // Materialize 30 summaries, so extracting both counts never rescans the result arrays.
+          const query = db.prepare('WITH jobs AS MATERIALIZED (SELECT j.id,j.status,j.total,j.cursor,j.created_at,j.updated_at,' +
+            "(SELECT json_object('succeeded',COUNT(CASE WHEN json_extract(r.value,'$.success') THEN 1 END)," +
+            "'failed',COUNT(CASE WHEN NOT COALESCE(json_extract(r.value,'$.success'),0) THEN 1 END)) FROM json_each(j.results) r) AS counts " +
+            'FROM (SELECT id,status,total,cursor,results,created_at,updated_at FROM import_jobs ' +
+            (scope.role === 'admin' ? '' : 'WHERE owner_uid=? ') + 'ORDER BY created_at DESC LIMIT 30) j) ' +
+            "SELECT id,status,total,cursor,created_at,updated_at,json_extract(counts,'$.succeeded') AS succeeded," +
+            "json_extract(counts,'$.failed') AS failed FROM jobs ORDER BY created_at DESC");
+          const jobs = await (scope.role === 'admin' ? query : query.bind(scope.uid)).all<JobSummaryRow>();
           return json({ jobs: jobs.results.map(job => summary(job)) });
         }
         if (!key || key.expires_at <= seconds() || key.fingerprint !== scope.fingerprint) throw new ApiError(403, 'Спочатку створіть актуальний API-ключ у кабінеті.');
@@ -232,16 +241,20 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
     async scheduled(env: ImportEnv) {
       if (!env.FIREBASE_IMPORT_SERVICE_ACCOUNT || !env.IMPORT_QUEUE || !env.ANALYTICS_DB) return;
       const db = env.ANALYTICS_DB, time = seconds();
-      await db.prepare("UPDATE import_jobs SET status='failed',payload=NULL,error='Імпорт не завершився за 24 години.',updated_at=? WHERE expires_at<=? AND lease_until<=? AND " + active).bind(time, time, time).all();
-      const pending = await db.prepare('SELECT id,cursor FROM import_jobs WHERE dispatch_at<=? AND lease_until<=? AND ' + active + ' ORDER BY created_at LIMIT 5').bind(time, time).all<{ id: string; cursor: number }>();
+      const [, pending] = await db.batch<{ id: string; cursor: number }>([
+        db.prepare("UPDATE import_jobs SET status='failed',payload=NULL,error='Імпорт не завершився за 24 години.',updated_at=? WHERE expires_at<=? AND lease_until<=? AND " + active).bind(time, time, time),
+        db.prepare('SELECT id,cursor FROM import_jobs WHERE dispatch_at<=? AND lease_until<=? AND ' + active + ' ORDER BY created_at LIMIT 5').bind(time, time),
+      ]);
       for (const job of pending.results) await dispatch(env, job.id, job.cursor);
       const expired = await db.prepare("SELECT id FROM import_jobs WHERE created_at<? AND status NOT IN ('queued','processing') LIMIT 5").bind(time - IMPORT_LIMITS.retentionDays * 86400).all<{ id: string }>();
       for (const job of expired.results) {
         await firebase.deleteReceipt(env.FIREBASE_PROJECT_ID, env.FIREBASE_IMPORT_SERVICE_ACCOUNT, job.id);
         await db.prepare('DELETE FROM import_jobs WHERE id=?').bind(job.id).all();
       }
-      await db.prepare('DELETE FROM import_daily WHERE day<?').bind(new Date((time - IMPORT_LIMITS.retentionDays * 86400) * 1000).toISOString().slice(0, 10)).all();
-      await db.prepare('DELETE FROM import_access_daily WHERE day<?').bind(new Date((time - 2 * 86400) * 1000).toISOString().slice(0, 10)).all();
+      await db.batch([
+        db.prepare('DELETE FROM import_daily WHERE day<?').bind(new Date((time - IMPORT_LIMITS.retentionDays * 86400) * 1000).toISOString().slice(0, 10)),
+        db.prepare('DELETE FROM import_access_daily WHERE day<?').bind(new Date((time - 2 * 86400) * 1000).toISOString().slice(0, 10)),
+      ]);
     },
   };
 }

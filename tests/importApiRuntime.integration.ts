@@ -232,4 +232,118 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   assert.ok(concurrentBudget.every(response => [200,429].includes(response.status)));
   counters = await db.prepare('SELECT access_checks,admin_access_checks FROM import_daily WHERE day=?').bind(day).first<any>();
   assert.equal(counters.admin_access_checks, IMPORT_LIMITS.dailyAdminAccessChecks);
+  const batches: number[] = [];
+  let historyRowsRead = 0;
+  const instrumented = new Proxy(db, { get(target, property) {
+    if (property === 'batch') return (statements: Parameters<typeof db.batch>[0]) => { batches.push(statements.length); return target.batch(statements); };
+    if (property === 'prepare') return (sql: string) => {
+      const statement = target.prepare(sql);
+      if (!sql.includes('json_each')) return statement;
+      const watch = (prepared: typeof statement): typeof statement => new Proxy(prepared, { get(current, method) {
+        if (method === 'bind') return (...values: Parameters<typeof statement.bind>) => watch(current.bind(...values));
+        if (method === 'all') return async () => {
+          const result = await current.all(); historyRowsRead = result.meta.rows_read;
+          assert.ok(result.results.every((row: Record<string, unknown>) => !Object.hasOwn(row, 'results') && !Object.hasOwn(row, 'payload')), 'D1 transfers summaries without private result arrays or payloads.');
+          return result;
+        };
+        const value = Reflect.get(current, method, current);
+        return typeof value === 'function' ? value.bind(current) : value;
+      } });
+      return watch(statement);
+    };
+    const value = Reflect.get(target, property, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const observed = { ...environment, ANALYTICS_DB: instrumented };
+  const clock = Math.floor(Date.now() / 1000);
+  const scheduler = createImportApi(async (input, init) => {
+    const response = await transport(new Request(String(input), init));
+    return new Response(await response.arrayBuffer(), { status: response.status, headers: Object.fromEntries(response.headers) });
+  }, () => new Date(clock * 1000));
+  async function seedJob(uid: string, created: number, results: { success: boolean; message: string; index: number; kind: string }[], total = 100) {
+    const id = randomUUID();
+    const succeeded = results.filter(result => result.success).length;
+    await db.prepare('INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,status,total,cursor,results,interval_seconds,created_at,updated_at,expires_at) SELECT ?,?,hash,fingerprint,?,?,?,?,?,?,3600,?,?,? FROM import_keys WHERE uid=?')
+      .bind(id, uid, id, 'fixture-hash', results.length === 0 ? 'cancelled' : succeeded === total ? 'completed' : succeeded === 0 ? 'failed' : 'partial', total,
+        results.length, JSON.stringify(results), created, created, created + 86400, uid).run();
+    return id;
+  }
+  await t.test('thirty full result histories retain exact summaries and ownership with one JSON scan', async () => {
+    await db.prepare('UPDATE import_daily SET access_checks=0,admin_access_checks=0').run();
+    await db.prepare('DELETE FROM import_access_daily').run();
+    const expected = [];
+    for (let index = 0; index < 30; index++) {
+      const succeeded = index % 3 === 0 ? 100 : index % 3 === 1 ? 0 : 37;
+      const results = Array.from({ length: 100 }, (_, item) => ({ index: item, kind: 'offer', success: item < succeeded, message: 'x'.repeat(240) }));
+      const created = clock + (index + 1) * 3600;
+      const id = await seedJob('manager', created, results);
+      expected.unshift({ id, status: succeeded === 100 ? 'completed' : succeeded === 0 ? 'failed' : 'partial', total: 100,
+        processed: 100, succeeded, failed: 100 - succeeded, createdAt: new Date(created * 1000).toISOString(), updatedAt: new Date(created * 1000).toISOString() });
+    }
+    const emptyId = await seedJob('other-manager', clock + 31 * 3600, []);
+    const result = await request('imports', managerKey);
+    assert.equal(result.status, 200); assert.deepEqual(await result.json(), { jobs: expected });
+    assert.equal((await request('imports/' + emptyId, managerKey)).status, 404);
+    const detailed = await request('imports/' + expected[0].id, managerKey);
+    assert.equal(detailed.status, 200);
+    const detail = await detailed.json() as any;
+    assert.equal(detail.results.length, 100); assert.equal(detail.results[0].message.length, 240);
+    const adminList = await request('imports', restoredAdminKey);
+    assert.equal(adminList.status, 200);
+    const all = await adminList.json() as any;
+    assert.equal(all.jobs.length, 30); assert.equal(all.jobs[0].id, emptyId);
+    assert.equal(all.jobs[0].processed, 0); assert.equal(all.jobs[0].succeeded, 0); assert.equal(all.jobs[0].failed, 0);
+    assert.deepEqual(all.jobs.slice(1), expected.slice(0, 29));
+    batches.length = 0;
+    const captured = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { headers: { Authorization: 'Bearer ' + managerKey } }), observed);
+    assert.equal(captured.status, 200); assert.deepEqual(await captured.json(), { jobs: expected });
+    assert.deepEqual(batches, [2], 'Known-key preflight reserves the UID check and reads the daily reserve in one batch.');
+    t.diagnostic(JSON.stringify({ maximumHistoryJobs: 30, resultRecords: 3000, d1RowsRead: historyRowsRead }));
+    assert.ok(historyRowsRead > 0 && historyRowsRead <= 30 * (IMPORT_LIMITS.items + 3),
+      'D1 history reads: ' + historyRowsRead + '; expected 3000 results plus bounded summary/index/sort scans.');
+    batches.length = 0;
+    const denied = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/api-key', { headers: { Authorization: 'Bearer ' + userJwt } }), observed);
+    assert.equal(denied.status, 403); assert.deepEqual(batches, [1], 'An unknown UID has only its preliminary quota statement; no privileged reserve is consumed.');
+  });
+  await t.test('scheduled batches expire before dispatch, bound recovery and retain live leases and current budgets', async () => {
+    await db.prepare('UPDATE import_daily SET dispatches=0').run();
+    batches.length = 0;
+    const sent: { id: string; cursor: number }[] = [];
+    const cronEnv = { ...observed, IMPORT_QUEUE: { send: async (message: { id: string; cursor: number }) => { sent.push(message); } } };
+    const beforeEmpty = firebaseRequests;
+    await scheduler.scheduled(cronEnv);
+    assert.deepEqual(batches, [2, 2]); assert.equal(sent.length, 0);
+    assert.equal(firebaseRequests, beforeEmpty, 'An empty scheduled run performs no Firebase reads or receipt deletions.');
+    async function cronJob(label: string, created: number) {
+      const uid = 'cron-' + label;
+      await db.prepare('INSERT INTO import_keys SELECT ?,?,prefix,role,company_id,fingerprint,valid_since,created_at,expires_at FROM import_keys WHERE uid=?')
+        .bind(uid, uid, 'admin').run();
+      return seedJob(uid, created, [], 1);
+    }
+    const expiredId = await cronJob('expired', clock - 10);
+    await db.prepare("UPDATE import_jobs SET status='queued',payload='{}',expires_at=? WHERE id=?").bind(clock - 1, expiredId).run();
+    const leasedId = await cronJob('leased', clock - 9);
+    await db.prepare("UPDATE import_jobs SET status='processing',payload='{}',expires_at=?,lease_until=? WHERE id=?").bind(clock - 1, clock + 600, leasedId).run();
+    const ready: string[] = [];
+    for (let index = 0; index < 6; index++) {
+      const id = await cronJob('ready-' + index, clock - 8 + index);
+      await db.prepare("UPDATE import_jobs SET status='queued',payload='{}' WHERE id=?").bind(id).run(); ready.push(id);
+    }
+    const retained: string[] = [];
+    for (let index = 0; index < 6; index++) retained.push(await cronJob('retention-' + index, clock - 31 * 86400 + index));
+    const previousDay = new Date((clock - 31 * 86400) * 1000).toISOString().slice(0, 10);
+    await db.prepare('INSERT INTO import_access_daily(day,uid,checks,limit_checks) VALUES(?,?,1,10)').bind(previousDay, 'old-counter').run();
+    await scheduler.scheduled(cronEnv);
+    const expired = await db.prepare('SELECT status,payload FROM import_jobs WHERE id=?').bind(expiredId).first<any>();
+    assert.equal(expired.status, 'failed'); assert.equal(expired.payload, null);
+    assert.equal((await db.prepare('SELECT status FROM import_jobs WHERE id=?').bind(leasedId).first<any>()).status, 'processing');
+    assert.deepEqual(sent.map(message => message.id), ready.slice(0, 5), 'Expired rows leave the active set before the bounded outbox SELECT.');
+    assert.equal((await db.prepare('SELECT dispatch_at FROM import_jobs WHERE id=?').bind(ready[5]).first<any>()).dispatch_at, 0);
+    let remaining = 0;
+    for (const id of retained) if (await db.prepare('SELECT id FROM import_jobs WHERE id=?').bind(id).first()) remaining++;
+    assert.equal(remaining, 1, 'Receipt/job cleanup removes only five histories per invocation.');
+    assert.equal(await db.prepare('SELECT day FROM import_daily WHERE day=?').bind(previousDay).first(), null);
+    assert.equal(await db.prepare('SELECT uid FROM import_access_daily WHERE uid=?').bind('old-counter').first(), null);
+    assert.ok(await db.prepare('SELECT day FROM import_daily WHERE day=?').bind(day).first(), 'Current budgets remain present.');
+  });
 });
