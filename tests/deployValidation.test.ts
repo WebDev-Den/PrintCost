@@ -34,6 +34,10 @@ test('static app enforces script CSP while allowing Firebase, Turnstile and pars
   assert.ok(directives.get('frame-src')?.includes('https://kilo-g.firebaseapp.com'));
   assert.ok(directives.get('connect-src')?.includes('https://firestore.googleapis.com'));
   assert.ok(directives.get('connect-src')?.includes('https://firebaseappcheck.googleapis.com'));
+  const appCheckSdk = await readFile('node_modules/@firebase/app-check/dist/esm/index.esm.js', 'utf8');
+  const endpoint = /const BASE_ENDPOINT = '([^']+)'/.exec(appCheckSdk)?.[1];
+  assert.ok(endpoint, 'Installed App Check SDK endpoint must be recognized');
+  assert.ok(directives.get('connect-src')?.includes(new URL(endpoint).origin), 'CSP must allow the actual installed App Check SDK endpoint');
   assert.ok(directives.get('script-src')?.includes('https://www.gstatic.com/recaptcha/'));
   assert.ok(directives.get('frame-src')?.includes('https://www.google.com/recaptcha/'));
   assert.ok(directives.get('worker-src')?.includes("'self'"));
