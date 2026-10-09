@@ -1,4 +1,4 @@
-import { deleteUser, EmailAuthProvider, getIdToken, reauthenticateWithCredential, type Auth, type User } from 'firebase/auth';
+import { deleteUser, getIdToken, type Auth, type User } from 'firebase/auth';
 import {
   collection, doc, documentId, getDocFromServer, getDocsFromServer, limit, orderBy, query,
   runTransaction, serverTimestamp, startAfter, Timestamp, writeBatch, type Firestore,
@@ -7,7 +7,7 @@ import {
   ACCOUNT_DELETE_CONFIRMATION, ACCOUNT_PAGE_SIZE, ACCOUNT_PRIVATE_COLLECTIONS, planAccountDeparture,
   type AccountDeletionProgress, type AccountExport, type AuthorizationRegistry,
 } from '../domain/accountData.ts';
-import { authService } from './authService.ts';
+import { authService, reauthenticateAccount } from './authService.ts';
 import { firebaseAuth, firestoreDb } from './firebaseClient.ts';
 
 type ProgressListener = (progress: AccountDeletionProgress) => void;
@@ -115,7 +115,6 @@ export class AccountDataService {
   async deleteOwnAccount(uid: string, password: string, confirmation: string, onProgress?: ProgressListener): Promise<void> {
     const user = this.user(uid);
     if (confirmation !== ACCOUNT_DELETE_CONFIRMATION) throw new Error(`Для підтвердження введіть «${ACCOUNT_DELETE_CONFIRMATION}».`);
-    if (!password) throw new Error('Введіть поточний пароль.');
     let deletedDocuments = 0;
     const progress = (stage: AccountDeletionProgress['stage']) => {
       this.sameUser(user);
@@ -123,7 +122,7 @@ export class AccountDataService {
       this.sameUser(user);
     };
     progress('reauthenticate');
-    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email!, password));
+    await reauthenticateAccount(user, password);
     this.sameUser(user);
     await getIdToken(user, true);
     this.sameUser(user);

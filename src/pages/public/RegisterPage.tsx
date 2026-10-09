@@ -4,13 +4,14 @@ import { Eye, EyeOff, Lock, Mail, Sparkles } from 'lucide-react';
 import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
+import { GoogleSignInButton } from '../../components/common/GoogleSignInButton.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
 import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
-  const { register, enableDemoSession } = useAuth();
+  const { register, loginWithGoogle, enableDemoSession } = useAuth();
   const captcha = useTurnstile('register');
 
   const [email, setEmail] = useState('');
@@ -63,6 +64,21 @@ export const RegisterPage: React.FC = () => {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    if (isSubmitting || !captcha.ready) return;
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await loginWithGoogle(captcha.token, 'register');
+      navigate('/app/dashboard');
+    } catch (error) {
+      setError(authErrorMessage(error));
+    } finally {
+      captcha.reset();
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center space-y-2">
@@ -84,6 +100,10 @@ export const RegisterPage: React.FC = () => {
               {error}
             </div>
           )}
+
+          {captcha.field}
+          <GoogleSignInButton onClick={handleGoogleLogin} disabled={isSubmitting || !captcha.ready} />
+          <p className="text-center text-xs text-neutral-500 dark:text-neutral-400">або зареєструйтеся за адресою email</p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <Input
@@ -146,8 +166,6 @@ export const RegisterPage: React.FC = () => {
                 />
               </div>
             </div>
-
-            {captcha.field}
 
             <Button
               type="submit"

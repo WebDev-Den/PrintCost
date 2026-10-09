@@ -22,11 +22,12 @@ test('raw export timestamps retain nanoseconds and private collections are expli
 });
 
 test('demo or another UID is refused before any Auth or Firestore operation', async () => {
-  const fakeAuth = { currentUser: { uid: 'alice', email: 'alice@example.com' } };
+  const fakeAuth = { currentUser: { uid: 'alice', email: 'alice@example.com', providerData: [{ providerId: 'password' }] } };
   const service = new AccountDataService(fakeAuth as never, {} as never);
   await assert.rejects(service.exportOwnData('bob'), /власний справжній/);
   await assert.rejects(service.deleteOwnAccount('bob', 'ignored', 'ВИДАЛИТИ'), /власний справжній/);
   await assert.rejects(service.deleteOwnAccount('alice', 'ignored', 'no'), /підтвердження/);
+  await assert.rejects(service.deleteOwnAccount('alice', '', 'ВИДАЛИТИ'), /поточний пароль/);
   const demo = new AccountDataService(fakeAuth as never, {} as never, () => true);
   await assert.rejects(demo.exportOwnData('alice'), /власний справжній/);
 });

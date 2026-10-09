@@ -8,6 +8,7 @@ interface AuthContextType {
   isDemoSession: boolean;
   authError: string | null;
   login: (email: string, pass: string, captchaToken?: string) => Promise<void>;
+  loginWithGoogle: (captchaToken?: string, action?: 'login' | 'register') => Promise<void>;
   register: (email: string, pass: string, captchaToken?: string) => Promise<void>;
   logout: () => Promise<void>;
   enableDemoSession: () => Promise<void>;
@@ -53,6 +54,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (started === revision.current) acceptUser(next);
   };
   const login = async (email: string, pass: string, captchaToken?: string) => acceptOperation(authService.login(email, pass, captchaToken));
+  const loginWithGoogle = async (captchaToken?: string, action?: 'login' | 'register') => acceptOperation(authService.loginWithGoogle(captchaToken, action));
   const register = async (email: string, pass: string, captchaToken?: string) => acceptOperation(authService.register(email, pass, captchaToken));
   const logout = async () => { await authService.logout(); acceptUser(null); };
   const enableDemoSession = async () => acceptOperation(authService.enableDemoSession());
@@ -68,7 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const reloadUser = async () => acceptOperation(authService.refreshCurrentUser());
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, isDemoSession, authError, login, register, logout, enableDemoSession, updateUser, reloadUser }}>
+    <AuthContext.Provider value={{ user, isLoading, isDemoSession, authError, login, loginWithGoogle, register, logout, enableDemoSession, updateUser, reloadUser }}>
       {children}
     </AuthContext.Provider>
   );

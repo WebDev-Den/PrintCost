@@ -4,13 +4,14 @@ import { Eye, EyeOff, Lock, Mail, Sparkles } from 'lucide-react';
 import { Input } from '../../components/common/Input.tsx';
 import { Button } from '../../components/common/Button.tsx';
 import { BrandLogo } from '../../components/common/BrandLogo.tsx';
+import { GoogleSignInButton } from '../../components/common/GoogleSignInButton.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
 import { useTurnstile } from '../../components/common/TurnstileChallenge.tsx';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { login, enableDemoSession, authError } = useAuth();
+  const { login, loginWithGoogle, enableDemoSession, authError } = useAuth();
   const captcha = useTurnstile('login');
 
   const [email, setEmail] = useState('');
@@ -58,6 +59,21 @@ export const LoginPage: React.FC = () => {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    if (isSubmitting || !captcha.ready) return;
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await loginWithGoogle(captcha.token, 'login');
+      navigate('/app/dashboard');
+    } catch (error) {
+      setError(authErrorMessage(error));
+    } finally {
+      captcha.reset();
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-neutral-100/70 dark:bg-neutral-950 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center space-y-2">
@@ -92,6 +108,15 @@ export const LoginPage: React.FC = () => {
             </Button>
           </div>
 
+          {(error || authError) && (
+            <div role="alert" className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300 font-medium">
+              {error || authError}
+            </div>
+          )}
+
+          {captcha.field}
+          <GoogleSignInButton onClick={handleGoogleLogin} disabled={isSubmitting || !captcha.ready} />
+
           <div className="relative">
             <div className="absolute inset-0 flex items-center">
               <div className="w-full border-t border-neutral-200 dark:border-neutral-800" />
@@ -102,12 +127,6 @@ export const LoginPage: React.FC = () => {
               </span>
             </div>
           </div>
-
-          {(error || authError) && (
-            <div role="alert" className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300 font-medium">
-              {error || authError}
-            </div>
-          )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <Input
@@ -158,8 +177,6 @@ export const LoginPage: React.FC = () => {
                 </button>
               </div>
             </div>
-
-            {captcha.field}
 
             <Button
               type="submit"

@@ -17,6 +17,7 @@ export interface UserProfile {
   createdAt: string;
   isDemoUser: boolean;
   emailVerified?: boolean;
+  authProviders?: string[];
   isAdmin?: boolean;
   role?: import('./organizations.ts').Role;
   companyId?: string | null;

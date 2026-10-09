@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { authService, authErrorMessage } from '../src/services/authService.ts';
+import { authService, authErrorMessage, reauthenticateAccount } from '../src/services/authService.ts';
 import { firebaseConfigured } from '../src/services/firebaseClient.ts';
 
 class MemoryStorage implements Storage {
@@ -24,6 +24,7 @@ test('missing Firebase configuration refuses real auth and isolates explicit dem
     assert.equal(await authService.getCurrentUser(), null);
     assert.equal(authService.isDemoSession(), false);
     await assert.rejects(authService.login('owner@example.com', 'password123'), /Firebase ще не налаштовано/);
+    await assert.rejects(authService.loginWithGoogle(), /Firebase ще не налаштовано/);
     await assert.rejects(authService.register('owner@example.com', 'password123'), /Firebase ще не налаштовано/);
     await assert.rejects(authService.forgotPassword('owner@example.com'), /Firebase ще не налаштовано/);
     await assert.rejects(authService.resetPassword('password123'), /немає коду відновлення/);
@@ -83,4 +84,21 @@ test('credential and expired link errors have actionable Ukrainian messages', ()
   assert.match(authErrorMessage({ code: 'auth/invalid-credential' }), /Невірна електронна пошта або пароль/);
   assert.match(authErrorMessage({ code: 'auth/expired-action-code' }), /Запросіть новий лист/);
   assert.doesNotMatch(authErrorMessage({ code: 'auth/unknown', message: 'secret internal details' }), /secret/);
+});
+
+test('Google popup errors are actionable and never expose provider credentials', () => {
+  assert.match(authErrorMessage({ code: 'auth/popup-blocked' }), /Дозвольте спливні вікна/);
+  assert.match(authErrorMessage({ code: 'auth/popup-closed-by-user' }), /Вікно Google закрито/);
+  assert.match(authErrorMessage({ code: 'auth/unauthorized-domain' }), /домен ще не дозволено/);
+  assert.match(authErrorMessage({ code: 'auth/operation-not-allowed' }), /спосіб входу ще не ввімкнено/);
+  assert.match(authErrorMessage({ code: 'auth/account-exists-with-different-credential', credential: 'secret' }), /попереднім способом/);
+  assert.match(authErrorMessage({ code: 'auth/user-mismatch' }), /той самий Google-акаунт/);
+});
+
+test('reauthentication refuses missing passwords and unsupported providers before contacting Firebase', async () => {
+  const passwordUser = { email: 'owner@example.test', providerData: [{ providerId: 'password' }] };
+  await assert.rejects(reauthenticateAccount(passwordUser as never, ''), /поточний пароль/);
+  const linkedUser = { ...passwordUser, providerData: [...passwordUser.providerData, { providerId: 'google.com' }] };
+  await assert.rejects(reauthenticateAccount(linkedUser as never, ''), /поточний пароль/);
+  await assert.rejects(reauthenticateAccount({ ...passwordUser, providerData: [] } as never, ''), /не підтримується/);
 });

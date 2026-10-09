@@ -4,12 +4,15 @@ import {
   createUserWithEmailAndPassword,
   EmailAuthProvider,
   getIdToken,
+  GoogleAuthProvider,
   onAuthStateChanged,
   reauthenticateWithCredential,
+  reauthenticateWithPopup,
   reload,
   sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signOut,
   updatePassword,
   updateProfile as updateFirebaseProfile,
@@ -43,7 +46,13 @@ export function authErrorMessage(error: unknown): string {
     'auth/invalid-action-code': 'Посилання недійсне або вже використане. Запросіть новий лист.',
     'auth/requires-recent-login': 'Для цієї дії потрібно повторно увійти в акаунт.',
     'auth/user-disabled': 'Цей акаунт вимкнено. Зверніться до адміністратора.',
-    'auth/operation-not-allowed': 'Вхід за електронною поштою ще не ввімкнено у Firebase.',
+    'auth/operation-not-allowed': 'Цей спосіб входу ще не ввімкнено у Firebase. Зверніться до адміністратора.',
+    'auth/popup-blocked': 'Браузер заблокував вікно Google. Дозвольте спливні вікна для цього сайту й повторіть вхід.',
+    'auth/popup-closed-by-user': 'Вікно Google закрито. Повторіть вхід і виберіть акаунт.',
+    'auth/cancelled-popup-request': 'Інше вікно входу вже відкрито. Завершіть вхід у ньому або повторіть спробу.',
+    'auth/unauthorized-domain': 'Цей домен ще не дозволено для входу у Firebase. Зверніться до адміністратора.',
+    'auth/account-exists-with-different-credential': 'Ця пошта вже має акаунт з іншим способом входу. Увійдіть попереднім способом.',
+    'auth/user-mismatch': 'Виберіть той самий Google-акаунт, у який ви увійшли на сайті.',
     'auth/unauthorized-continue-uri': 'Адресу сайту ще не додано до дозволених доменів Firebase.',
     'auth/invalid-api-key': 'Налаштування Firebase неправильні. Перевірте конфігурацію сайту.',
     'permission-denied': 'Немає дозволу на цю дію. Перевірте підтвердження пошти та актуальні права акаунта.',
@@ -56,6 +65,23 @@ export function authErrorMessage(error: unknown): string {
 function requireAuth() {
   if (!firebaseAuth || !firestoreDb) throw new Error('Firebase ще не налаштовано. Спробуйте деморежим або зверніться до адміністратора.');
   return firebaseAuth;
+}
+
+function googleProvider() {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  return provider;
+}
+
+export async function reauthenticateAccount(user: User, password: string): Promise<void> {
+  if (user.providerData.some(provider => provider.providerId === 'password')) {
+    if (!user.email || !password) throw new Error('Введіть поточний пароль.');
+    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
+  } else if (user.providerData.some(provider => provider.providerId === 'google.com')) {
+    await reauthenticateWithPopup(user, googleProvider());
+  } else {
+    throw new Error('Спосіб повторного входу для цього акаунта не підтримується.');
+  }
 }
 
 async function readProfile(user: User): Promise<UserProfile> {
@@ -76,6 +102,7 @@ async function readProfile(user: User): Promise<UserProfile> {
     createdAt: typeof data?.createdAt === 'string' ? data.createdAt : new Date(user.metadata.creationTime || Date.now()).toISOString(),
     isDemoUser: false,
     emailVerified: user.emailVerified,
+    authProviders: user.providerData.map(provider => provider.providerId),
     isAdmin: !deletion.exists() && access.role === 'admin',
     role: deletion.exists() ? 'user' : access.role,
     companyId: deletion.exists() ? null : access.companyId,
@@ -87,6 +114,7 @@ async function readProfile(user: User): Promise<UserProfile> {
 export interface AuthService {
   getCurrentUser(): Promise<UserProfile | null>;
   login(email: string, password: string, captchaToken?: string): Promise<UserProfile>;
+  loginWithGoogle(captchaToken?: string, action?: 'login' | 'register'): Promise<UserProfile>;
   register(email: string, password: string, captchaToken?: string): Promise<UserProfile>;
   forgotPassword(email: string, captchaToken?: string): Promise<void>;
   resetPassword(password: string, code?: string, captchaToken?: string): Promise<void>;
@@ -228,6 +256,20 @@ export class FirebaseAuthService implements AuthService {
     return profile;
   }
 
+  async loginWithGoogle(captchaToken = '', action: 'login' | 'register' = 'login'): Promise<UserProfile> {
+    const auth = requireAuth();
+    const identity = this.getSessionIdentity();
+    await verifyTurnstile(action, captchaToken);
+    this.assertSession(identity);
+    localStorage.removeItem(DEMO_KEY);
+    this.notify();
+    const { user } = await signInWithPopup(auth, googleProvider());
+    this.assertSession(user.uid);
+    const profile = await readProfile(user);
+    this.assertSession(user.uid);
+    return profile;
+  }
+
   async forgotPassword(email: string, captchaToken = ''): Promise<void> {
     const auth = requireAuth();
     await verifyTurnstile('forgot_password', captchaToken);
@@ -326,7 +368,8 @@ export class FirebaseAuthService implements AuthService {
   async changePassword(currentPassword: string, newPassword: string): Promise<void> {
     const user = requireAuth().currentUser;
     if (!user?.email || this.isDemoSession()) throw new Error('Зміна пароля доступна лише у вашому справжньому акаунті.');
-    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, currentPassword));
+    if (!user.providerData.some(provider => provider.providerId === 'password')) throw new Error('Цей акаунт використовує вхід через Google. Пароль змінюється в налаштуваннях Google.');
+    await reauthenticateAccount(user, currentPassword);
     this.assertSession(user.uid);
     await updatePassword(user, newPassword);
     this.assertSession(user.uid);

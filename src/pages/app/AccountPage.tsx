@@ -25,6 +25,7 @@ export const AccountPage: React.FC = () => {
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [companyName, setCompanyName] = useState('');
   const [isExporting, setIsExporting] = useState(false);
+  const hasPassword = user?.authProviders?.includes('password') === true;
 
   const handleExport = async () => {
     if (isExporting || !user || isDemoSession) return;
@@ -111,9 +112,10 @@ export const AccountPage: React.FC = () => {
           <p className="text-xs text-neutral-600 dark:text-neutral-400">Роль: <strong>{user?.role === 'admin' ? 'Адміністратор' : user?.role === 'manager' ? 'Менеджер компанії' : 'Користувач'}</strong>{user?.companyId ? ` · Компанія: ${companyName || 'завантаження…'}` : ''}</p>
           <div className="pt-2 flex flex-wrap gap-3 items-center justify-between">
             <Button type="submit" variant="primary" size="sm" isLoading={isSaving}>Зберегти зміни</Button>
-            <Button type="button" variant="outline" size="sm" leftIcon={<Lock className="w-3.5 h-3.5" />} onClick={() => setIsPasswordModalOpen(true)} disabled={isDemoSession}>Змінити пароль</Button>
+            {hasPassword && <Button type="button" variant="outline" size="sm" leftIcon={<Lock className="w-3.5 h-3.5" />} onClick={() => setIsPasswordModalOpen(true)} disabled={isDemoSession}>Змінити пароль</Button>}
           </div>
           {isDemoSession && <p className="text-xs text-neutral-500">Зміна пароля доступна після реєстрації власного акаунта.</p>}
+          {!isDemoSession && !hasPassword && user?.authProviders?.includes('google.com') && <p className="text-xs text-neutral-600 dark:text-neutral-400">Ви входите через Google. Пароль керується в налаштуваннях вашого Google-акаунта.</p>}
         </form>
       </div>
 

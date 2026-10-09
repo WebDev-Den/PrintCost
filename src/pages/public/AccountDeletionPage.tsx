@@ -8,7 +8,7 @@ import { accountDataService, downloadAccountExport } from '../../services/accoun
 import { authErrorMessage, authService } from '../../services/authService.ts';
 
 const progressLabels: Record<AccountDeletionProgress['stage'], string> = {
-  reauthenticate: 'Перевірка пароля…', revoke: 'Відкликання ролей і доступу…', cleanup: 'Очищення приватних даних…',
+  reauthenticate: 'Повторне підтвердження входу…', revoke: 'Відкликання ролей і доступу…', cleanup: 'Очищення приватних даних…',
   identity: 'Видалення профілю та запису користувача…', auth: 'Видалення можливості входу…',
 };
 
@@ -24,6 +24,8 @@ export const AccountDeletionPage: React.FC = () => {
   const operationUid = useRef('');
   const operationRevision = useRef(0);
   const inFlight = useRef(false);
+  const hasPassword = user?.authProviders?.includes('password') === true;
+  const hasGoogle = user?.authProviders?.includes('google.com') === true;
   useEffect(() => {
     setPassword(''); setConfirmation(''); setError(null); setProgress(null);
     if (user?.id && user.id !== operationUid.current) {
@@ -94,13 +96,13 @@ export const AccountDeletionPage: React.FC = () => {
       </> : <>
         <p className="text-sm text-neutral-600 dark:text-neutral-400">Акаунт: <strong>{user?.email}</strong>. Видалення незворотне: профіль, матеріали, принтери, усі розрахунки, шаблони, налаштування та вподобання буде видалено разом із можливістю входу.</p>
         <p className="text-xs text-neutral-600 dark:text-neutral-400">Пропозиції компаній, журнал дій, позначка видалення та мінімальні записи відкликаного доступу залишаться для цілісності системи. Останній адміністратор має спочатку призначити іншого адміністратора.</p>
-        {user?.deletionPending && <p role="status" className="rounded-lg bg-amber-50 dark:bg-amber-950 p-3 text-sm text-amber-800 dark:text-amber-200">Видалення вже розпочато. Доступ і ролі відкликано, частина даних могла бути очищена. Підтвердьте пароль і продовжте; повернути очищені дані неможливо.</p>}
+        {user?.deletionPending && <p role="status" className="rounded-lg bg-amber-50 dark:bg-amber-950 p-3 text-sm text-amber-800 dark:text-amber-200">Видалення вже розпочато. Доступ і ролі відкликано, частина даних могла бути очищена. Підтвердьте вхід і продовжте; повернути очищені дані неможливо.</p>}
         {isDemoSession ? <p className="text-sm text-neutral-600">Видалення в деморежимі недоступне.</p> : <>
           <Button variant="outline" size="sm" onClick={handleExport} isLoading={exporting} disabled={busy || !user || (user.isBlocked && !user.deletionPending) || (!user.emailVerified && !user.deletionPending)}>{user?.deletionPending ? 'Експортувати дані, що залишилися' : 'Спочатку експортувати всі власні дані'}</Button>
           <form onSubmit={handleDelete} className="space-y-4">
-            <Input label="Поточний пароль" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={busy || exporting} />
+            {hasPassword ? <Input label="Поточний пароль" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={busy || exporting} /> : hasGoogle && <p className="text-sm text-neutral-600 dark:text-neutral-400">Перед видаленням відкриється вікно Google. Виберіть той самий акаунт, щоб підтвердити вхід.</p>}
             <Input label={`Для підтвердження введіть ${ACCOUNT_DELETE_CONFIRMATION}`} value={confirmation} onChange={event => setConfirmation(event.target.value)} autoComplete="off" required disabled={busy || exporting} />
-            <Button variant="danger" type="submit" size="sm" isLoading={busy} disabled={!user || exporting || !password || confirmation !== ACCOUNT_DELETE_CONFIRMATION}>{user?.deletionPending ? 'Продовжити незворотне видалення' : 'Назавжди видалити акаунт'}</Button>
+            <Button variant="danger" type="submit" size="sm" isLoading={busy} disabled={!user || exporting || (!hasPassword && !hasGoogle) || (hasPassword && !password) || confirmation !== ACCOUNT_DELETE_CONFIRMATION}>{user?.deletionPending ? 'Продовжити незворотне видалення' : 'Назавжди видалити акаунт'}</Button>
           </form>
         </>}
         {progress && <p role="status" className="text-sm text-neutral-600 dark:text-neutral-400">{busy ? progressLabels[progress.stage] : 'Операцію зупинено.'} {progress.deletedDocuments > 0 && `Очищено записів за цю спробу: ${progress.deletedDocuments}.`}</p>}
