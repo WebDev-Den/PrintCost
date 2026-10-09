@@ -228,3 +228,6 @@ Cloudflare Free / $0 підтверджено через консоль під �
 Інші обмеження: безкоштовні квоти не є гарантією необмеженого навантаження; фактичний CPU і справжні поштові потоки ще не прийняті. Попередній production dependency audit мав 0 знахідок; 11 наявних dev-only знахідок Firebase CLI залишаються окремою задачею (аудит у цьому проходженні повторно не запускався).
 
 Наступну роботу починати з **EMAIL-ACTION-URL → AUTH-LIVE / CAPTCHA-ACCEPTANCE → ROLES-LIVE → COMPANY-LIVE → ANALYTICS-LIVE / FREE-CPU → USER-ACCEPTANCE → MAIN-RELEASE**. Кожен блок завершувати й перевіряти перед переходом далі. Після зміни релізу оновити цей файл фактичними SHA/Worker version/Rules hash і новими доказами; не переносити неперевірені задачі у завершені.
+
+### CSP — локальне приймання 9 жовтня 2026
+Enforced CSP і зовнішній theme-init.js пройшли 5 deployment tests та production build. У браузері перевірено блокування inline script/onclick, Turnstile test widget, графік, G-code parser Worker, 3D canvas і тему після reload. Локальний Google popup зупинився на network error Firebase iframe, CSP-порушень не виявлено; повний Google sign-in залишається live acceptance перед релізом. Production не змінено.

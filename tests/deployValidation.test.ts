@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { validateDeployment } from '../scripts/deploy-validation.ts';
 
 const sitekey = '0x4AAAAAAFR_dav3sbi3wfEO';
@@ -10,6 +11,30 @@ const config = { name: 'kilo-g', vars: { FIREBASE_PROJECT_ID: 'kilo-g', TURNSTIL
   d1_databases: [{ binding: 'ANALYTICS_DB', database_id: 'a2bcb470-785c-44f6-9b77-5dbd9702a9ca' }],
   ratelimits: [{ name: 'ANALYTICS_RATE_LIMIT', namespace_id: '129761', simple: { limit: 60, period: 60 } },
     { name: 'IMPORT_RATE_LIMIT', namespace_id: '129762', simple: { limit: 30, period: 60 } }] };
+
+test('static app enforces script CSP while allowing Firebase, Turnstile and parser workers', async () => {
+  const headers = await readFile('public/_headers', 'utf8');
+  const policy = /Content-Security-Policy: (.+)/.exec(headers)?.[1];
+  assert.ok(policy);
+  const directives = new Map(policy.split(';').map(item => {
+    const [directive, ...sources] = item.trim().split(/\s+/);
+    return [directive, sources];
+  }));
+  assert.deepEqual(directives.get('default-src'), ["'self'"]);
+  assert.ok(!directives.get('script-src')?.some(value => ["'unsafe-inline'", "'unsafe-eval'", '*', 'https:'].includes(value)));
+  assert.ok(directives.get('script-src')?.includes('https://challenges.cloudflare.com'));
+  assert.ok(directives.get('script-src')?.includes('https://apis.google.com'));
+  assert.ok(directives.get('frame-src')?.includes('https://kilo-g.firebaseapp.com'));
+  assert.ok(directives.get('connect-src')?.includes('https://firestore.googleapis.com'));
+  assert.ok(directives.get('worker-src')?.includes("'self'"));
+  assert.deepEqual(directives.get('object-src'), ["'none'"]);
+  assert.deepEqual(directives.get('base-uri'), ["'none'"]);
+  assert.deepEqual(directives.get('frame-ancestors'), ["'none'"]);
+  const html = await readFile('index.html', 'utf8');
+  assert.ok(!/<script\b(?![^>]*\bsrc=)[^>]*>\s*\S/i.test(html));
+  assert.ok(html.includes('src="/theme-init.js"'));
+  await readFile('public/theme-init.js', 'utf8');
+});
 
 test('deployment rejects placeholder D1, mismatched Firebase and accidental paid CPU configuration', () => {
   assert.doesNotThrow(() => validateDeployment(config, 'kilo-g', sitekey));

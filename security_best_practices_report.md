@@ -81,7 +81,7 @@ TypeScript/React SPA, Firebase Auth, Firestore Rules і repositories, Cloudflare
 - [x] SEC-001 виправлено та покрито regression локально; перед релізом застосувати міграцію 0003 разом із сумісним Worker.
 - [ ] SEC-002 погодити й перевірити варіант захисту Auth, що відповідає вимозі безкоштовності; перевірити restrictions/quotas/password policy.
 - [ ] SEC-003 підготувати захищений і кешований публічний read-шлях з урахуванням поточного SDK/аналітики.
-- [ ] SEC-004 підготувати й перевірити CSP перед окремо дозволеним релізом.
+- [x] SEC-004: CSP підготовлена локально, тема винесена в окремий скрипт. Перевірені фактичне блокування inline script/onclick, Turnstile з офіційним тестовим ключем, демо-калькулятор, графік, G-code parser Worker, 3D canvas і збереження теми. Політика дозволяє тільки потрібні Google/Firebase/Turnstile origins; без script unsafe-inline/unsafe-eval. Production ще без цієї політики. Google popup із localhost повернув мережеву помилку Firebase iframe без CSP-порушень; повний Google-вхід перевірити перед live-релізом.
 - [ ] SEC-005 перевірити безпечний шлях оновлення development toolchain без сліпого force/downgrade.
 - [ ] Окремо перевірити live IAM сервісного акаунта, доступи до консолей, реальний usage/CPU і квоти після команди на активацію.
 
