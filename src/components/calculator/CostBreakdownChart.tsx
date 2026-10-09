@@ -89,7 +89,7 @@ export const CostBreakdownChart: React.FC<CostBreakdownChartProps> = ({
     if (active && payload && payload.length) {
       const slice = payload[0].payload as CategorySlice;
       return (
-        <div className="bg-neutral-900 text-white dark:bg-neutral-800 p-3 rounded-lg shadow-xl border border-neutral-700 text-xs space-y-1 z-50">
+        <div className="bg-neutral-900 text-white dark:bg-neutral-800 p-3 rounded-lg shadow-xl border border-neutral-700 text-xs space-y-1">
           <div className="flex items-center gap-2 font-semibold">
             <span
               className="w-2.5 h-2.5 rounded-full shrink-0"
@@ -171,7 +171,7 @@ export const CostBreakdownChart: React.FC<CostBreakdownChartProps> = ({
             <div className="w-full h-full relative">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Tooltip content={<CustomTooltip />} />
+                  <Tooltip content={<CustomTooltip />} wrapperStyle={{ zIndex: 10 }} />
                   <Pie
                     data={data}
                     cx="50%"
@@ -220,7 +220,7 @@ export const CostBreakdownChart: React.FC<CostBreakdownChartProps> = ({
                   tick={{ fontSize: 11, fill: '#888' }}
                   width={90}
                 />
-                <Tooltip content={<CustomTooltip />} />
+                <Tooltip content={<CustomTooltip />} wrapperStyle={{ zIndex: 10 }} />
                 <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                   {data.map((entry, index) => (
                     <Cell key={`bar-cell-${index}`} fill={entry.color} />
