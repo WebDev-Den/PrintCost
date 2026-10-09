@@ -1,10 +1,10 @@
 # REST API імпорту KILO·G
 
-Код підготовлений і перевірений локально. Production ще не змінений. Перед наступним релізом потрібні Queue, міграція D1 і окремий сервісний акаунт Firebase. Не запускайте команди активації до дозволу на публікацію.
+**API працює у production з 9 жовтня 2026.** Queue `kilog-imports`, міграції D1 0002/0003 та окремий сервісний акаунт Firebase активовані. Зовнішній API-ключ і живий кабінет пройшли контрольні імпорти 1/1 та 2/2; upsert, company JSON, збереження опису, профіль PLA й idempotency перевірені. Чинний реліз і незавершене приймання — [REMAINING_TASKS.md](./REMAINING_TASKS.md).
 
 ## API для зовнішнього програмного забезпечення
 
-Базова адреса після активації: https://web-dev.pp.ua/api/v1. Використовуйте HTTPS. Вкладка **API та імпорт** доступна лише активним admin/manager із підтвердженою поштою.
+Базова адреса: https://web-dev.pp.ua/api/v1. Використовуйте HTTPS. Вкладка **API та імпорт** доступна лише активним admin/manager із підтвердженою поштою.
 
 Створіть власний ключ у кабінеті, підтвердивши поточний вхід. Він діє 90 днів, показується один раз, у D1 зберігається лише SHA-256. Зберігайте plaintext у захищених налаштуваннях свого ПЗ; не додавайте до URL, JSON, Git або логів. Ротація/відкликання негайно забороняє старий ключ і скасовує незавершену частину імпортів. Уже почата порція до 5 записів може завершитися. Після зміни ролі/компанії, блокування/розблокування або відкликання Firebase сесій потрібен новий ключ.
 
@@ -75,7 +75,9 @@ curl -X POST "https://web-dev.pp.ua/api/v1/imports" \
 
 Великий імпорт не є однією транзакцією. Зміни ролі/ключа чи збій можуть залишити вже оброблену частину. Якщо неможливо прочитати квитанцію останньої порції, job явно попереджає про можливий запис. Звірте каталог і results перед новим імпортом; незмінний externalId запобігає створенню нового дубліката.
 
-## Активація після дозволу на реліз
+## Відтворення інфраструктури та повторний реліз
+
+Нижче інструкція відновлення/наступного релізу, а не список ще не виконаних команд: поточну інфраструктуру вже активовано. Не створювати зайві service-account keys або Queue, не повторювати міграції вручну й не послаблювати Rules. Firestore enforcement вимагає сумісного клієнта App Check; старий реліз без SDK не є безпечним автоматичним rollback. [Поточна конфігурація захисту](./FIREBASE_SECURITY_ACTIVATION.md).
 
 1. У Firebase/Google Cloud проєкті **kilo-g**, акаунтом його власника, створити окремий service account `kilog-import-worker`. Надати **Cloud Datastore User** (`roles/datastore.user`) для транзакцій Firestore та **Firebase Authentication Viewer** (`roles/firebaseauth.viewer`) для перевірки enabled/emailVerified/revocation. Створити JSON key; зберігати поза репозиторієм у каталозі з ACL лише власника. Не використовувати особистий refresh token, Firebase web API key чи VITE_*.
 2. OAuth цього service account використовує IAM і обходить Firestore Rules. Саме Worker повторно перевіряє поточний акаунт, роль, memberships, блокування, accountDeletion, компанію, домен і blocked status у кожній порції. Rules не послаблюються; нова приватна collection importReceipts залишається недоступною клієнтам.
@@ -83,12 +85,14 @@ curl -X POST "https://web-dev.pp.ua/api/v1/imports" \
 4. Зберегти резервну копію D1, потім `npx wrangler d1 migrations apply kilog-analytics --remote`. Міграція 0002 додає import_* tables/triggers/indexes; 0003 додає окремий бюджет адміністратора й персональні лічильники. Каталог Firestore не переміщується.
 5. Підготувати захищений secrets JSON поза Git: поле `FIREBASE_IMPORT_SERVICE_ACCOUNT` зі **string**, який містить увесь JSON service account. Не друкувати значення в терміналі/логах. Існуючий TURNSTILE_SECRET_KEY не видаляється: secrets-file застосовується додатково.
 6. `npm run lint`, `npm test`, `npm run test:emulators`, `npm run build`, `npx tsx scripts/deploy-validation.ts`, `npx wrangler deploy --dry-run`. Лише після дозволу — `npx wrangler deploy --secrets-file <захищений-файл>`. Не використовувати secret put як окремий передчасний реліз.
-7. На окремій тестовій компанії виконати живий admin/manager імпорт, перевірити Auto company, denied foreign URL, rotation/revoke, Queue/crons, журнал і фактичний billed CPU. Без цього не стверджувати, що новий API прийнятий у production. Старий сайт до активації не змінюється.
+7. На окремій тестовій компанії виконати контрольоване admin/manager приймання, перевірити Auto company, denied foreign URL, rotation/revoke, Queue/crons, журнал і фактичний billed CPU. Відрізняти виконані live admin checks від локальних manager regressions; не оголошувати всю live матрицю завершеною без відповідного приймання.
 
-Для rollback спочатку зупинити consumer Queue в консолі, відкликати IAM-доступ service account і повернути попередню Worker version. D1 import_* таблиці залишити для розбору/відновлення. Уже записані Firestore пропозиції не видаляти автоматично. Видалення ключа service account припиняє minting нових токенів; для негайного відключення потрібне відкликання IAM-доступу, оскільки виданий OAuth token може ще діяти.
+Для аварійного повного відключення імпорту спочатку зупинити consumer Queue, відкликати IAM-доступ service account і повернути **сумісну** Worker version. Поточна сумісна попередня версія — `0c99f93f-e0bc-4213-9db0-5fb44612510d`, source `712e603`: має App Check SDK і правильний CSP. Старий клієнт без SDK не працюватиме з чинним Firestore enforcement. D1 import_* таблиці залишити для розбору/відновлення. Уже записані Firestore пропозиції не видаляти автоматично. Видалення ключа service account припиняє minting нових токенів; для негайного відключення потрібне відкликання IAM-доступу, оскільки виданий OAuth token може ще діяти.
 
 ## Межі безкоштовного плану
 
 За [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/) Free має 10 000 операцій/день; квота 1 500 sends з трьома retries дає до 9 000 операцій цього API. Інші Queue в акаунті також можуть витрачати спільний ліміт. [Free retention](https://developers.cloudflare.com/queues/platform/limits/) — 24 години. [Workers Free](https://developers.cloudflare.com/workers/platform/limits/) має суворий CPU budget; локальні тести не вимірюють production billed CPU. [Firebase REST](https://firebase.google.com/docs/firestore/use-rest-api) описує різницю між Rules та IAM.
 
-Ліміти залишають запас для Spark, але інші функції сайту використовують ті самі ресурси Firebase. Безкоштовний план не гарантує необмежене навантаження або 100% доступність. При квоті/недоступності API закриває доступ чи відкладає job замість неконтрольованих записів.
+Фактичний CPU після оптимізації source `9f2d8ba`: 16 sampled requests, 0 runtime errors, max bucket P99 21.670 ms. Піки перевищують номінальні 10 ms HTTP/Cron Free; платформа допускає поодинокі перевищення, але стале перевищення може завершити запит з 1102. Startup time не вимірює CPU запиту. Максимальний пакет і тривале навантаження не прийняті у production.
+
+Ліміти обмежують витрати, але інші функції сайту використовують ті самі ресурси Firebase. Безкоштовний план не гарантує необмежене навантаження або 100% доступність. При квоті/недоступності API закриває доступ чи відкладає job замість неконтрольованих записів.

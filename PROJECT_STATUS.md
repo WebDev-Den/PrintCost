@@ -1,8 +1,24 @@
 # KILO·G — стан проєкту та задач
 
-## Продовження реалізації 9 жовтня 2026
+## Чинний стан — 9 жовтня 2026
 
-Нова команда власника відновила незавершені задачі й перевірки. Першим завершено SEC-001: до Firebase діє персональна атомарна квота UID, відхилені запити не витрачають привілейований бюджет, адміністратору зарезервовано окремі 500 перевірок за UTC-добу. Реальний Worker/D1 regression і TypeScript PASS. Міграція `0003_import_access_limits.sql` підготовлена локально. Виправлено також нестабільний CI assert: cooldown рахується від часу приймання job, а не створення API-ключа. Production ще не змінено; актуальні задачі — [REMAINING_TASKS.md](./REMAINING_TASKS.md).
+REST API імпорту опублікований на [web-dev.pp.ua/app/api](https://web-dev.pp.ua/app/api). Особисті ключі, ротація/відкликання зі свіжим входом, JSON компаній/пластиків, поточні права менеджера й точні домени, stable upsert, профілі, D1 outbox і послідовна Queue працюють. Backup D1 зроблено, міграції 0002/0003 застосовані, Queue має producer/consumer `kilo-g`. Dedicated Firebase service account має лише Datastore User + Auth Viewer; приватний JSON і backup поза Git. Cloudflare Free / Firebase Spark, billing false.
+
+Чинний source `9f2d8baebb22e2365465141f26e3b16e07705c1e`, Worker `d7f4f6aa-e18e-45d0-9365-f7296f5de87d`, 100% traffic, remote readback після публікації 16:33 UTC. Чотири свіжих читання прав об'єднані в один batchGet без кешу авторизації. [Чистий CI 137 app + 100 emulator/integration tests](https://github.com/WebDev-Den/PrintCost/actions/runs/37959585046), lint/build/validator/dry-run — PASS. Сумісний відкат — `712e603` / `0c99f93f-e0bc-4213-9db0-5fb44612510d`.
+
+Живе приймання: зовнішній ключ → completed 1/1 і повтор того самого job за Idempotency-Key; кабінет → company JSON + ціна 600 → 610, completed 2/2. ID товару й пропущений опис збережені, профіль PLA 190–225 °C / 50–60 °C. Контрольний товар hidden і відсутній у публічному каталозі. HTTP routes/assets/favicon/CSP та відмови недійсних API/Turnstile запитів перевірені. Докази в ігнорованому `output/`, без plaintext credentials.
+
+SEC-001 і строгий CSP виправлені й опубліковані. App Check SDK та Enterprise provider активні, **Firestore ENFORCED**: verified browser reads/аналітика працюють, запит без токена — 403. **Auth Identity Platform/App Check пропущено за командою власника**. Залишено серверний Turnstile, native rate limits, confirmed email/roles/revocation; live email enumeration protection увімкнений. Це не блокує прямий Firebase Auth endpoint поза CAPTCHA. Production dependency audit — 0; залишилося 7 dev-only advisory entries.
+
+Початкові CPU метрики: 55 sampled requests, 0 runtime errors, max bucket P99 25.842 ms. Після оптимізації: 16 sampled requests, 0 runtime errors, max bucket P99 21.670 ms. Це різні вибірки, не A/B benchmark; піки досі вище номінальних 10 ms Free HTTP/Cron, стале перевищення може дати 1102. Максимальний імпорт/багато користувачів і повна live матриця менеджера не перевірені; безкоштовність довільного навантаження не гарантована.
+
+`recoverEmail` callback завершений і опублікований. Власний sender, DNS/SMTP і перемикання Firebase action URL лишаються відкритими: поточна URL штатна `kilo-g.firebaseapp.com/__/auth/action`, API PATCH відхилений. Ключ, який потрапив у чат, оновлений власником; D1 підтвердив відсутність старого hash серед активних ключів. Детальний актуальний checklist — [REMAINING_TASKS.md](./REMAINING_TASKS.md); [звіт безпеки](./security_best_practices_report.md), [App Check та заміна Auth upgrade](./FIREBASE_SECURITY_ACTIVATION.md).
+
+Гілка `codex/user-platform` збережена на GitHub, [draft PR #1](https://github.com/WebDev-Den/PrintCost/pull/1) не злитий; `main` не пушити без рішення власника. ПК не вимикався.
+
+## Історичні записи
+
+Нижче — попередні перевірки й випуски. Їхні старі паузи, версії та позначки «не опубліковано» **не описують чинний стан і не є актуальними інструкціями**. Актуальні задачі наведені вище та в REMAINING_TASKS.md.
 
 ## Макети листів 9 жовтня 2026
 

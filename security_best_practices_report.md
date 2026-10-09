@@ -1,5 +1,27 @@
 # KILO·G — перевірка безпеки
 
+## Поточний результат після виправлень і live-приймання
+
+Оновлено **9 жовтня 2026**. Використано той самий скіл security-best-practices; наступні перевірки виконані після відновлення роботи й дозволеного релізу, без атакувального навантаження. Source `9f2d8baebb22e2365465141f26e3b16e07705c1e` пройшов [чистий CI](https://github.com/WebDev-Den/PrintCost/actions/runs/37959585046): 137 app + 100 emulator/integration tests, lint/build/dry-run PASS.
+
+| Питання | Чинний стан |
+| --- | --- |
+| SEC-001, спільна квота | **Виправлено й опубліковано**. Персональна квота до Firebase, окремий admin reserve; 403 не витрачає manager/admin бюджет. D1 migration 0003 застосована, concurrent/denied/read-stop regressions PASS. |
+| SEC-002, прямий Auth поза CAPTCHA | **Залишкова межа**. Identity Platform/Auth App Check пропущено за прямою командою власника, Spark збережений. Серверний Turnstile, native limiter, verified email, актуальні roles/block/revocation та увімкнений email enumeration protection залишаються. Це не змушує прямий Firebase Auth endpoint проходити Turnstile. Посилена password policy не налаштована. |
+| SEC-003, прямі Firestore reads | **Ризик зменшено**. Реальний App Check SDK + Enterprise provider, Firestore **ENFORCED**, verified browser reads/аналітика працюють; пряме контрольне читання без токена — 403. Справжній attested клієнт усе ще може витрачати квоту, кешована проєкція каталогу не створена. |
+| SEC-004, CSP | **Виправлено й опубліковано**. Строгий заголовок, external theme script, без script unsafe-inline/unsafe-eval. Дозволений фактичний content-firebaseappcheck origin встановленого SDK; regression захищає від drift залежності. |
+| SEC-005, CLI dependencies | **Частково виправлено**. Scoped `get-uri → basic-ftp 6.2.3`, чистий npm ci й CLI/emulator tests PASS. Production audit 0; залишилося 7 dev-only entries (3 high / 4 moderate) у сторонньому CLI, без сліпих major substitutions. |
+
+Live infrastructure перевірена: dedicated `kilog-import-worker` має лише `roles/datastore.user` + `roles/firebaseauth.viewer`; ключ у Worker Secret, private JSON поза Git з ACL власника/SYSTEM. Правила Firestore не послаблені. Queue producer/consumer активні, міграцій pending немає, billing false. OAuth обходить Rules, тому поточні права читаються перед запитом і кожною порцією; authorization batchGet перевіряє exact names, unordered/missing/duplicate/foreign rows і закриває доступ при неповній відповіді.
+
+Контрольні live imports: зовнішній ключ completed 1/1, idempotency без дубля; кабінет completed 2/2, company JSON, ціна 600 → 610, ID/опис збережені, профіль PLA підібраний. Контрольний товар hidden і відсутній у публічному каталозі. Ключ, який власник надіслав у чат, оновлений ним після завершення jobs; D1 readback підтверджує, що старий hash більше не активний. Жодних plaintext ключів у Git/звітових файлах.
+
+Початковий Cloudflare CPU readback: 55 sampled requests, 0 runtime errors, max bucket P99 25.842 ms. GraphQL schema підтверджує мікросекунди; startup time не є billed request CPU. Чотири authorization reads об'єднано в один свіжий batchGet без кешу ролей; остаточні метрики/ризик Free — у [REMAINING_TASKS.md](./REMAINING_TASKS.md). Повне production навантаження, live сценарій окремого менеджера, human console access/API restrictions та посилена password policy не прийняті. Аудит не є гарантією відсутності всіх вразливостей.
+
+## Історичний початковий аудит
+
+**Нижче збережені знахідки до виправлень для source 7a58f1c. Старі стани «локально/не опубліковано/на паузі» та старі лічильники не є актуальними інструкціями.** Чинний стан наведений вище; відкриті задачі — [REMAINING_TASKS.md](./REMAINING_TASKS.md).
+
 Дата: **9 жовтня 2026**. Перевірений код: `7a58f1c03975ac558b72b22753841c225c07295c`, гілка `codex/user-platform`. Використано скіл [security-best-practices](C:/Users/webde/.codex/skills/security-best-practices/SKILL.md), його інструкції для React і загального JavaScript frontend; Cloudflare Workers/Firebase перевірені за кодом, локальними тестами та офіційною документацією.
 
 ## Результат
