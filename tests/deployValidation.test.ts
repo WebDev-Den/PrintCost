@@ -26,6 +26,9 @@ test('static app enforces script CSP while allowing Firebase, Turnstile and pars
   assert.ok(directives.get('script-src')?.includes('https://apis.google.com'));
   assert.ok(directives.get('frame-src')?.includes('https://kilo-g.firebaseapp.com'));
   assert.ok(directives.get('connect-src')?.includes('https://firestore.googleapis.com'));
+  assert.ok(directives.get('connect-src')?.includes('https://firebaseappcheck.googleapis.com'));
+  assert.ok(directives.get('script-src')?.includes('https://www.gstatic.com/recaptcha/'));
+  assert.ok(directives.get('frame-src')?.includes('https://www.google.com/recaptcha/'));
   assert.ok(directives.get('worker-src')?.includes("'self'"));
   assert.deepEqual(directives.get('object-src'), ["'none'"]);
   assert.deepEqual(directives.get('base-uri'), ["'none'"]);

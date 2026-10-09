@@ -3,7 +3,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createAnalyticsWorker, validateEvents, validateReport, type AnalyticsDatabase, type AnalyticsEnv } from '../workers/analytics.ts';
-import { createTokenVerifier, FIREBASE_JWKS_URL } from '../workers/firebase.ts';
+import { createFirebaseReader, createTokenVerifier, FIREBASE_JWKS_URL } from '../workers/firebase.ts';
 import { PUBLIC_FILAMENTS_CATALOG, buildConcreteFilamentSkus } from '../src/domain/filamentsDirectory.ts';
 
 const date = new Date('2026-10-08T22:15:00Z');
@@ -63,13 +63,15 @@ async function fixture() {
     ['accountAccess/manager', { blocked: false }], ['accountAccess/admin', { blocked: false }],
     ['system/authorization', { adminUids: ['admin'] }], ['memberships/manager', { active: true, companyId: 'company-a' }],
   ]);
-  const calls: { path: string; authorization: string | null }[] = [];
+  const calls: { path: string; authorization: string | null; appCheck: string | null }[] = [];
   const publicKey = await crypto.subtle.exportKey('jwk', (await keyPair).publicKey);
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url === FIREBASE_JWKS_URL) return Response.json({ keys: [{ ...publicKey, kid: 'fixture-key' }] }, { headers: { 'Cache-Control': 'max-age=3600' } });
     const path = decodeURIComponent(url.split('/documents/')[1] || '');
-    calls.push({ path, authorization: new Headers(init?.headers).get('Authorization') });
+    const headers = new Headers(init?.headers);
+    calls.push({ path, authorization: headers.get('Authorization'), appCheck: headers.get('X-Firebase-AppCheck') });
+    if (headers.get('X-Firebase-AppCheck') === 'denied.token.signature') return new Response('', { status: 403 });
     const value = documents.get(path);
     return value ? Response.json({ fields: (firestoreValue(value) as { mapValue: { fields: object } }).mapValue.fields }) : new Response('', { status: 404 });
   };
@@ -80,11 +82,36 @@ async function fixture() {
   async function post(events: unknown[], headers: Record<string, string> = {}) {
     return worker.fetch(new Request('https://web-dev.pp.ua/api/analytics/events', { method: 'POST', headers: { Origin: 'https://web-dev.pp.ua', 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ events }) }), env, context);
   }
-  async function report(companyId = 'company-a', uid = 'manager', range = 'from=2026-10-08&to=2026-10-09') {
-    return worker.fetch(new Request(`https://web-dev.pp.ua/api/analytics/report?companyId=${companyId}&${range}`, { headers: { Authorization: `Bearer ${await token(uid)}` } }), env, context);
+  async function report(companyId = 'company-a', uid = 'manager', range = 'from=2026-10-08&to=2026-10-09', headers: Record<string, string> = {}) {
+    return worker.fetch(new Request(`https://web-dev.pp.ua/api/analytics/report?companyId=${companyId}&${range}`, { headers: { Authorization: `Bearer ${await token(uid)}`, ...headers } }), env, context);
   }
   return { ...db, documents, calls, fetcher, worker, env, context, pending, post, report };
 }
+
+test('analytics forwards App Check to every Firebase read and denied attestations cannot poison shared cache or cached reports', async () => {
+  const f = await fixture();
+  const valid = { 'X-Firebase-AppCheck': 'valid.token.signature' };
+  const denied = { 'X-Firebase-AppCheck': 'denied.token.signature' };
+  const offer = () => event({ type: 'details', offerId: 'offer-a' });
+  assert.equal((await f.post([offer()], denied)).status, 403);
+  assert.equal((await f.post([offer()], valid)).status, 202);
+  assert.equal(f.calls.filter(call => call.path === 'companyOffers/offer-a').length, 2);
+  assert.ok(f.calls.filter(call => call.path.startsWith('companies/')).every(call => call.appCheck === valid['X-Firebase-AppCheck']));
+  assert.equal((await f.report('company-a', 'manager', undefined, valid)).status, 200);
+  assert.ok(f.calls.filter(call => call.authorization).every(call => call.appCheck === valid['X-Firebase-AppCheck']));
+  assert.equal((await f.report('company-a', 'manager', undefined, denied)).status, 403);
+  assert.equal((await f.report('all', 'manager', undefined, valid)).status, 403);
+  await Promise.all(f.pending);
+});
+
+test('Firebase reader rejects malformed and oversized App Check headers before outbound requests', async () => {
+  let calls = 0;
+  const read = createFirebaseReader(async () => { calls++; return new Response('', { status: 404 }); });
+  for (const token of ['not-a-jwt', 'one.two.three.four', 'a.b.' + 'c'.repeat(8192)]) {
+    await assert.rejects(read('kilo-g', 'companies/company-a', undefined, token), (error: { status: number }) => error.status === 400);
+  }
+  assert.equal(calls, 0);
+});
 
 test('event trust boundary accepts only bounded enums; rejects PII, company, time and duplicate IDs', () => {
   const valid = event({ materialType: 'PLA', packaging: 'refill', stock: 'in_stock', hasSearch: true, resultCount: 0 });

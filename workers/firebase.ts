@@ -47,11 +47,13 @@ export async function boundedText(response: Response, limit: number): Promise<st
 }
 
 export function createFirebaseReader(fetcher: typeof fetch) {
-  return async (project: string, path: string, token?: string): Promise<Document | null> => {
+  return async (project: string, path: string, token?: string, appCheckToken?: string): Promise<Document | null> => {
     if (!/^[a-z][a-z0-9-]{4,62}$/.test(project)) throw new ApiError(503, 'Аналітика ще не налаштована.');
+    if (appCheckToken && (appCheckToken.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(appCheckToken))) throw new ApiError(400, 'Некоректне підтвердження застосунку.');
     const url = `https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/${path.split('/').map(encodeURIComponent).join('/')}`;
     let response: Response;
-    try { response = await fetcher(url, { headers: token ? { Authorization: `Bearer ${token}` } : {},
+    try { response = await fetcher(url, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(appCheckToken ? { 'X-Firebase-AppCheck': appCheckToken } : {}) },
       redirect: 'manual', signal: AbortSignal.timeout(8000) }); }
     catch { throw new ApiError(503, 'Сервіс доступу тимчасово недоступний.'); }
     if (response.status === 404) return null;

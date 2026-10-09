@@ -1,4 +1,4 @@
-import { firebaseAuth, firebaseConfigured } from './firebaseClient.ts';
+import { firebaseAuth, firebaseConfigured, getAppCheckHeaders } from './firebaseClient.ts';
 import { authService } from './authService.ts';
 
 export const ANALYTICS_EVENT_TYPES = ['search', 'filter', 'no_results', 'impression', 'details', 'seller_click', 'add_material'] as const;
@@ -191,6 +191,12 @@ const client = createAnalyticsClient({
   enabled: () => typeof window !== 'undefined' && analyticsAllowed({ hostname: window.location.hostname,
     configured: firebaseConfigured, production: env.PROD === true, demo: authService.isDemoSession(), optedOut: analyticsOptedOut(), override: env.VITE_ANALYTICS_ENABLED }),
   scope: () => authService.getSessionIdentity(),
+  fetcher: async (url, options) => {
+    const headers = new Headers(options?.headers);
+    const attestation = await getAppCheckHeaders(options?.signal ?? undefined);
+    for (const [name, value] of Object.entries(attestation)) headers.set(name, value);
+    return fetch(url, { ...options, headers });
+  },
 });
 export const analyticsService = {
   track: client.track, impression: client.impression, beginPage: client.beginPage,
@@ -214,7 +220,9 @@ export const analyticsService = {
     try {
       let response: Response;
       try {
-        response = await fetch(`/api/analytics/report?${new URLSearchParams({ companyId, from, to })}`, { headers: { Authorization: `Bearer ${token}` }, signal: abort.signal, cache: 'no-store' });
+        const attestation = await getAppCheckHeaders(abort.signal);
+        authService.assertSession(identity);
+        response = await fetch(`/api/analytics/report?${new URLSearchParams({ companyId, from, to })}`, { headers: { ...attestation, Authorization: `Bearer ${token}` }, signal: abort.signal, cache: 'no-store' });
       } catch { throw new Error('Не вдалося завантажити аналітику. Перевірте з’єднання та повторіть запит.'); }
       authService.assertSession(identity);
       if (!response.ok) throw new Error(response.status === 403 ? 'Доступ до звіту відсутній або змінився.' : response.status === 400 ? 'Оберіть період у межах останніх 12 місяців, до 366 днів включно й без майбутніх дат.' : 'Не вдалося завантажити аналітику. Повторіть запит.');

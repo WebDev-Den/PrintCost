@@ -121,24 +121,25 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
   const verifyToken = createTokenVerifier(fetcher, now);
   const publicCache = new Map<string, { expires: number; value: Document | null }>();
   const reportCache = new Map<string, { expires: number; value: Omit<AnalyticsReport, 'budget'> }>();
-  async function publicRead(project: string, path: string): Promise<Document | null> {
+  async function publicRead(project: string, path: string, appCheckToken?: string): Promise<Document | null> {
     const key = `${project}/${path}`, cached = publicCache.get(key), time = now().getTime();
     if (cached && cached.expires > time) return cached.value;
     let value: Document | null;
-    try { value = await read(project, path); } catch (error) {
-      if (!(error instanceof ApiError) || error.status !== 403) throw error;
-      value = null;
+    try { value = await read(project, path, undefined, appCheckToken); } catch (error) {
+      // A denied attestation must not poison the shared catalogue cache.
+      if (!(error instanceof ApiError) || error.status !== 403 || appCheckToken) throw error;
+      return null;
     }
     if (publicCache.size >= 200) publicCache.delete(publicCache.keys().next().value!);
     publicCache.set(key, { expires: time + 60000, value });
     return value;
   }
-  async function offerCompany(project: string, id: string, type: EventType, companies: Map<string, Promise<Document | null>>) {
-    const offer = await publicRead(project, `companyOffers/${id}`);
+  async function offerCompany(project: string, id: string, type: EventType, companies: Map<string, Promise<Document | null>>, appCheckToken?: string) {
+    const offer = await publicRead(project, `companyOffers/${id}`, appCheckToken);
     if (offer) {
       if (offer.id !== id || offer.status !== 'published' || typeof offer.companyId !== 'string' || !ID.test(offer.companyId) || offer.companyId.length > 128 ||
           typeof offer.name !== 'string' || offer.name.length > 200) throw new ApiError(400, 'Пропозиція недоступна.');
-      if (!companies.has(offer.companyId)) companies.set(offer.companyId, publicRead(project, `companies/${offer.companyId}`));
+      if (!companies.has(offer.companyId)) companies.set(offer.companyId, publicRead(project, `companies/${offer.companyId}`, appCheckToken));
       const company = await companies.get(offer.companyId);
       if (company?.status !== 'active' || !allowedUrl(offer.productUrl, company.allowedDomains)) throw new ApiError(400, 'Пропозиція недоступна.');
       const name = [offer.name, typeof offer.colorName === 'string' ? offer.colorName : '',
@@ -148,7 +149,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     const suffix = /-(black|white|grey|red|blue|green|yellow|orange|purple|multicolor|special|col)-(\d+)(-refill)?$/.exec(id);
     if (!suffix) throw new ApiError(400, 'Пропозиція недоступна.');
     const parentId = id.slice(0, suffix.index);
-    const override = await publicRead(project, `filaments/${parentId}`);
+    const override = await publicRead(project, `filaments/${parentId}`, appCheckToken);
     if (override?.deleted === true) throw new ApiError(400, 'Пропозиція недоступна.');
     const parent = override ? validLegacy(override, parentId) : PUBLIC_FILAMENTS_CATALOG.find(item => item.id === parentId);
     const sku = parent && buildConcreteFilamentSkus([parent]).find(item => item.id === id);
@@ -156,20 +157,20 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     return { companyId: '', name: sku.name.slice(0, 400) };
   }
 
-  async function access(project: string, token: string, companyId: string) {
+  async function access(project: string, token: string, companyId: string, appCheckToken?: string) {
     const uid = await verifyToken(token, project);
     const [account, registry, membership] = await Promise.all([
-      read(project, `accountAccess/${uid}`, token), read(project, 'system/authorization', token), read(project, `memberships/${uid}`, token),
+      read(project, `accountAccess/${uid}`, token, appCheckToken), read(project, 'system/authorization', token, appCheckToken), read(project, `memberships/${uid}`, token, appCheckToken),
     ]);
     if (account && account.blocked !== false) throw new ApiError(403, 'Доступ заборонено.');
     const admins = registry?.adminUids;
     if (!Array.isArray(admins) || admins.length > 32 || admins.some(item => typeof item !== 'string')) throw new ApiError(403, 'Доступ заборонено.');
     if (admins.includes(uid)) {
-      if (companyId !== 'all' && !await read(project, `companies/${companyId}`, token)) throw new ApiError(404, 'Компанію не знайдено.');
+      if (companyId !== 'all' && !await read(project, `companies/${companyId}`, token, appCheckToken)) throw new ApiError(404, 'Компанію не знайдено.');
       return 'admin';
     }
     if (companyId === 'all' || membership?.active !== true || membership.companyId !== companyId) throw new ApiError(403, 'Доступ лише до звіту своєї компанії.');
-    const company = await read(project, `companies/${companyId}`, token);
+    const company = await read(project, `companies/${companyId}`, token, appCheckToken);
     if (company?.status !== 'active') throw new ApiError(403, 'Компанія неактивна.');
     return 'manager';
   }
@@ -215,7 +216,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     const companies = new Map<string, Promise<Document | null>>(), assignments = new Map<string, { companyId: string; name: string }>();
     // At most four simultaneous REST reads and 40 external reads for a 20-event batch.
     for (let offset = 0; offset < fresh.length; offset += 4) await Promise.all(fresh.slice(offset, offset + 4).map(async event => {
-      assignments.set(event.id, event.offerId ? await offerCompany(env.FIREBASE_PROJECT_ID, event.offerId, event.type, companies) : { companyId: '', name: '' });
+      assignments.set(event.id, event.offerId ? await offerCompany(env.FIREBASE_PROJECT_ID, event.offerId, event.type, companies, request.headers.get('X-Firebase-AppCheck') || undefined) : { companyId: '', name: '' });
     }));
     const writes = fresh.map(event => database.prepare(`INSERT INTO events(id,day,utc_day,type,company_id,offer_id,offer_name,material_type,packaging,stock,has_search,result_count)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING RETURNING id`).bind(event.id, day, utcDay, event.type, assignments.get(event.id)!.companyId, event.offerId || '', assignments.get(event.id)!.name,
@@ -236,7 +237,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     if (query.from < retentionStart(now()) || query.to > dayFormatter.format(now())) throw new ApiError(400, 'Звіт доступний за останні 12 місяців до сьогодні (Europe/Kyiv).');
     const token = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(request.headers.get('Authorization') || '')?.[1];
     if (!token) throw new ApiError(401, 'Увійдіть в акаунт.');
-    const role = await access(env.FIREBASE_PROJECT_ID, token, query.companyId);
+    const role = await access(env.FIREBASE_PROJECT_ID, token, query.companyId, request.headers.get('X-Firebase-AppCheck') || undefined);
     const scope = query.companyId === 'all' ? '' : query.companyId;
     const global = query.companyId === 'all';
     const date = now(), utcDay = date.toISOString().slice(0, 10);
