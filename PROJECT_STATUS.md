@@ -10,9 +10,11 @@ Cloudflare Turnstile реалізовано для входу, реєстрац�
 
 Локально пройшли **122 app/Turnstile/runtime + 95 emulator = 217 автоматичних перевірок**, TypeScript, production build, deployment validator і Wrangler dry-run. CUA на ізольованій тестовій збірці з офіційним dummy sitekey підтвердив блокування до токена, успішний віджет у вході/реєстрації/відновленні, один script після переходів та відсутність віджета для reset-посилання без коду. Знайдену несумісність `turnstile.ready()` з async script усунено: використовується подія `load` перед explicit render.
 
+Код і документацію опубліковано у `codex/user-platform`, source `2fbe4aa2a56f7e283b6eed18bfeb0d140e4649ab`. Обидва CI цього source-коміту успішні: [push 37894337235](https://github.com/WebDev-Den/PrintCost/actions/runs/37894337235), [PR 37894341133](https://github.com/WebDev-Den/PrintCost/actions/runs/37894341133), включно з 217 тестами, TypeScript, production build і dry-run. Опис draft PR #1 оновлено; merge у `main` не виконувався.
+
 Віджет **KILO-G public forms**, public sitekey `0x4AAAAAAFR_dav3sbi3wfEO`, Managed, без pre-clearance, створено для `web-dev.pp.ua` та `kilo-g.web-developer-den.workers.dev`. **Деплой цього доповнення ще очікує** доступу CLI `challenge-widgets.write`: поточний Turnstile API повертає 403. Перший ще не опублікований секрет випадково потрапив у технічний вивід; перед релізом він має бути негайно анульований ротацією. Новий секрет передається лише як Worker secret, через ігнорований файл із ACL; у Git/VITE його не додають. Активний production нижче поки залишається попереднім релізом без капчі.
 
-Захист стосується потоку форм цього сайту. Прямі Firebase Auth API не проходять через Turnstile preflight; окремий Firebase App Check залишається за межами цього доповнення. Реальні паролі, листи й private production writes для тесту не виконувалися. Доказ налаштування доменів: локальний `output/turnstile-widget-domains.png`.
+Захист стосується потоку форм цього сайту. Прямі Firebase Auth API не проходять через Turnstile preflight; окремий Firebase App Check залишається за межами цього доповнення. Реальні паролі, листи й private production writes для тесту не виконувалися. Локальні докази: `output/turnstile-widget-settings.png` (два hostname й Managed), `output/turnstile-registration-test.png` (успішний тестовий віджет). Секрети у screenshots відсутні.
 
 ## Активний реліз
 
