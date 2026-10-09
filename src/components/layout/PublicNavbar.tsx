@@ -37,7 +37,7 @@ export const PublicNavbar: React.FC = () => {
         </NavLink>
 
         {/* Prominent link to catalog in desktop header menu */}
-        <nav className="hidden md:flex items-center gap-5 text-sm font-medium text-neutral-600 dark:text-neutral-300">
+        <nav className="hidden xl:flex items-center gap-5 text-sm font-medium text-neutral-600 dark:text-neutral-300">
           <NavLink
             to="/filaments"
             className={({ isActive }) =>
@@ -82,7 +82,7 @@ export const PublicNavbar: React.FC = () => {
         {!isFilaments && (
           <NavLink
             to="/filaments"
-            className="md:hidden flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-emerald-50 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
+            className="hidden sm:flex xl:hidden items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-emerald-50 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
           >
             <BookOpen className="w-3.5 h-3.5" />
             <span>Каталог</span>
@@ -93,7 +93,7 @@ export const PublicNavbar: React.FC = () => {
         <button
           type="button"
           onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          className="p-2 rounded-xl text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors border border-neutral-200 dark:border-neutral-700/80 flex items-center justify-center"
+          className="hidden sm:flex p-2 rounded-xl text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors border border-neutral-200 dark:border-neutral-700/80 items-center justify-center"
           title={`Перемкнути на ${theme === 'dark' ? 'світлу' : 'темну'} тему`}
           aria-label="Перемкнути тему оформлення"
         >
@@ -107,7 +107,7 @@ export const PublicNavbar: React.FC = () => {
         {user && !isDemoSession ? <Button variant="primary" size="sm" onClick={() => navigate('/app/dashboard')}>
           Мій кабінет
         </Button> : <>
-          <Button variant="outline" size="sm" onClick={handleOpenDemo} className="hidden sm:inline-flex">Демо</Button>
+          <Button variant="outline" size="sm" onClick={handleOpenDemo} className="max-sm:hidden">Демо</Button>
           <Button variant="primary" size="sm" onClick={() => navigate('/auth/login')}>Увійти</Button>
         </>}
 
@@ -115,7 +115,7 @@ export const PublicNavbar: React.FC = () => {
         <button
           type="button"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="md:hidden p-2 rounded-lg text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="xl:hidden p-2 rounded-lg text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
           aria-label="Перемкнути мобільне меню"
         >
           {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -124,7 +124,7 @@ export const PublicNavbar: React.FC = () => {
 
       {/* Mobile navigation drawer / dropdown */}
       {mobileMenuOpen && (
-        <div className="md:hidden absolute top-16 left-0 right-0 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 shadow-lg p-4 space-y-3 z-50">
+        <div className="xl:hidden absolute top-16 left-0 right-0 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 shadow-lg p-4 space-y-3 z-50">
           <nav className="flex flex-col space-y-1 text-sm">
             <NavLink
               to="/filaments"

@@ -445,12 +445,12 @@ export const FilamentsDirectoryPage: React.FC = () => {
       <PublicNavbar />
 
       <main className="flex-1">
-        {!firebaseConfigured && !isDemoSession && <p role="status" className="max-w-6xl mx-auto p-4 text-sm text-amber-700">Каталог використовує початкові дані. Для акаунтів і синхронізації потрібне налаштування Firebase.</p>}
-        {catalogError && <p role="alert" className="max-w-6xl mx-auto p-4 text-sm text-red-700">{catalogError}</p>}
-        <div className="max-w-6xl mx-auto px-4 py-3 text-xs text-neutral-500 space-y-1"><label className="flex items-center gap-2"><input type="checkbox" checked={!analyticsDisabled} onChange={event => { const disabled = !event.target.checked; setAnalyticsDisabled(disabled); analyticsService.setOptedOut(disabled); }} />Дозволити знеособлену аналітику каталогу</label><p>Рахуємо перегляди, переходи, фільтри й додавання матеріалів без тексту пошуку та особистих даних. Вибір зберігається лише у цьому браузері. У демо аналітика вимкнена. <NavLink to="/privacy" className="underline hover:text-primary-600">Дані та приватність</NavLink>.</p></div>
+        {!firebaseConfigured && !isDemoSession && <p role="status" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-amber-700">Каталог використовує початкові дані. Для акаунтів і синхронізації потрібне налаштування Firebase.</p>}
+        {catalogError && <p role="alert" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-red-700">{catalogError}</p>}
+        <div className="px-4 sm:px-6 lg:px-8 py-3 text-xs text-neutral-500 space-y-1"><label className="flex items-center gap-2"><input type="checkbox" checked={!analyticsDisabled} onChange={event => { const disabled = !event.target.checked; setAnalyticsDisabled(disabled); analyticsService.setOptedOut(disabled); }} />Дозволити знеособлену аналітику каталогу</label><p>Рахуємо перегляди, переходи, фільтри й додавання матеріалів без тексту пошуку та особистих даних. Вибір зберігається лише у цьому браузері. У демо аналітика вимкнена. <NavLink to="/privacy" className="underline hover:text-primary-600">Дані та приватність</NavLink>.</p></div>
         {/* Header Hero Section */}
         <section className="bg-white dark:bg-neutral-900/60 border-b border-neutral-200 dark:border-neutral-800 py-10 px-4 sm:px-6 lg:px-8">
-          <div className="max-w-6xl mx-auto space-y-4">
+          <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="inline-flex items-center gap-2 text-xs font-medium text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 px-3 py-1 rounded-full border border-emerald-200 dark:border-emerald-800/80">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400" />
@@ -480,7 +480,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
               {!isDemoSession && (user?.role === 'manager' || user?.role === 'admin') && <NavLink to="/app/company/offers" className="text-xs font-semibold text-emerald-600 underline">Керувати пропозиціями компанії</NavLink>}
             </div>
 
-            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+            <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
               <div>
                 <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-neutral-900 dark:text-white">
                   Каталог пластиків та виробників 3D-друку
@@ -491,7 +491,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
               </div>
 
               {/* Navigation Tabs */}
-              <div className="flex items-center gap-1.5 p-1 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-xs shrink-0 self-start md:self-auto overflow-x-auto no-scrollbar max-w-full">
+              <div className="flex items-center gap-1.5 p-1 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-xs shrink-0 self-start lg:self-auto overflow-x-auto no-scrollbar max-w-full">
                 <button
                   type="button"
                   onClick={() => setActiveTab('catalog')}
@@ -550,7 +550,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
         {/* TAB 1: FILAMENTS CATALOG */}
         {activeTab === 'catalog' && (
-          <section className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+          <section className="px-4 sm:px-6 lg:px-8 py-6 space-y-6">
             {firebaseConfigured && !isDemoSession && <div className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 space-y-3">
               <label htmlFor="catalog-seller" className="block text-xs font-medium">Продавець / компанія</label>
               <select id="catalog-seller" className="w-full sm:max-w-md px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm" value={selectedSeller} onChange={event => {
@@ -886,8 +886,8 @@ export const FilamentsDirectoryPage: React.FC = () => {
               </div>
             ) : (
               /* Compact quick bar when filters are collapsed */
-              <div className="p-3 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-3 shadow-2xs">
-                <div className="flex items-center gap-2 flex-1 max-w-md">
+              <div className="p-3 bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                <div className="flex items-center gap-2 flex-1 min-w-0 max-w-md">
                   <Search className="w-4 h-4 text-neutral-400 shrink-0" />
                   <input
                     type="text"
@@ -919,7 +919,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
             )}
 
             {/* Filaments Grid: 1 card = 1 manufacturer, 1 color, 1 weight, 1 profile, 1 direct store link */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 sm:gap-6">
               {filteredSkus.length === 0 ? (
                 <div className="col-span-full py-16 text-center text-neutral-500 bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-8">
                   Нічого не знайдено за вибраними фільтрами.
@@ -969,7 +969,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
         {/* TAB 2: MANUFACTURERS LIST */}
         {activeTab === 'manufacturers' && (
-          <section className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+          <section className="px-4 sm:px-6 lg:px-8 py-6 space-y-6">
             <div className="bg-white dark:bg-neutral-900 p-6 rounded-2xl border border-neutral-200 dark:border-neutral-800 space-y-4">
               <h2 className="text-xl font-bold text-neutral-900 dark:text-white flex items-center gap-2">
                 <Building2 className="w-5 h-5 text-emerald-600" />
@@ -1062,7 +1062,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
 
         {/* TAB 3: STANDARD TEMPERATURE PROFILES */}
         {activeTab === 'temperatures' && (
-          <section className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+          <section className="px-4 sm:px-6 lg:px-8 py-6 space-y-6">
             <div className="bg-white dark:bg-neutral-900 p-6 rounded-2xl border border-neutral-200 dark:border-neutral-800 space-y-4">
               <h2 className="text-xl font-bold text-neutral-900 dark:text-white flex items-center gap-2">
                 <Flame className="w-5 h-5 text-amber-500" />
