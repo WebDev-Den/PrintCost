@@ -100,5 +100,9 @@ test('reauthentication refuses missing passwords and unsupported providers befor
   await assert.rejects(reauthenticateAccount(passwordUser as never, ''), /поточний пароль/);
   const linkedUser = { ...passwordUser, providerData: [...passwordUser.providerData, { providerId: 'google.com' }] };
   await assert.rejects(reauthenticateAccount(linkedUser as never, ''), /поточний пароль/);
+  await assert.rejects(reauthenticateAccount(linkedUser as never, '', 'password'), /поточний пароль/);
+  await assert.rejects(reauthenticateAccount(passwordUser as never, '', 'google.com'));
+  await assert.rejects(reauthenticateAccount({ ...passwordUser, providerData: [{ providerId: 'google.com' }] } as never, 'unused', 'password'));
+  await assert.rejects(reauthenticateAccount(linkedUser as never, 'unused', 'unsupported' as never));
   await assert.rejects(reauthenticateAccount({ ...passwordUser, providerData: [] } as never, ''), /не підтримується/);
 });

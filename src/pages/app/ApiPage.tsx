@@ -29,9 +29,12 @@ export function ApiPage() {
   const [busy, setBusy] = useState(false);
   const [action, setAction] = useState<'rotate' | 'revoke' | null>(null);
   const [password, setPassword] = useState('');
+  const [confirmationMethod, setConfirmationMethod] = useState<'google.com' | 'password' | null>(null);
   const [jsonText, setJsonText] = useState(JSON.stringify(IMPORT_EXAMPLE, null, 2));
   const idempotency = useRef(crypto.randomUUID());
   const hasPassword = user?.authProviders?.includes('password') === true;
+  const hasGoogle = user?.authProviders?.includes('google.com') === true;
+  const method = confirmationMethod ?? (hasGoogle ? 'google.com' : 'password');
   const api = useMemo(() => {
     const assertCurrent = () => { authService.assertSession(uid); if (identity.current !== uid) throw new Error('Акаунт змінився.'); };
     return createApiImportClient(async () => {
@@ -44,7 +47,7 @@ export function ApiPage() {
     let active = true;
     identity.current = uid;
     setBusy(false); setError(''); setNotice('');
-    setSecret(''); setMetadata(null); setJobs([]); setDetail(null); setPassword(''); setAction(null);
+    setSecret(''); setMetadata(null); setJobs([]); setDetail(null); setPassword(''); setAction(null); setConfirmationMethod(null);
     Promise.all([api.metadata(), api.jobs()]).then(([data, history]) => { if (active) { setMetadata(data); setJobs(history.jobs); } })
       .catch(error => { if (active) setError(authErrorMessage(error)); });
     return () => { active = false; identity.current = ''; };
@@ -81,8 +84,8 @@ export function ApiPage() {
           <Button variant="ghost" onClick={() => setSecret('')}>Приховати</Button></div>
       </div>}
       <div className="flex flex-wrap gap-2">
-        <Button disabled={busy || !metadata} onClick={() => { setAction('rotate'); setPassword(''); }}>{metadata?.key ? 'Оновити ключ' : 'Створити ключ'}</Button>
-        {metadata?.key && <Button variant="danger" disabled={busy} onClick={() => { setAction('revoke'); setPassword(''); }}>Відкликати ключ</Button>}
+        <Button disabled={busy || !metadata} onClick={() => { setAction('rotate'); setPassword(''); setConfirmationMethod(null); }}>{metadata?.key ? 'Оновити ключ' : 'Створити ключ'}</Button>
+        {metadata?.key && <Button variant="danger" disabled={busy} onClick={() => { setAction('revoke'); setPassword(''); setConfirmationMethod(null); }}>Відкликати ключ</Button>}
       </div>
       <p className="text-xs text-neutral-500">Оновлення або відкликання ключа скасовує незавершені імпорти. Уже розпочата порція до 5 записів може завершитися. Зміна ролі, компанії чи блокування потребує нового ключа.</p>
     </section>
@@ -139,20 +142,27 @@ export function ApiPage() {
       <p className="text-sm">Стани: queued, processing, completed, partial, failed, cancelled. 401 — ключ недійсний; 403 — бракує прав; 409 — конфлікт Idempotency-Key; 413 — завеликий JSON; 422 — некоректні поля; 429 — ліміт; 503 — сервіс тимчасово недоступний. У разі часткового імпорту перегляньте результати перед повторним надсиланням.</p>
       <p className="text-xs text-neutral-500">Спільні ліміти API за добу UTC: 5 000 записів, 100 імпортів і 1 500 відправлень у чергу. Для перевірок доступу виділено окремо 500 запитів менеджерам і 500 адміністраторам; на один акаунт — до 200 для менеджера й 500 для адміністратора з ключем. При вичерпанні ліміту черги завдання зберігається до наступної доби. Черга обробляє по 5 записів послідовно, повторює тимчасові помилки до 3 разів і зупиняє незавершений імпорт через 24 години. Історія зберігається 30 днів.</p>
     </section>
-    <Modal isOpen={!!action} onClose={() => { if (!busy) { setAction(null); setPassword(''); } }} title={action === 'revoke' ? 'Відкликати API-ключ' : metadata?.key ? 'Оновити API-ключ' : 'Створити API-ключ'}
+    <Modal isOpen={!!action} onClose={() => { if (!busy) { setAction(null); setPassword(''); setConfirmationMethod(null); } }} title={action === 'revoke' ? 'Відкликати API-ключ' : metadata?.key ? 'Оновити API-ключ' : 'Створити API-ключ'}
       description="Підтвердьте вхід. Попередній ключ і незавершені імпорти будуть скасовані.">
       <form className="space-y-4" onSubmit={event => { event.preventDefault(); void run(async () => {
         const current = firebaseAuth?.currentUser;
         if (!current || current.uid !== uid) throw new Error('Увійдіть повторно.');
-        await reauthenticateAccount(current, password);
+        await reauthenticateAccount(current, password, method);
         authService.assertSession(uid);
         if (action === 'revoke') { await api.revoke(); setSecret(''); setNotice('Ключ відкликано.'); }
         else { const result = await api.rotate(); setSecret(result.key); setNotice('Новий ключ створено. Збережіть його зараз.'); }
-        setAction(null); setPassword(''); await refresh();
+        setAction(null); setPassword(''); setConfirmationMethod(null); await refresh();
       }); }}>
-        {hasPassword ? <Input label="Поточний пароль" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={busy} /> : <p className="text-sm">Підтвердьте свій акаунт у вікні Google.</p>}
+        {hasGoogle && hasPassword && <div className="space-y-2">
+          <label htmlFor="api-confirmation-method" className="block text-sm font-medium">Спосіб підтвердження</label>
+          <select id="api-confirmation-method" value={method} disabled={busy} className="w-full rounded-lg border border-neutral-300 dark:border-neutral-700 bg-transparent p-3 text-sm"
+            onChange={event => { setConfirmationMethod(event.target.value === 'google.com' ? 'google.com' : 'password'); setPassword(''); setError(''); }}>
+            <option value="google.com">Google</option><option value="password">Пароль облікового запису</option>
+          </select>
+        </div>}
+        {method === 'password' ? <Input label="Поточний пароль" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={busy} /> : <p className="text-sm">Підтвердьте свій акаунт у вікні Google. Пароль сайту не потрібний.</p>}
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-        <Button type="submit" isLoading={busy} variant={action === 'revoke' ? 'danger' : 'primary'}>Підтвердити {hasPassword ? '' : 'через Google'}</Button>
+        <Button type="submit" isLoading={busy} variant={action === 'revoke' ? 'danger' : 'primary'}>Підтвердити {method === 'google.com' ? 'через Google' : 'паролем'}</Button>
       </form>
     </Modal>
   </div>;

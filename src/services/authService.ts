@@ -74,14 +74,15 @@ function googleProvider() {
   return provider;
 }
 
-export async function reauthenticateAccount(user: User, password: string): Promise<void> {
-  if (user.providerData.some(provider => provider.providerId === 'password')) {
+export async function reauthenticateAccount(user: User, password: string, provider?: 'password' | 'google.com'): Promise<void> {
+  const providers = user.providerData.map(entry => entry.providerId);
+  const method = provider ?? (providers.includes('password') ? 'password' : 'google.com');
+  if (!providers.includes(method)) throw new Error('Спосіб повторного входу для цього акаунта не підтримується.');
+  if (method === 'password') {
     if (!user.email || !password) throw new Error('Введіть поточний пароль.');
     await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
-  } else if (user.providerData.some(provider => provider.providerId === 'google.com')) {
-    await reauthenticateWithPopup(user, googleProvider());
   } else {
-    throw new Error('Спосіб повторного входу для цього акаунта не підтримується.');
+    await reauthenticateWithPopup(user, googleProvider());
   }
 }
 

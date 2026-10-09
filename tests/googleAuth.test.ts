@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
+import { createApiImportClient } from '../src/services/apiImportClient.ts';
 
 test('Google auth verifies captcha before popup, preserves roles and reauthenticates the same user', async () => {
   const calls: string[] = [];
@@ -34,6 +35,16 @@ test('Google auth verifies captcha before popup, preserves roles and reauthentic
               if (user !== s.user || provider.providerId !== 'google.com') throw new Error('Wrong user/provider');
               s.calls.push('reauth-popup'); if (s.popupError) throw s.popupError;
               return { user };
+            }
+            export async function reauthenticateWithCredential(user, credential) {
+              const s = globalThis.googleAuthFixture;
+              if (user !== s.user || credential.providerId !== 'password') throw new Error('Wrong user/provider');
+              s.calls.push('reauth-credential'); return { user };
+            }
+            export async function updatePassword(user) {
+              const s = globalThis.googleAuthFixture;
+              if (user !== s.user) throw new Error('Wrong user');
+              s.calls.push('update-password');
             }`,
           'firebase/firestore': `export * from 'firebase/firestore';
             export const doc = (_db, collection) => collection;
@@ -75,6 +86,52 @@ test('Google auth verifies captcha before popup, preserves roles and reauthentic
     assert.deepEqual(profile.authProviders, ['google.com']);
     await reauthenticateAccount(user, '');
     assert.equal(calls.at(-1), 'reauth-popup');
+    user.providerData.push({ providerId: 'password' });
+    calls.length = 0;
+    await reauthenticateAccount(user, '', 'google.com');
+    assert.deepEqual(calls, ['reauth-popup'], 'A linked account can explicitly confirm Google without a password.');
+    calls.length = 0;
+    await reauthenticateAccount(user, 'fixture-password');
+    await reauthenticateAccount(user, 'fixture-password', 'password');
+    assert.deepEqual(calls, ['reauth-credential', 'reauth-credential'], 'Legacy/default and explicit password confirmation retain password-first behavior.');
+    calls.length = 0;
+    await service.changePassword('fixture-password', 'fixture-new-password');
+    assert.deepEqual(calls, ['reauth-credential', 'update-password'], 'Changing a linked account password still requires its current password.');
+    calls.length = 0;
+    await assert.rejects(reauthenticateAccount(user, 'unused', 'unsupported'));
+    user.providerData.shift();
+    await assert.rejects(reauthenticateAccount(user, 'unused', 'google.com'));
+    user.providerData.unshift({ providerId: 'google.com' });
+    await assert.rejects(new AccountDataService(state.auth, {}).deleteOwnAccount(user.uid, '', 'ВИДАЛИТИ'), /поточний пароль/);
+    assert.equal(calls.length, 0, 'Unsupported providers and linked-account deletion without a password cannot reach SDK or cleanup.');
+    const api = createApiImportClient(async () => 'fixture-session', () => service.assertSession(user.uid), async (_url, init) => {
+      assert.equal(_url, '/api/v1/api-key');
+      calls.push('api-key-' + init?.method);
+      return Response.json(init?.method === 'POST' ? { key: 'fixture-key', metadata: { prefix: 'fixture-key',
+        createdAt: '2026-10-09T00:00:00.000Z', expiresAt: '2027-01-07T00:00:00.000Z', role: 'manager', companyId: 'fixture-company', requiresRotation: false } } : { revoked: true });
+    });
+    state.popupError = null;
+    calls.length = 0;
+    const rotated = await reauthenticateAccount(user, '', 'google.com').then(() => api.rotate());
+    assert.equal(rotated.key, 'fixture-key'); assert.equal(rotated.metadata.companyId, 'fixture-company');
+    assert.deepEqual(calls, ['reauth-popup', 'api-key-POST'], 'Linked Google confirmation allows key rotation without a password credential.');
+    calls.length = 0;
+    const revoked = await reauthenticateAccount(user, '', 'google.com').then(() => api.revoke());
+    assert.equal(revoked.revoked, true);
+    assert.deepEqual(calls, ['reauth-popup', 'api-key-DELETE'], 'Linked Google confirmation allows key revocation without a password credential.');
+    for (const code of ['auth/user-mismatch', 'auth/popup-closed-by-user', 'auth/popup-blocked']) {
+      state.popupError = { code };
+      for (const mutate of [() => api.rotate(), () => api.revoke()]) {
+        calls.length = 0;
+        await assert.rejects(reauthenticateAccount(user, '', 'google.com').then(mutate), error => (error as { code: string }).code === code);
+        assert.deepEqual(calls, ['reauth-popup'], 'Failed linked Google confirmation cannot request a key mutation.');
+        assert.equal(state.auth.currentUser, user);
+      }
+    }
+    user.providerData.pop();
+    calls.length = 0;
+    await assert.rejects(reauthenticateAccount(user, 'unused', 'password'));
+    assert.equal(calls.length, 0, 'An unlinked password provider cannot fall back to a Google popup.');
     state.popupError = { code: 'auth/user-mismatch' };
     await assert.rejects(reauthenticateAccount(user, ''), error => (error as { code: string }).code === 'auth/user-mismatch');
     calls.length = 0;
