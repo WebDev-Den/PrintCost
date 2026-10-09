@@ -24,16 +24,13 @@ CREATE INDEX IF NOT EXISTS import_jobs_owner ON import_jobs(owner_uid,created_at
 CREATE INDEX IF NOT EXISTS import_jobs_pending ON import_jobs(status,dispatch_at);
 CREATE INDEX IF NOT EXISTS import_jobs_retention ON import_jobs(created_at);
 CREATE TRIGGER IF NOT EXISTS import_job_guard BEFORE INSERT ON import_jobs BEGIN
-  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM import_keys WHERE uid=NEW.owner_uid AND hash=NEW.key_hash
-    AND fingerprint=NEW.fingerprint AND expires_at>NEW.created_at) THEN RAISE(ABORT,'IMPORT_KEY_CHANGED') END;
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM import_limits WHERE uid=NEW.owner_uid AND next_allowed>NEW.created_at)
-    THEN RAISE(ABORT,'IMPORT_COOLDOWN') END;
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM import_jobs WHERE owner_uid=NEW.owner_uid AND status IN ('queued','processing'))
-    THEN RAISE(ABORT,'IMPORT_ACTIVE') END;
-  SELECT CASE WHEN (SELECT COUNT(*) FROM import_jobs WHERE status IN ('queued','processing'))>=100
-    THEN RAISE(ABORT,'IMPORT_BUSY') END;
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM import_daily WHERE day=date(NEW.created_at,'unixepoch') AND
-    (items+NEW.total>5000 OR jobs>=100)) THEN RAISE(ABORT,'IMPORT_BUDGET') END;
+  SELECT RAISE(ABORT,'IMPORT_KEY_CHANGED') WHERE NOT EXISTS (SELECT 1 FROM import_keys WHERE uid=NEW.owner_uid AND hash=NEW.key_hash
+    AND fingerprint=NEW.fingerprint AND expires_at>NEW.created_at);
+  SELECT RAISE(ABORT,'IMPORT_COOLDOWN') WHERE EXISTS (SELECT 1 FROM import_limits WHERE uid=NEW.owner_uid AND next_allowed>NEW.created_at);
+  SELECT RAISE(ABORT,'IMPORT_ACTIVE') WHERE EXISTS (SELECT 1 FROM import_jobs WHERE owner_uid=NEW.owner_uid AND status IN ('queued','processing'));
+  SELECT RAISE(ABORT,'IMPORT_BUSY') WHERE (SELECT COUNT(*) FROM import_jobs WHERE status IN ('queued','processing'))>=100;
+  SELECT RAISE(ABORT,'IMPORT_BUDGET') WHERE EXISTS (SELECT 1 FROM import_daily WHERE day=date(NEW.created_at,'unixepoch') AND
+    (items+NEW.total>5000 OR jobs>=100));
 END;
 CREATE TRIGGER IF NOT EXISTS import_job_reserved AFTER INSERT ON import_jobs BEGIN
   INSERT INTO import_limits(uid,next_allowed) VALUES(NEW.owner_uid,NEW.created_at+NEW.interval_seconds)
