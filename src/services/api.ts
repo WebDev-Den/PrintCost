@@ -9,7 +9,7 @@ import { CALCULATION_ALGORITHM_VERSION, validateCalculationTemplate } from '../d
 import { getCalculationSaveErrors } from '../domain/calculationPersistence.ts';
 import { getEffectiveMaterialType, isCompatibleMaterial } from '../domain/materialMatching.ts';
 import { INITIAL_MATERIALS, INITIAL_PRINTERS, INITIAL_PRICING_SETTINGS, getInitialCalculationSnapshots } from '../domain/defaultData.ts';
-import { PUBLIC_FILAMENTS_CATALOG, MANUFACTURERS_LIST, STANDARD_TEMPERATURE_PROFILES, type PublicFilamentItem, type ManufacturerBrand, type TemperatureProfile } from '../domain/filamentsDirectory.ts';
+import { PUBLIC_FILAMENTS_CATALOG, MANUFACTURERS_LIST, STANDARD_TEMPERATURE_PROFILES, MAX_CATALOG_BULK_ITEMS, type FilamentBulkAction, type PublicFilamentItem, type ManufacturerBrand, type TemperatureProfile } from '../domain/filamentsDirectory.ts';
 import { firebaseAuth, firestoreDb } from './firebaseClient.ts';
 import { authService } from './authService.ts';
 import { fileAnalysisService } from './fileAnalysisService.ts';
@@ -248,16 +248,46 @@ function publicRepository<T extends { id: string }>(name: string, key: string, i
 }
 
 const filamentCatalog = publicRepository<PublicFilamentItem>('filaments', STORAGE_KEYS.CATALOG_FILAMENTS, PUBLIC_FILAMENTS_CATALOG);
+function withFilamentStock(item: PublicFilamentItem, inStock: boolean): PublicFilamentItem {
+  return {
+    ...item, inStock, stockStatusLabel: inStock ? 'В наявності' : 'Немає в наявності',
+    stores: item.stores.map(store => ({ ...store, inStock })),
+    popularColors: item.popularColors.map(color => ({ ...color, ...(color.stores ? { stores: color.stores.map(store => ({ ...store, inStock })) } : {}) })),
+  };
+}
 export const filamentsApi = {
   ...filamentCatalog,
   async update(id: string, updates: Partial<PublicFilamentItem>): Promise<PublicFilamentItem> {
     if (updates.inStock === undefined) return filamentCatalog.update(id, updates);
     const original = await filamentCatalog.getById(id);
     if (!original) throw new Error('Філамент не знайдено.');
-    return filamentCatalog.update(id, {
-      ...updates,
-      stores: (updates.stores || original.stores).map((store) => ({ ...store, inStock: updates.inStock! })),
-      popularColors: (updates.popularColors || original.popularColors).map((color) => ({ ...color, ...(color.stores ? { stores: color.stores.map((store) => ({ ...store, inStock: updates.inStock! })) } : {}) })),
+    const { stores, popularColors, stockStatusLabel } = withFilamentStock({ ...original, ...updates }, updates.inStock);
+    return filamentCatalog.update(id, { ...updates, stores, popularColors, stockStatusLabel: updates.stockStatusLabel ?? stockStatusLabel });
+  },
+  async applyBulkAction(ids: string[], action: FilamentBulkAction): Promise<void> {
+    if (!Array.isArray(ids)) throw new Error('Оберіть позиції каталогу.');
+    const selected = new Set(ids.map(validId));
+    if (!selected.size || selected.size > MAX_CATALOG_BULK_ITEMS) throw new Error(`Оберіть від 1 до ${MAX_CATALOG_BULK_ITEMS} позицій за один раз.`);
+    if (!['delete', 'in_stock', 'out_of_stock'].includes(action)) throw new Error('Невідома масова дія.');
+    const identity = sessionIdentity();
+    if (authService.isDemoSession()) {
+      const items = await filamentCatalog.getAll();
+      requireSameSession(identity);
+      if ([...selected].some(id => !items.some(item => item.id === id))) throw new Error('Вибрані філаменти змінено або видалено. Оновіть каталог.');
+      writeDemo(STORAGE_KEYS.CATALOG_FILAMENTS, action === 'delete' ? items.filter(item => !selected.has(item.id)) : items.map(item => selected.has(item.id) ? withFilamentStock(item, action === 'in_stock') : item));
+      return;
+    }
+    const refs = [...selected].map(id => doc(db(), 'filaments', id));
+    await runTransaction(db(), async transaction => {
+      requireSameSession(identity);
+      const stored = await Promise.all(refs.map(ref => transaction.get(ref)));
+      const items = stored.map(snapshot => {
+        const current = snapshot.exists() ? snapshot.data() : PUBLIC_FILAMENTS_CATALOG.find(item => item.id === snapshot.id);
+        if (!current || ('deleted' in current && current.deleted)) throw new Error('Вибрані філаменти змінено або видалено. Оновіть каталог.');
+        return { ...current, id: snapshot.id } as PublicFilamentItem;
+      });
+      requireSameSession(identity);
+      items.forEach((item, index) => transaction.set(refs[index], action === 'delete' ? { id: item.id, deleted: true } : clean(withFilamentStock(item, action === 'in_stock'))));
     });
   },
   async getLikedIds(): Promise<string[]> {

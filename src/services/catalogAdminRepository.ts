@@ -1,5 +1,5 @@
 import { api } from './api.ts';
-import type { PublicFilamentItem, ManufacturerBrand, TemperatureProfile } from '../domain/filamentsDirectory.ts';
+import type { FilamentBulkAction, PublicFilamentItem, ManufacturerBrand, TemperatureProfile } from '../domain/filamentsDirectory.ts';
 
 export const catalogAdminRepository = {
   getFilaments: () => api.filaments.getAll(),
@@ -7,6 +7,7 @@ export const catalogAdminRepository = {
   createFilament: (item: Omit<PublicFilamentItem, 'id'>) => api.filaments.create(item),
   updateFilament: (id: string, updates: Partial<PublicFilamentItem>) => api.filaments.update(id, updates),
   deleteFilament: (id: string) => api.filaments.delete(id),
+  applyFilamentBulkAction: (ids: string[], action: FilamentBulkAction) => api.filaments.applyBulkAction(ids, action),
   getManufacturers: () => api.manufacturers.getAll(),
   createManufacturer: (item: Omit<ManufacturerBrand, 'id'>) => api.manufacturers.create(item),
   updateManufacturer: (id: string, updates: Partial<ManufacturerBrand>) => api.manufacturers.update(id, updates),

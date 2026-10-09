@@ -34,6 +34,8 @@ import {
   ColorType,
   COLOR_TONES_CONFIG,
   PackagingType,
+  MAX_CATALOG_BULK_ITEMS,
+  type FilamentBulkAction,
 } from '../../domain/filamentsDirectory.ts';
 import { catalogAdminRepository } from '../../services/catalogAdminRepository.ts';
 import { formatUah } from '../../domain/formatters.ts';
@@ -54,6 +56,8 @@ export const CatalogAdminPage: React.FC = () => {
 
   // Loaded data
   const [filaments, setFilaments] = useState<PublicFilamentItem[]>([]);
+  const [selectedFilamentIds, setSelectedFilamentIds] = useState<Set<string>>(new Set());
+  const [isBulkPending, setIsBulkPending] = useState(false);
   const [manufacturers, setManufacturers] = useState<ManufacturerBrand[]>([]);
   const [temperatures, setTemperatures] = useState<Record<string, TemperatureProfile>>({});
 
@@ -135,6 +139,9 @@ export const CatalogAdminPage: React.FC = () => {
   const [tempForm, setTempForm] = useState<TemperatureProfile>(EMPTY_TEMPERATURE_PROFILE);
   const [isSavingPlasticType, setIsSavingPlasticType] = useState(false);
   const plasticTypes = Array.from(new Set([...Object.keys(temperatures), ...filaments.map(item => item.type)]));
+  const selectableFilaments = filaments.slice(0, MAX_CATALOG_BULK_ITEMS);
+  const allFilamentsSelected = selectableFilaments.length > 0 && selectableFilaments.every(item => selectedFilamentIds.has(item.id));
+  const toggleAllFilaments = () => setSelectedFilamentIds(allFilamentsSelected ? new Set() : new Set(selectableFilaments.map(item => item.id)));
 
   // Load from repository
   const reloadData = async () => {
@@ -142,11 +149,13 @@ export const CatalogAdminPage: React.FC = () => {
       catalogAdminRepository.getFilaments(), catalogAdminRepository.getManufacturers(), catalogAdminRepository.getTemperatureProfiles(),
     ]);
     setFilaments(items);
+    setSelectedFilamentIds(selected => new Set([...selected].filter(id => items.some(item => item.id === id))));
     setManufacturers(brands);
     setTemperatures(profiles);
   };
 
   useEffect(() => {
+    setSelectedFilamentIds(new Set());
     if (canEdit) void reloadData().catch((error) => setSaveError(authErrorMessage(error)));
   }, [canEdit, user?.id, isDemoSession]);
 
@@ -373,6 +382,31 @@ export const CatalogAdminPage: React.FC = () => {
     await reloadData();
   });
 
+  const handleFilamentBulkAction = async (ids: string[], action: FilamentBulkAction) => {
+    setIsBulkPending(true);
+    try {
+      await runAction(async () => {
+        await catalogAdminRepository.applyFilamentBulkAction(ids, action);
+        setSelectedFilamentIds(new Set());
+        setConfirmDialog(null);
+        notify(action === 'delete' ? `Видалено позицій: ${ids.length}` : `Наявність змінено для ${ids.length} позицій`);
+        await reloadData();
+      });
+    } finally { setIsBulkPending(false); }
+  };
+
+  const handleDeleteSelectedFilaments = () => {
+    const ids = [...selectedFilamentIds];
+    setSaveError(null);
+    setConfirmDialog({
+      isOpen: true,
+      title: `Видалити позиції: ${ids.length}?`,
+      message: `З публічного каталогу буде видалено ${ids.length} вибраних позицій. Цю дію неможливо скасувати. Ваші особисті матеріали та збережені розрахунки залишаться доступними.`,
+      actionText: `Видалити ${ids.length} позицій`,
+      onConfirm: () => { void handleFilamentBulkAction(ids, 'delete'); },
+    });
+  };
+
   // --- MANUFACTURER ACTIONS ---
   const handleOpenAddManufacturer = () => {
     setFormError(null);
@@ -532,6 +566,7 @@ export const CatalogAdminPage: React.FC = () => {
             size="sm"
             leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
             onClick={handleResetToFactory}
+            disabled={isBulkPending}
             title="Скинути до стандартних значень"
           >
             Скинути до заводських
@@ -618,16 +653,34 @@ export const CatalogAdminPage: React.FC = () => {
               size="sm"
               leftIcon={<Plus className="w-4 h-4" />}
               onClick={handleOpenAddFilament}
+              disabled={isBulkPending}
               className="w-full sm:w-auto justify-center"
             >
               Додати позицію філаменту
             </Button>
           </div>
 
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/40 p-3" aria-label="Масові дії з філаментами" aria-busy={isBulkPending}>
+            <span role="status" className="w-full sm:w-auto text-xs font-semibold text-neutral-800 dark:text-neutral-200">Вибрано: {selectedFilamentIds.size} із {filaments.length}</span>
+            <Button variant="outline" size="sm" onClick={toggleAllFilaments} disabled={!filaments.length || isBulkPending}>
+              {allFilamentsSelected ? 'Зняти вибір' : filaments.length > MAX_CATALOG_BULK_ITEMS ? `Обрати перші ${MAX_CATALOG_BULK_ITEMS}` : 'Обрати всі'}
+            </Button>
+            {filaments.length > 100 && <Button variant="outline" size="sm" onClick={() => setSelectedFilamentIds(new Set(filaments.slice(0, 100).map(item => item.id)))} disabled={isBulkPending}>Обрати перші 100</Button>}
+            {selectedFilamentIds.size > 0 && !allFilamentsSelected && <Button variant="ghost" size="sm" onClick={() => setSelectedFilamentIds(new Set())} disabled={isBulkPending}>Зняти вибір</Button>}
+            <Button variant="outline" size="sm" leftIcon={<CheckCircle2 className="w-3.5 h-3.5" />} onClick={() => void handleFilamentBulkAction([...selectedFilamentIds], 'in_stock')} disabled={!selectedFilamentIds.size || isBulkPending}>В наявності</Button>
+            <Button variant="outline" size="sm" leftIcon={<XCircle className="w-3.5 h-3.5" />} onClick={() => void handleFilamentBulkAction([...selectedFilamentIds], 'out_of_stock')} disabled={!selectedFilamentIds.size || isBulkPending}>Немає в наявності</Button>
+            <Button variant="danger" size="sm" leftIcon={<Trash2 className="w-3.5 h-3.5" />} onClick={handleDeleteSelectedFilaments} disabled={!selectedFilamentIds.size || isBulkPending}>Видалити вибрані</Button>
+            {isBulkPending && <span role="status" className="text-xs text-neutral-500">Зберігаємо зміни…</span>}
+            {filaments.length > MAX_CATALOG_BULK_ITEMS && <p className="w-full text-xs text-neutral-500 dark:text-neutral-400">За один раз можна змінити до {MAX_CATALOG_BULK_ITEMS} позицій. Решту можна обрати наступною дією.</p>}
+          </div>
+
           <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
             <table className="w-full min-w-[680px] text-left text-xs">
               <thead className="bg-neutral-50 dark:bg-neutral-800/60 text-neutral-600 dark:text-neutral-400 uppercase tracking-wider font-bold border-b border-neutral-200 dark:border-neutral-800">
                 <tr>
+                  <th className="py-3 px-3 w-10">
+                    <input type="checkbox" aria-label={filaments.length > MAX_CATALOG_BULK_ITEMS ? `Обрати перші ${MAX_CATALOG_BULK_ITEMS} філаментів` : 'Обрати всі філаменти'} checked={allFilamentsSelected} ref={element => { if (element) element.indeterminate = selectedFilamentIds.size > 0 && !allFilamentsSelected; }} onChange={toggleAllFilaments} disabled={!filaments.length || isBulkPending} className="w-4 h-4 accent-emerald-600 cursor-pointer" />
+                  </th>
                   <th className="py-3 px-3">Статус наявності</th>
                   <th className="py-3 px-3">Назва та Бренд</th>
                   <th className="py-3 px-3">Тип / Колір</th>
@@ -639,12 +692,16 @@ export const CatalogAdminPage: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {filaments.map((f) => (
-                  <tr key={f.id} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/40">
+                  <tr key={f.id} className={selectedFilamentIds.has(f.id) ? 'bg-emerald-50 dark:bg-emerald-950/25' : 'hover:bg-neutral-50/50 dark:hover:bg-neutral-800/40'}>
+                    <td className="py-3 px-3">
+                      <input type="checkbox" aria-label={`Обрати філамент: ${f.name}`} checked={selectedFilamentIds.has(f.id)} onChange={event => { const checked = event.target.checked; setSelectedFilamentIds(selected => { const next = new Set(selected); if (checked && next.size < MAX_CATALOG_BULK_ITEMS) next.add(f.id); else next.delete(f.id); return next; }); }} disabled={isBulkPending || (!selectedFilamentIds.has(f.id) && selectedFilamentIds.size >= MAX_CATALOG_BULK_ITEMS)} className="w-4 h-4 accent-emerald-600 cursor-pointer" />
+                    </td>
                     {/* Stock Status Switcher */}
                     <td className="py-3 px-3 whitespace-nowrap">
                       <button
                         type="button"
                         onClick={() => handleToggleStockStatus(f)}
+                        disabled={isBulkPending}
                         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer transition-colors border ${
                           f.inStock
                             ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
@@ -716,6 +773,7 @@ export const CatalogAdminPage: React.FC = () => {
                           size="sm"
                           className="p-1.5"
                           onClick={() => handleOpenEditFilament(f)}
+                          disabled={isBulkPending}
                           title="Редагувати"
                         >
                           <Edit2 className="w-3.5 h-3.5 text-neutral-600 dark:text-neutral-400" />
@@ -725,6 +783,7 @@ export const CatalogAdminPage: React.FC = () => {
                           size="sm"
                           className="p-1.5 text-red-600 hover:text-red-700"
                           onClick={() => handleDeleteFilament(f.id, f.name)}
+                          disabled={isBulkPending}
                           title="Видалити"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1742,15 +1801,15 @@ export const CatalogAdminPage: React.FC = () => {
       {confirmDialog && (
         <Modal
           isOpen={confirmDialog.isOpen}
-          onClose={() => setConfirmDialog(null)}
+          onClose={() => { if (!isBulkPending) setConfirmDialog(null); }}
           title={confirmDialog.title}
           maxWidth="sm"
           footer={
             <>
-              <Button variant="outline" size="sm" onClick={() => setConfirmDialog(null)}>
+              <Button variant="outline" size="sm" onClick={() => setConfirmDialog(null)} disabled={isBulkPending}>
                 Скасувати
               </Button>
-              <Button variant="danger" size="sm" onClick={confirmDialog.onConfirm}>
+              <Button variant="danger" size="sm" onClick={confirmDialog.onConfirm} isLoading={isBulkPending}>
                 {confirmDialog.actionText || 'Підтвердити'}
               </Button>
             </>

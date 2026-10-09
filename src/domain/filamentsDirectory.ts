@@ -83,6 +83,9 @@ export interface PublicFilamentItem {
   stores: FilamentStoreLink[];
 }
 
+export const MAX_CATALOG_BULK_ITEMS = 450;
+export type FilamentBulkAction = 'delete' | 'in_stock' | 'out_of_stock';
+
 export interface TemperatureProfile {
   family?: PublicFilamentItem['family'];
   densityGPerCm3?: number;
