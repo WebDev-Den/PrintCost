@@ -14,6 +14,7 @@ export type ImportStatus = 'queued' | 'processing' | 'completed' | 'partial' | '
 export interface ImportOffer { externalId: string; companyId?: string; familyExplicit: boolean; optionalFields: string[]; offer: CompanyOfferInput }
 export interface ImportCompany { companyId?: string; name?: string; website: string; allowedDomains?: string[]; status?: Company['status'] }
 export interface ImportPayload { companies: ImportCompany[]; offers: ImportOffer[] }
+export interface ImportEnvelope { companies: unknown[]; offers: unknown[] }
 export interface ImportItemResult { index: number; kind: 'company' | 'offer'; externalId?: string; companyId?: string; offerId?: string; success: boolean; message?: string }
 export interface ImportJobSummary {
   id: string; status: ImportStatus; total: number; processed: number; succeeded: number; failed: number;
@@ -39,12 +40,16 @@ export function importDomain(url: string): string {
 export function profileForImport(type: string, override?: TemperatureProfile | null): TemperatureProfile | undefined {
   return override || STANDARD_TEMPERATURE_PROFILES[normalizeMaterialType(type)];
 }
-export function normalizeImportPayload(value: unknown): ImportPayload {
+export function validateImportEnvelope(value: unknown): ImportEnvelope {
   record(value); fields(value, ['companies', 'offers']);
   const companyRows = value.companies ?? [];
   const offerRows = value.offers ?? [];
   if (!Array.isArray(companyRows) || !Array.isArray(offerRows) || companyRows.length + offerRows.length < 1 ||
       companyRows.length + offerRows.length > IMPORT_LIMITS.items) throw new Error(`Потрібно від 1 до ${IMPORT_LIMITS.items} записів.`);
+  return { companies: companyRows, offers: offerRows };
+}
+export function normalizeImportPayload(value: unknown): ImportPayload {
+  const { companies: companyRows, offers: offerRows } = validateImportEnvelope(value);
   const companies = companyRows.map((row: unknown): ImportCompany => {
     record(row); fields(row, ['companyId', 'name', 'website', 'allowedDomains', 'status']);
     if (typeof row.website !== 'string') throw new Error('Компанія потребує website.');

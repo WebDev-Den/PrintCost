@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IMPORT_EXAMPLE, IMPORT_LIMITS, importDomain, normalizeImportPayload, profileForImport } from '../src/domain/apiImports.ts';
+import { IMPORT_EXAMPLE, IMPORT_LIMITS, importDomain, normalizeImportPayload, profileForImport, validateImportEnvelope } from '../src/domain/apiImports.ts';
+
+test('HTTP envelope validation bounds the whole request without validating individual records', () => {
+  const offers = Array.from({ length: IMPORT_LIMITS.items }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: String(index) }));
+  offers[99].priceUah = 600.333;
+  assert.deepEqual(validateImportEnvelope({ offers }), { companies: [], offers });
+  assert.throws(() => normalizeImportPayload({ offers }), /Ціна/);
+  assert.deepEqual(validateImportEnvelope({ companies: [null] }), { companies: [null], offers: [] });
+  assert.deepEqual(validateImportEnvelope({ companies: null, offers: [null] }), { companies: [], offers: [null] });
+  for (const value of [null, [], 'JSON', {}, { offers: [] }, { offers: {} }, { companies: {}, offers: [null] },
+    { companies: [null], offers, }, { offers: [null], uid: 'other' }]) assert.throws(() => validateImportEnvelope(value));
+});
 
 test('import normalizes offers, derives profiles and never invents an unknown material profile', () => {
   const payload = normalizeImportPayload(IMPORT_EXAMPLE);

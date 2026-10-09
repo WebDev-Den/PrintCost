@@ -28,6 +28,7 @@ export function encodeFields(value: Document): Record<string, FirestoreValue> {
 
 export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => Date = () => new Date()) {
   let cached: { project: string; secret: string; token: string; expires: number } | undefined;
+  let signing: { project: string; secret: string; key: CryptoKey } | undefined;
   async function responseJson(url: string, init: RequestInit): Promise<any> {
     let response: Response;
     try { response = await fetcher(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(8000) }); }
@@ -44,8 +45,15 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
       account = JSON.parse(secret);
       if (!/^[a-z][a-z0-9-]{4,62}$/.test(project) || account.project_id !== project ||
         !account.client_email.endsWith('@' + project + '.iam.gserviceaccount.com')) throw new Error();
-      const bytes = Uint8Array.from(atob(account.private_key.replace(/-----[^-]+-----/g, '').replace(/\s/g, '')), c => c.charCodeAt(0));
-      const key = await crypto.subtle.importKey('pkcs8', bytes, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+      let key = signing?.project === project && signing.secret === secret ? signing.key : undefined;
+      if (!key) {
+        const binary = atob(account.private_key.replace(/-----[^-]+-----/g, '').replace(/\s/g, ''));
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+        key = await crypto.subtle.importKey('pkcs8', bytes, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+        // Retain one resolved key for token refresh; each request owns its OAuth fetch.
+        signing = { project, secret, key };
+      }
       const seconds = Math.floor(now().getTime() / 1000);
       const header = base64(new TextEncoder().encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
       const claims = base64(new TextEncoder().encode(JSON.stringify({ iss: account.client_email, scope: 'https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/cloud-platform', aud: 'https://oauth2.googleapis.com/token', iat: seconds, exp: seconds + 3600 })));

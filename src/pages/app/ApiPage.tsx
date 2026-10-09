@@ -92,6 +92,7 @@ export function ApiPage() {
     <section className={panel}>
       <h2 className="font-semibold">Імпорт JSON</h2>
       <p className="text-sm">Імпортовані товари та оновлення зберігаються як чернетки. Перевірте їх і опублікуйте обрані у <NavLink to="/app/admin/catalog" className="text-emerald-600 underline">адмінці каталогу</NavLink>.</p>
+      <p className="text-sm text-neutral-500">Після додавання черга перевірить усі записи. Якщо поля некоректні, імпорт завершиться помилкою без запису товарів; причину дивіться у результаті.</p>
       <p className="text-sm text-neutral-500">До 100 записів та 128 КіБ за запит. Менеджер — раз на годину, адміністратор — раз на 5 хвилин. Один активний імпорт на акаунт.</p>
       {metadata?.nextImportAt && new Date(metadata.nextImportAt).getTime() > Date.now() && <p className="text-sm">Наступний імпорт: {date(metadata.nextImportAt)}</p>}
       <label htmlFor="api-json-file" className="block text-sm font-medium">Завантажити файл JSON</label>
@@ -125,7 +126,7 @@ export function ApiPage() {
       <h2 className="font-semibold">Як використовувати API</h2>
       <p className="text-sm">Адреса: <code className="break-all">{base}</code>. Передавайте ключ лише в <code>Authorization: Bearer ВАШ_КЛЮЧ</code>.</p>
       <div className="overflow-x-auto"><table className="w-full text-left text-sm"><tbody>
-        <tr><th className="p-2 font-mono">POST /imports</th><td className="p-2">Прийняти JSON у чергу, відповідь 202 з ID. Обов’язковий Idempotency-Key.</td></tr>
+        <tr><th className="p-2 font-mono">POST /imports</th><td className="p-2">Прийняти JSON у чергу, відповідь 202 з ID. Обов’язковий Idempotency-Key. Перевірку записів і результат дивіться у стані імпорту.</td></tr>
         <tr><th className="p-2 font-mono">GET /imports</th><td className="p-2">Останні 30 імпортів. Адміністратор бачить усі, менеджер — власні.</td></tr>
         <tr><th className="p-2 font-mono">GET /imports/ID</th><td className="p-2">Стан і результат кожного запису.</td></tr>
       </tbody></table></div>
@@ -138,8 +139,8 @@ export function ApiPage() {
         <p className="text-sm">Адміністратор також передає масив <code>companies</code>. Компанію визначає companyId або точний домен website/productUrl. Якщо її немає, створюється компанія з назвою домену. Її дані можна доповнити у вкладці «Користувачі та компанії». Для неоднозначного домену обов’язковий companyId.</p>
         <pre className={code}>{JSON.stringify({ companies: [{ name: 'Магазин пластику', website: 'https://shop.example.com/', allowedDomains: ['shop.example.com'], status: 'active' }] }, null, 2)}</pre>
       </>}
-      <p className="text-sm">Для повторної спроби того самого JSON використовуйте той самий Idempotency-Key. Для нового оновлення — новий. Після 429 дотримуйтесь Retry-After; після 202 перевіряйте стан не частіше ніж раз на 30 секунд і зупиніть перевірки після завершення.</p>
-      <p className="text-sm">Стани: queued, processing, completed, partial, failed, cancelled. 401 — ключ недійсний; 403 — бракує прав; 409 — конфлікт Idempotency-Key; 413 — завеликий JSON; 422 — некоректні поля; 429 — ліміт; 503 — сервіс тимчасово недоступний. У разі часткового імпорту перегляньте результати перед повторним надсиланням.</p>
+      <p className="text-sm">Для повторної спроби використовуйте той самий Idempotency-Key та незмінний JSON, включно з пробілами й порядком полів. Для нового оновлення — новий ключ запиту. Після 429 дотримуйтесь Retry-After; після 202 перевіряйте стан не частіше ніж раз на 30 секунд і зупиніть перевірки після завершення.</p>
+      <p className="text-sm">Стани: queued, processing, completed, partial, failed, cancelled. 401 — ключ недійсний; 403 — бракує прав; 409 — конфлікт Idempotency-Key; 413 — завеликий JSON; 422 — некоректна структура запиту; 429 — ліміт; 503 — сервіс тимчасово недоступний. Помилка полів після прийняття до черги відображається у результаті як HTTP_422 і не повторюється автоматично. Прийняті імпорти, зокрема з помилкою, витрачають інтервал та денну квоту. У разі часткового імпорту перегляньте результати перед повторним надсиланням.</p>
       <p className="text-xs text-neutral-500">Спільні ліміти API за добу UTC: 5 000 записів, 100 імпортів і 1 500 відправлень у чергу. Для перевірок доступу виділено окремо 500 запитів менеджерам і 500 адміністраторам; на один акаунт — до 200 для менеджера й 500 для адміністратора з ключем. При вичерпанні ліміту черги завдання зберігається до наступної доби. Черга обробляє по 5 записів послідовно, повторює тимчасові помилки до 3 разів і зупиняє незавершений імпорт через 24 години. Історія зберігається 30 днів.</p>
     </section>
     <Modal isOpen={!!action} onClose={() => { if (!busy) { setAction(null); setPassword(''); setConfirmationMethod(null); } }} title={action === 'revoke' ? 'Відкликати API-ключ' : metadata?.key ? 'Оновити API-ключ' : 'Створити API-ключ'}

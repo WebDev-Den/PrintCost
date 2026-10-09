@@ -88,6 +88,39 @@ async function fixture() {
   return { ...db, documents, calls, fetcher, worker, env, context, pending, post, report };
 }
 
+test('analytics locale setup waits for date use and reuses one Kyiv formatter across daylight saving and retention', async t => {
+  let constructions = 0;
+  const DateTimeFormat = Intl.DateTimeFormat;
+  t.mock.method(Intl, 'DateTimeFormat', function (locales?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
+    constructions++; return new DateTimeFormat(locales, options);
+  });
+  const analytics = await import(new URL('../workers/analytics.ts?lazy-date-fixture', import.meta.url).href);
+  assert.equal(constructions, 0, 'Importing the Worker does not initialize locale data for unrelated REST API paths.');
+  const db = database(); t.after(() => db.sqlite.close());
+  let current = date;
+  const worker = analytics.createAnalyticsWorker({ now: () => current });
+  const env: AnalyticsEnv = { FIREBASE_PROJECT_ID: 'kilo-g', ANALYTICS_DB: db.binding,
+    ANALYTICS_RATE_LIMIT: { limit: async () => ({ success: true }) }, ASSETS: { fetch: async () => new Response('static') } };
+  const pending: Promise<unknown>[] = [], context = { waitUntil: (value: Promise<unknown>) => pending.push(value) };
+  assert.equal((await worker.fetch(new Request('https://site/app/account'), env, context)).status, 200);
+  assert.equal((await worker.fetch(new Request('https://site/api/unknown'), env, context)).status, 404);
+  assert.equal(constructions, 0);
+  const post = () => worker.fetch(new Request('https://site/api/analytics/events', { method: 'POST',
+    headers: { Origin: 'https://site', 'Content-Type': 'application/json' }, body: JSON.stringify({ events: [event()] }) }), env, context);
+  assert.equal((await post()).status, 202);
+  assert.equal(constructions, 1);
+  assert.equal(db.sqlite.prepare('SELECT day,utc_day FROM events').get()!.day, '2026-10-09');
+  assert.equal(db.sqlite.prepare('SELECT day,utc_day FROM events').get()!.utc_day, '2026-10-08');
+  current = new Date('2026-12-08T21:15:00Z');
+  assert.equal((await post()).status, 202);
+  assert.equal(db.sqlite.prepare("SELECT day FROM events WHERE utc_day='2026-12-08'").get()!.day, '2026-12-08');
+  db.sqlite.prepare("INSERT INTO daily_totals(company_id,day,search) VALUES('','2025-12-07',1),('','2025-12-08',1)").run();
+  await worker.scheduled(undefined, env, context); await Promise.all(pending);
+  assert.equal(db.sqlite.prepare("SELECT day FROM daily_totals WHERE day='2025-12-07'").get(), undefined);
+  assert.ok(db.sqlite.prepare("SELECT day FROM daily_totals WHERE day='2025-12-08'").get(), 'The Kyiv anniversary day remains inside retention.');
+  assert.equal(constructions, 1, 'Ingestion and scheduled retention reuse the same resolved formatter.');
+});
+
 test('analytics forwards App Check to every Firebase read and denied attestations cannot poison shared cache or cached reports', async () => {
   const f = await fixture();
   const valid = { 'X-Firebase-AppCheck': 'valid.token.signature' };

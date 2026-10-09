@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { Miniflare, Response as RuntimeResponse, convertV4MiniflareOptions } from 'miniflare';
-import { IMPORT_EXAMPLE, IMPORT_LIMITS } from '../src/domain/apiImports.ts';
+import { IMPORT_EXAMPLE, IMPORT_LIMITS, normalizeImportPayload } from '../src/domain/apiImports.ts';
 import { encodeFields } from '../workers/importFirebase.ts';
 import { decodeFields } from '../workers/firebase.ts';
 import { createImportApi } from '../workers/importApi.ts';
@@ -35,7 +35,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   await seed('memberships/other-manager', { active: true, companyId: 'company-b', changeId: 'initial', version: 1 });
   const bundle = await build({ entryPoints: ['workers/index.ts'], bundle: true, write: false, format: 'esm', platform: 'browser', metafile: true });
   assert.ok(Object.keys(bundle.metafile.inputs).every(path => !path.includes('node_modules/decimal.js/')), 'Worker validation must keep frontend Decimal initialization out of its bundle.');
-  let failCommitOnce = false, failFirebase = false, firebaseRequests = 0;
+  let failCommitOnce = false, failFirebase = false, firebaseRequests = 0, firestoreWrites = 0;
   const transport = async (request: Pick<Request, 'url' | 'method' | 'text'>) => {
       const url = new URL(request.url);
       if (url.hostname === 'www.googleapis.com') return new RuntimeResponse(JSON.stringify({ keys: [jwk] }), { headers: { 'Cache-Control': 'public,max-age=3600' } });
@@ -52,6 +52,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
       assert.equal(url.hostname, 'firestore.googleapis.com', 'Fixtures never contact a production endpoint.');
       assert.ok(url.pathname.startsWith(root));
       firebaseRequests++;
+      if (url.pathname.endsWith(':commit')) firestoreWrites++;
       if (failFirebase) return new RuntimeResponse('{}', { status: 503 });
       const upstream = await fetch('http://127.0.0.1:8080' + url.pathname + url.search, { method: request.method, headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
         body: request.method === 'GET' ? undefined : await request.text() });
@@ -100,6 +101,8 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const accepted = await request('imports', managerKey, 'POST', managerPayload, idempotency);
   assert.equal(accepted.status, 202, JSON.stringify(await accepted.clone().json()));
   const job = await accepted.json() as any;
+  assert.equal(job.total, 12); assert.equal(job.processed, 0); assert.equal(job.succeeded, 0); assert.equal(job.failed, 0);
+  assert.match((await db.prepare('SELECT payload_hash FROM import_jobs WHERE id=?').bind(job.id).first<any>()).payload_hash, /^raw:[0-9a-f]{64}$/);
   async function waitJob(id: string, token: string) {
     for (let i = 0; i < 80; i++) {
       const result = await (await request('imports/' + id, token)).json() as any;
@@ -179,6 +182,109 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   });
   const environment = { FIREBASE_PROJECT_ID: project, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
     IMPORT_QUEUE: { send: async () => { throw new Error('Fixture queue unavailable'); } } };
+  const httpJobRows: Record<string, unknown>[] = [];
+  const projectedDb = new Proxy(db, { get(target, property) {
+    if (property === 'prepare') return (sql: string) => {
+      const statement = target.prepare(sql);
+      if (!sql.includes('import_jobs')) return statement;
+      const watch = (prepared: typeof statement): typeof statement => new Proxy(prepared, { get(current, method) {
+        if (method === 'bind') return (...values: Parameters<typeof statement.bind>) => watch(current.bind(...values));
+        if (method === 'first' || method === 'all') return async () => {
+          const result = method === 'first' ? await current.first() : await current.all();
+          const rows = method === 'first' ? result ? [result] : [] : (result as { results: Record<string, unknown>[] }).results;
+          for (const row of rows as Record<string, unknown>[]) {
+            assert.ok(!Object.hasOwn(row, 'payload') && !Object.hasOwn(row, 'key_hash') && !Object.hasOwn(row, 'fingerprint'),
+              'HTTP job reads/INSERT RETURNING must not transfer payloads or private authorization fields from D1.');
+            httpJobRows.push(row);
+          }
+          return result;
+        };
+        const value = Reflect.get(current, method, current);
+        return typeof value === 'function' ? value.bind(current) : value;
+      } });
+      return watch(statement);
+    };
+    const value = Reflect.get(target, property, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const httpEnvironment = { ...environment, ANALYTICS_DB: projectedDb };
+  const submitRaw = (body: string, idempotency: string) => manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + adminKey, 'Content-Type': 'application/json', 'Idempotency-Key': idempotency }, body,
+  }), httpEnvironment);
+  const runManually = async (id: string) => {
+    let acknowledgements = 0, retries = 0;
+    await manual.queue({ messages: [{ body: { id, cursor: 0 }, ack: () => { acknowledgements++; }, retry: () => { retries++; } }] }, environment);
+    assert.equal(acknowledgements, 1); assert.equal(retries, 0);
+  };
+  const detailManually = async (id: string) => {
+    const response = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports/' + id, { headers: { Authorization: 'Bearer ' + adminKey } }), httpEnvironment);
+    assert.equal(response.status, 200); return await response.json() as any;
+  };
+  await t.test('100-record late validation failure is accepted then failed without writes or retries', async () => {
+    await db.prepare('UPDATE import_limits SET next_allowed=0').run();
+    const payload = { offers: Array.from({ length: 100 }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: 'late-invalid-' + index,
+      description: 'private-import-payload', ...(index === 99 ? { priceUah: 600.333 } : {}) })) };
+    const body = JSON.stringify(payload, null, 2), idempotency = randomUUID();
+    const response = await submitRaw(body, idempotency);
+    assert.equal(response.status, 202);
+    const accepted = await response.json() as any;
+    assert.deepEqual([accepted.total, accepted.processed, accepted.succeeded, accepted.failed], [100, 0, 0, 0]);
+    assert.ok(JSON.stringify(accepted).length < 2048 && !JSON.stringify(accepted).includes('private-import-payload'));
+    const stored = await db.prepare('SELECT payload,payload_hash FROM import_jobs WHERE id=?').bind(accepted.id).first<any>();
+    assert.equal(stored.payload, body); assert.equal(stored.payload_hash, 'raw:' + createHash('sha256').update(body).digest('hex'));
+    const beforeReads = firebaseRequests, beforeWrites = firestoreWrites;
+    await runManually(accepted.id);
+    assert.equal(firebaseRequests, beforeReads, 'Invalid raw records are rejected before Firestore or receipt access.');
+    assert.equal(firestoreWrites, beforeWrites, 'No earlier records in the invalid envelope can be written.');
+    const detail = await detailManually(accepted.id);
+    assert.equal(detail.status, 'failed'); assert.equal(detail.processed, 0); assert.deepEqual(detail.results, []);
+    assert.match(detail.error, /^HTTP_422: .*Ціна/);
+    const failed = await db.prepare('SELECT payload,attempts,lease_until FROM import_jobs WHERE id=?').bind(accepted.id).first<any>();
+    assert.deepEqual(failed, { payload: null, attempts: 1, lease_until: 0 });
+    const replay = await submitRaw(body, idempotency);
+    assert.equal(replay.status, 202); assert.equal((await replay.json() as any).id, accepted.id);
+    assert.equal((await submitRaw(JSON.stringify(payload), idempotency)).status, 409, 'New retries require identical original JSON bytes.');
+    assert.equal((await request('imports', managerKey, 'POST', { companies: [null] })).status, 403, 'Manager company envelopes are denied before record validation.');
+    assert.equal((await submitRaw('{"offers":[null],"uid":"other"}', randomUUID())).status, 422);
+  });
+  await t.test('concurrent raw retries reserve one job and full queue validation preserves drafts', async () => {
+    await db.prepare('UPDATE import_limits SET next_allowed=0').run();
+    const payload = { offers: [{ ...IMPORT_EXAMPLE.offers[0], externalId: 'stage5-valid', type: ' petg ', status: 'published' }] };
+    const body = JSON.stringify(payload), idempotency = randomUUID();
+    const count = (await db.prepare('SELECT COUNT(*) AS count FROM import_jobs').first<any>()).count;
+    const replies = await Promise.all([submitRaw(body, idempotency), submitRaw(body, idempotency)]);
+    assert.ok(replies.every(response => response.status === 202));
+    const jobs = await Promise.all(replies.map(response => response.json() as Promise<any>));
+    assert.equal(jobs[0].id, jobs[1].id);
+    assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM import_jobs').first<any>()).count, count + 1);
+    await runManually(jobs[0].id);
+    const detail = await detailManually(jobs[0].id);
+    assert.equal(detail.status, 'completed'); assert.equal(detail.succeeded, 1);
+    const offer = await read('companyOffers/' + detail.results[0].offerId);
+    assert.equal(offer.type, 'PETG'); assert.equal(offer.family, 'Стандартні'); assert.equal(offer.status, 'hidden');
+  });
+  await t.test('legacy normalized jobs remain processable and retain normalized idempotent retries', async () => {
+    await db.prepare('UPDATE import_limits SET next_allowed=0').run();
+    const payload = { offers: [{ ...IMPORT_EXAMPLE.offers[0], externalId: 'stage5-legacy' }] };
+    const body = JSON.stringify(payload), idempotency = randomUUID();
+    const response = await submitRaw(body, idempotency);
+    assert.equal(response.status, 202);
+    const accepted = await response.json() as any;
+    const normalized = JSON.stringify(normalizeImportPayload(payload));
+    await db.prepare('UPDATE import_jobs SET payload=?,payload_hash=? WHERE id=?')
+      .bind(normalized, createHash('sha256').update(normalized).digest('hex'), accepted.id).run();
+    const replay = await submitRaw(JSON.stringify({ companies: [], ...payload }, null, 2), idempotency);
+    assert.equal(replay.status, 202); assert.equal((await replay.json() as any).id, accepted.id);
+    assert.equal((await submitRaw(JSON.stringify({ offers: [{ ...payload.offers[0], priceUah: 600.333 }] }), idempotency)).status, 422,
+      'Legacy retry validation remains immediate because its normalized hash must be reproduced.');
+    await runManually(accepted.id);
+    const detail = await detailManually(accepted.id);
+    assert.equal(detail.status, 'completed'); assert.equal(detail.succeeded, 1);
+    assert.equal((await read('companyOffers/' + detail.results[0].offerId)).status, 'hidden');
+    assert.ok(httpJobRows.some(row => Object.hasOwn(row, 'results')), 'The instrumented HTTP detail read was exercised.');
+    assert.ok(httpJobRows.some(row => Object.hasOwn(row, 'succeeded')), 'The instrumented POST summary reads were exercised.');
+    await db.prepare('UPDATE import_limits SET next_allowed=0').run();
+  });
   const pending = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { method: 'POST',
     headers: { Authorization: 'Bearer ' + adminKey, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() },
     body: JSON.stringify({ offers: [{ ...IMPORT_EXAMPLE.offers[0], externalId: 'last-delivery' }] }) }), environment);

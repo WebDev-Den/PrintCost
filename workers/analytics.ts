@@ -30,7 +30,10 @@ export interface AnalyticsReport {
   budget: { day: string; accepted: number | null; limit: number }; notice: string;
 }
 
-const dayFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit' });
+let dayFormatter: Intl.DateTimeFormat | undefined;
+function localDay(date: Date): string {
+  return (dayFormatter ??= new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit' })).format(date);
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ID = /^[A-Za-z0-9_-]{1,200}$/;
 const fields = ['id', 'type', 'offerId', 'materialType', 'packaging', 'stock', 'hasSearch', 'resultCount'];
@@ -42,7 +45,7 @@ function json(value: unknown, status = 200) {
 }
 function emptyCounts(): Counts { return Object.fromEntries(EVENT_TYPES.map(type => [type, 0])) as Counts; }
 function retentionStart(date: Date) {
-  const expiry = new Date(`${dayFormatter.format(date)}T00:00:00Z`);
+  const expiry = new Date(`${localDay(date)}T00:00:00Z`);
   expiry.setUTCFullYear(expiry.getUTCFullYear() - 1);
   return expiry.toISOString().slice(0, 10);
 }
@@ -201,7 +204,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     let parsed: unknown;
     try { parsed = JSON.parse(await boundedText(new Response(request.body, { headers: request.headers }), 16384)); }
     catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(400, 'Некоректний JSON.'); }
-    const events = validateEvents(parsed), date = now(), utcDay = date.toISOString().slice(0, 10), day = dayFormatter.format(date);
+    const events = validateEvents(parsed), date = now(), utcDay = date.toISOString().slice(0, 10), day = localDay(date);
     const placeholders = events.map(() => '?').join(',');
     const initial = await database.batch([
       database.prepare('SELECT accepted FROM day_budget WHERE day = ?').bind(utcDay),
@@ -238,7 +241,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
 
   async function report(request: Request, env: AnalyticsEnv, database: AnalyticsDatabase) {
     const query = validateReport(new URL(request.url));
-    if (query.from < retentionStart(now()) || query.to > dayFormatter.format(now())) throw new ApiError(400, 'Звіт доступний за останні 12 місяців до сьогодні (Europe/Kyiv).');
+    if (query.from < retentionStart(now()) || query.to > localDay(now())) throw new ApiError(400, 'Звіт доступний за останні 12 місяців до сьогодні (Europe/Kyiv).');
     const token = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(request.headers.get('Authorization') || '')?.[1];
     if (!token) throw new ApiError(401, 'Увійдіть в акаунт.');
     const role = await access(env.FIREBASE_PROJECT_ID, token, query.companyId, request.headers.get('X-Firebase-AppCheck') || undefined);

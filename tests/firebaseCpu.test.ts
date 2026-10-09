@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, sign, verify as verifySignature } from 'node:crypto';
 import test from 'node:test';
 import { boundedText, createTokenVerifier, FIREBASE_JWKS_URL } from '../workers/firebase.ts';
+import { createImportFirebase, encodeFields } from '../workers/importFirebase.ts';
 
 function streamed(chunks: Uint8Array[], headers?: HeadersInit, cancelled?: () => void) {
   let index = 0;
@@ -99,4 +100,83 @@ test('concurrent cold verifications own their fetches and late older responses c
   resolve[0](Response.json({ keys: [oldKey] })); assert.equal(await first, 'concurrent');
   assert.deepEqual(await Promise.all([verify(oldToken, 'kilo-g'), verify(newToken, 'kilo-g')]), ['concurrent', 'concurrent']);
   assert.equal(resolve.length, 2, 'The late older response cannot replace the current set or trigger another fetch.');
+});
+
+test('service token refresh reuses one resolved signing key, rotates secrets and reads live access on every call', async t => {
+  const project = 'kilo-g', uid = 'admin-fixture';
+  const oldPair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const newPair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const account = (pair: typeof oldPair) => ({ project_id: project, client_email: 'import@' + project + '.iam.gserviceaccount.com',
+    private_key: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() });
+  const oldSecret = JSON.stringify(account(oldPair)), newSecret = JSON.stringify(account(newPair));
+  let clock = 1_790_000_000, imports = 0, signatures = 0, oauthCalls = 0, authCalls = 0, scopeCalls = 0;
+  let currentPair = oldPair, disabled = false, blocked = false, admin = true, validSince = 0;
+  const assertions: { iat: number; exp: number }[] = [];
+  const importKey = crypto.subtle.importKey.bind(crypto.subtle);
+  const sign = crypto.subtle.sign.bind(crypto.subtle);
+  t.mock.method(crypto.subtle, 'importKey', async (format: KeyFormat, data: JsonWebKey | BufferSource,
+    algorithm: AlgorithmIdentifier, extractable: boolean, usages: KeyUsage[]) => {
+    if (format === 'jwk') return importKey(format, data as JsonWebKey, algorithm, extractable, usages);
+    imports++; return importKey(format, data as BufferSource, algorithm, extractable, usages);
+  });
+  t.mock.method(crypto.subtle, 'sign', async (algorithm: AlgorithmIdentifier, key: CryptoKey, data: BufferSource) => {
+    signatures++; return sign(algorithm, key, data);
+  });
+  const adapter = createImportFirebase(async (input, init) => {
+    const url = String(input);
+    if (url === 'https://oauth2.googleapis.com/token') {
+      oauthCalls++;
+      const assertion = new URLSearchParams(init?.body as string).get('assertion')!;
+      const [header, claims, signature] = assertion.split('.');
+      assert.ok(verifySignature('RSA-SHA256', Buffer.from(header + '.' + claims), currentPair.publicKey, Buffer.from(signature, 'base64url')));
+      const payload = JSON.parse(Buffer.from(claims, 'base64url').toString());
+      assert.equal(payload.iss, account(currentPair).client_email); assert.equal(payload.aud, url);
+      assert.equal(payload.iat, clock); assert.equal(payload.exp, clock + 3600); assertions.push(payload);
+      return Response.json({ access_token: 'fixture-token-' + oauthCalls, expires_in: 3600 });
+    }
+    assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer fixture-token-' + oauthCalls);
+    if (url === 'https://identitytoolkit.googleapis.com/v1/projects/' + project + '/accounts:lookup') {
+      authCalls++; assert.deepEqual(JSON.parse(init?.body as string), { localId: [uid] });
+      return Response.json({ users: [{ localId: uid, emailVerified: true, disabled, validSince: String(validSince) }] });
+    }
+    assert.equal(url, 'https://firestore.googleapis.com/v1/projects/' + project + '/databases/(default)/documents:batchGet');
+    scopeCalls++;
+    const documents = JSON.parse(init?.body as string).documents as string[];
+    assert.equal(documents.length, 4);
+    return Response.json(documents.map(name => name.endsWith('/system/authorization')
+      ? { found: { name, fields: encodeFields({ adminUids: admin ? [uid] : [], version: 1 }) } }
+      : name.endsWith('/accountAccess/' + uid)
+        ? { found: { name, fields: encodeFields({ blocked, changeId: 'fixture' }) } } : { missing: name }));
+  }, () => new Date(clock * 1000));
+  assert.equal((await adapter.scope(project, oldSecret, uid)).role, 'admin');
+  assert.deepEqual([imports, signatures, oauthCalls, authCalls, scopeCalls], [1, 1, 1, 1, 1]);
+  await adapter.scope(project, oldSecret, uid);
+  assert.deepEqual([imports, signatures, oauthCalls, authCalls, scopeCalls], [1, 1, 1, 2, 2]);
+  clock += 3540;
+  await adapter.scope(project, oldSecret, uid);
+  assert.deepEqual([imports, signatures, oauthCalls], [1, 2, 2], 'Refresh signs a new assertion without importing PKCS8 again.');
+  assert.notEqual(assertions[0].iat, assertions[1].iat);
+  currentPair = newPair;
+  await adapter.scope(project, newSecret, uid);
+  assert.deepEqual([imports, signatures, oauthCalls], [2, 3, 3], 'Changing the exact secret imports and signs with the new key.');
+  currentPair = oldPair;
+  await adapter.scope(project, oldSecret, uid);
+  assert.deepEqual([imports, signatures, oauthCalls], [3, 4, 4], 'Only one resolved signing key is retained.');
+  const invalidEmail = JSON.stringify({ ...account(oldPair), client_email: 'import@foreign.iam.gserviceaccount.com' });
+  const malformedKey = JSON.stringify({ ...account(oldPair), private_key: 'invalid-pkcs8' });
+  for (const [candidateProject, candidateSecret] of [[project, invalidEmail], [project, malformedKey],
+    ['foreign-project', oldSecret], ['INVALID/project', oldSecret], [project, '{']]) {
+    await assert.rejects(adapter.scope(candidateProject, candidateSecret, uid), { status: 503 });
+  }
+  assert.deepEqual([imports, signatures, oauthCalls], [3, 4, 4], 'Invalid service accounts cannot reuse another secret or project key.');
+  validSince = clock - 1;
+  assert.equal((await adapter.scope(project, oldSecret, uid)).validSince, validSince);
+  blocked = true;
+  await assert.rejects(adapter.scope(project, oldSecret, uid), { status: 403 });
+  blocked = false; admin = false;
+  await assert.rejects(adapter.scope(project, oldSecret, uid), { status: 403 });
+  admin = true; disabled = true;
+  await assert.rejects(adapter.scope(project, oldSecret, uid), { status: 403 });
+  assert.deepEqual([imports, signatures, oauthCalls], [3, 4, 4]);
+  assert.deepEqual([authCalls, scopeCalls], [9, 8], 'Account revocation and roles remain fresh despite resolved credential caches.');
 });

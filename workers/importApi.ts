@@ -1,7 +1,7 @@
 import type { AnalyticsDatabase } from './analytics.ts';
 import { ApiError, boundedText, createTokenVerifier } from './firebase.ts';
 import { createImportFirebase, digest } from './importFirebase.ts';
-import { IMPORT_LIMITS, normalizeImportPayload, type ApiKeyMetadata, type ImportPayload, type ImportItemResult, type ImportJobSummary } from '../src/domain/apiImports.ts';
+import { IMPORT_LIMITS, normalizeImportPayload, validateImportEnvelope, type ApiKeyMetadata, type ImportPayload, type ImportItemResult, type ImportJobSummary } from '../src/domain/apiImports.ts';
 
 export interface ImportEnv {
   ANALYTICS_DB?: AnalyticsDatabase; FIREBASE_PROJECT_ID: string; FIREBASE_IMPORT_SERVICE_ACCOUNT?: string;
@@ -11,13 +11,16 @@ export interface ImportEnv {
 interface KeyRow { uid: string; hash: string; prefix: string; role: 'admin' | 'manager'; company_id: string | null; fingerprint: string; valid_since: number; created_at: number; expires_at: number }
 interface JobRow { id: string; owner_uid: string; key_hash: string; fingerprint: string; payload: string | null; payload_hash: string; status: ImportJobSummary['status']; total: number; cursor: number; results: string; created_at: number; updated_at: number; expires_at: number; lease_until: number; attempts: number; error: string | null }
 type JobSummaryRow = Pick<JobRow, 'id' | 'status' | 'total' | 'cursor' | 'created_at' | 'updated_at'> & { succeeded: number; failed: number };
+type JobDetailRow = Pick<JobRow, 'id' | 'status' | 'total' | 'cursor' | 'created_at' | 'updated_at' | 'results' | 'error'>;
+type JobReplayRow = JobSummaryRow & Pick<JobRow, 'payload_hash'>;
 export interface ImportMessage { body: { id: string; cursor: number }; ack(): void; retry(options?: { delaySeconds: number }): void }
 const active = "status IN ('queued','processing')";
+const summaryColumns = 'id,status,total,cursor,created_at,updated_at';
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 function json(value: unknown, status = 200, extra: Record<string, string> = {}): Response {
   return Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra } });
 }
-function summary(job: JobRow | JobSummaryRow, detail = false): ImportJobSummary & { error?: string } {
+function summary(job: JobDetailRow | JobSummaryRow, detail = false): ImportJobSummary & { error?: string } {
   const results = 'results' in job ? JSON.parse(job.results) as ImportItemResult[] : [];
   return { id: job.id, status: job.status, total: job.total, processed: job.cursor, succeeded: 'succeeded' in job ? job.succeeded : results.filter(result => result.success).length,
     failed: 'failed' in job ? job.failed : results.filter(result => !result.success).length, createdAt: iso(job.created_at), updatedAt: iso(job.updated_at),
@@ -140,7 +143,7 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         }
         if (request.method === 'GET') {
           if (jobId) {
-            const job = await db.prepare('SELECT * FROM import_jobs WHERE id=? AND (?=\'admin\' OR owner_uid=?)').bind(jobId, scope.role, scope.uid).first<JobRow>();
+            const job = await db.prepare('SELECT ' + summaryColumns + ',results,error FROM import_jobs WHERE id=? AND (?=\'admin\' OR owner_uid=?)').bind(jobId, scope.role, scope.uid).first<JobDetailRow>();
             if (!job) throw new ApiError(404, 'Імпорт не знайдено.');
             return json(summary(job, true));
           }
@@ -159,22 +162,41 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         if (!/^application\/json(?:\s*;.*)?$/i.test(request.headers.get('Content-Type') || '')) throw new ApiError(415, 'Потрібен Content-Type: application/json.');
         const idempotency = request.headers.get('Idempotency-Key') || '';
         if (!/^[A-Za-z0-9_-]{1,128}$/.test(idempotency)) throw new ApiError(422, 'Потрібен Idempotency-Key: унікальний ID запиту (1–128 символів).');
-        let payload: ImportPayload;
-        try { payload = normalizeImportPayload(JSON.parse(await boundedText(new Response(request.body, { headers: request.headers }), IMPORT_LIMITS.bytes))); }
+        let serialized: string, value: unknown, envelope: ReturnType<typeof validateImportEnvelope>;
+        try {
+          serialized = await boundedText(new Response(request.body, { headers: request.headers }), IMPORT_LIMITS.bytes);
+          value = JSON.parse(serialized);
+          envelope = validateImportEnvelope(value);
+        }
         catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(422, error instanceof Error ? error.message : 'Некоректний JSON.'); }
-        if (scope.role !== 'admin' && payload.companies.length) throw new ApiError(403, 'Компанії додає лише адміністратор.');
-        const serialized = JSON.stringify(payload);
-        const hash = await digest(serialized);
-        const existing = await db.prepare('SELECT * FROM import_jobs WHERE owner_uid=? AND idempotency=?').bind(scope.uid, idempotency).first<JobRow>();
+        if (scope.role !== 'admin' && envelope.companies.length) throw new ApiError(403, 'Компанії додає лише адміністратор.');
+        // New jobs retain original JSON bytes. Existing normalized jobs keep their original retry semantics.
+        const hash = 'raw:' + await digest(serialized);
+        let legacyHash: string | undefined;
+        async function matches(job: JobReplayRow) {
+          if (job.payload_hash.startsWith('raw:')) return job.payload_hash === hash;
+          try { legacyHash ??= await digest(JSON.stringify(normalizeImportPayload(value))); }
+          catch (error) { throw new ApiError(422, error instanceof Error ? error.message : 'Некоректний JSON.'); }
+          return job.payload_hash === legacyHash;
+        }
+        const replay = () => db.prepare('WITH job AS MATERIALIZED (SELECT ' + summaryColumns + ',payload_hash,' +
+          "(SELECT json_object('succeeded',COUNT(CASE WHEN json_extract(r.value,'$.success') THEN 1 END)," +
+          "'failed',COUNT(CASE WHEN NOT COALESCE(json_extract(r.value,'$.success'),0) THEN 1 END)) FROM json_each(j.results) r) AS counts " +
+          'FROM import_jobs j WHERE owner_uid=? AND idempotency=?) SELECT ' + summaryColumns +
+          ",payload_hash,json_extract(counts,'$.succeeded') AS succeeded,json_extract(counts,'$.failed') AS failed FROM job")
+          .bind(scope.uid, idempotency).first<JobReplayRow>();
+        const existing = await replay();
         if (existing) {
-          if (existing.payload_hash !== hash) throw new ApiError(409, 'Idempotency-Key вже використано для іншого JSON.');
+          if (!await matches(existing)) throw new ApiError(409, 'Idempotency-Key вже використано для іншого JSON.');
           return json({ ...summary(existing), statusUrl: '/api/v1/imports/' + existing.id }, 202);
         }
         const id = crypto.randomUUID(), time = seconds();
+        let accepted: JobReplayRow | undefined;
         try {
-          await db.prepare('INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,payload,total,interval_seconds,created_at,updated_at,expires_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM import_jobs WHERE owner_uid=? AND idempotency=?)')
-            .bind(id, scope.uid, key.hash, scope.fingerprint, idempotency, hash, serialized, payload.companies.length + payload.offers.length,
-              scope.role === 'admin' ? IMPORT_LIMITS.adminInterval : IMPORT_LIMITS.managerInterval, time, time, time + IMPORT_LIMITS.lifetime, scope.uid, idempotency).all();
+          const inserted = await db.prepare('INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,payload,total,interval_seconds,created_at,updated_at,expires_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM import_jobs WHERE owner_uid=? AND idempotency=?) RETURNING ' + summaryColumns + ',payload_hash,0 AS succeeded,0 AS failed')
+            .bind(id, scope.uid, key.hash, scope.fingerprint, idempotency, hash, serialized, envelope.companies.length + envelope.offers.length,
+              scope.role === 'admin' ? IMPORT_LIMITS.adminInterval : IMPORT_LIMITS.managerInterval, time, time, time + IMPORT_LIMITS.lifetime, scope.uid, idempotency).all<JobReplayRow>();
+          accepted = inserted.results[0];
         } catch (error) {
           const message = String(error);
           if (message.includes('IMPORT_KEY_CHANGED')) throw new ApiError(403, 'Ключ змінився. Повторіть запит з актуальним ключем.');
@@ -185,8 +207,8 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
           }
           throw error;
         }
-        const accepted = await db.prepare('SELECT * FROM import_jobs WHERE owner_uid=? AND idempotency=?').bind(scope.uid, idempotency).first<JobRow>();
-        if (!accepted || accepted.payload_hash !== hash) throw new ApiError(409, 'Idempotency-Key вже використано.');
+        accepted ??= await replay() ?? undefined;
+        if (!accepted || !await matches(accepted)) throw new ApiError(409, 'Idempotency-Key вже використано.');
         if (accepted.id === id) await dispatch(env, id, 0);
         return json({ ...summary(accepted), statusUrl: '/api/v1/imports/' + accepted.id }, 202);
       } catch (error) {
@@ -211,7 +233,14 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
           if (job.expires_at <= time || job.attempts > IMPORT_LIMITS.retries + 1) {
             await terminal(db, id, 'failed', 'Імпорт прострочений або вичерпав повторні спроби.'); message.ack(); continue;
           }
-          const payload = JSON.parse(job.payload!) as ImportPayload;
+          let payload: ImportPayload;
+          if (job.payload_hash.startsWith('raw:')) {
+            try { payload = normalizeImportPayload(JSON.parse(job.payload!)); }
+            catch (error) {
+              await terminal(db, id, 'failed', 'HTTP_422: ' + (error instanceof Error ? error.message : 'Некоректний JSON.'));
+              message.ack(); continue;
+            }
+          } else payload = JSON.parse(job.payload!) as ImportPayload;
           const results = await firebase.process(env.FIREBASE_PROJECT_ID, env.FIREBASE_IMPORT_SERVICE_ACCOUNT!, job.owner_uid, job.fingerprint, id, payload, cursor);
           const { next, complete } = await progress(db, job, lease, results);
           if (!complete) await dispatch(env, id, next);

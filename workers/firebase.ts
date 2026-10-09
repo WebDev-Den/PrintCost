@@ -71,7 +71,9 @@ export function createFirebaseReader(fetcher: typeof fetch) {
 function base64url(value: string): Uint8Array<ArrayBuffer> {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new ApiError(401, 'Некоректна сесія.');
   const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '='));
-  return Uint8Array.from(binary, char => char.charCodeAt(0));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 export function createTokenVerifier(fetcher: typeof fetch, now: () => Date) {
