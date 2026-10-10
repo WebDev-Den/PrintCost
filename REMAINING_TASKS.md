@@ -2,6 +2,8 @@
 
 ## Історія імпортів — 10 жовтня 2026
 
+- [x] Публікація перевіреного `main` `0bd6473`: [CI SUCCESS](https://github.com/WebDev-Den/PrintCost/actions/runs/38047934364), **317/317 PASS**, Cloudflare Build `6bc340e1-1f40-4a3e-a99f-877f19c5bafe`; Worker `e587a61d-5c63-4bda-8ace-3437592a0a3c`, 100% від 11:19:11 UTC. 8/8 живих HTTP checks і UI single/bulk confirmation/cancel — PASS; 12 наявних історій збережені. Фінальний звіт у `codex/import-history-delete`, runtime `main` без додаткових змін.
+
 - [x] Окреме й масове видалення до 30 записів, вибір рядків і підтвердження; товари та компанії збережені.
 - [x] DELETE API з актуальними правами, manager ownership, перевірками активного статусу/lease, обмеженням 4 KiB/30 ID та атомарними 200 ID-спробами за UTC-добу спільно з фоновим cleanup.
 - [x] Tombstone та receipts зберігають idempotency й квоти; приховані записи не відкриваються через GET. Часткові індекси читають 30 видимих рядків навіть за 3000 прихованих; при quota denial — 0.
