@@ -28,14 +28,26 @@ export function setCookieConsent(analytics: boolean): void {
 
 export function subscribeCookieConsent(listener: () => void): () => void {
   if (typeof window === 'undefined') return () => {};
-  const onStorage = (event: StorageEvent) => {
-    if (event.key === COOKIE_CONSENT_KEY || event.key === null) { memoryConsent = undefined; listener(); }
+  let current = getCookieConsent();
+  const refresh = () => {
+    const next = getCookieConsent();
+    if (next !== current) { current = next; listener(); }
   };
-  window.addEventListener(CHANGE_EVENT, listener);
+  const onStorage = (event: StorageEvent) => {
+    try { if (event.storageArea !== localStorage) return; } catch { return; }
+    if (event.key === COOKIE_CONSENT_KEY || event.key === null) { memoryConsent = undefined; refresh(); }
+  };
+  window.addEventListener(CHANGE_EVENT, refresh);
   window.addEventListener('storage', onStorage);
+  window.addEventListener('focus', refresh);
+  window.addEventListener('pageshow', refresh);
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', refresh);
   return () => {
-    window.removeEventListener(CHANGE_EVENT, listener);
+    window.removeEventListener(CHANGE_EVENT, refresh);
     window.removeEventListener('storage', onStorage);
+    window.removeEventListener('focus', refresh);
+    window.removeEventListener('pageshow', refresh);
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', refresh);
   };
 }
 

@@ -26,7 +26,7 @@ function browserFixture() {
   const previous = ['localStorage', 'window'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
   Object.defineProperty(globalThis, 'window', { configurable: true, value: browser });
-  return { values, browser, block(value: boolean) { blocked = value; }, blockWrites(value: boolean) { writeBlocked = value; }, restore() {
+  return { values, browser, storage, block(value: boolean) { blocked = value; }, blockWrites(value: boolean) { writeBlocked = value; }, restore() {
     for (const [key, descriptor] of previous) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
   } };
 }
@@ -66,7 +66,7 @@ test('withdrawal takes priority over a stale persisted opt-in if storage cannot 
 test('choice changes, cross-tab updates and storage clearing notify subscribers; unrelated storage does not', () => {
   const fixture = browserFixture(); let updates = 0;
   const unsubscribe = subscribeCookieConsent(() => updates++);
-  const storageEvent = (key: string | null) => Object.assign(new Event('storage'), { key });
+  const storageEvent = (key: string | null) => Object.assign(new Event('storage'), { key, storageArea: fixture.storage });
   try {
     setCookieConsent(false); assert.equal(updates, 1);
     fixture.browser.dispatchEvent(storageEvent('kilog_theme')); assert.equal(updates, 1);
@@ -75,6 +75,31 @@ test('choice changes, cross-tab updates and storage clearing notify subscribers;
     fixture.values.clear(); fixture.browser.dispatchEvent(storageEvent(null)); assert.equal(updates, 3); assert.equal(getCookieConsent(), null);
     unsubscribe(); setCookieConsent(false); assert.equal(updates, 3);
   } finally { unsubscribe(); fixture.restore(); }
+});
+
+test('unrelated sessionStorage clearing cannot restore stale opt-in after a readonly-storage withdrawal', () => {
+  const fixture = browserFixture(); let updates = 0;
+  setCookieConsent(true);
+  const unsubscribe = subscribeCookieConsent(() => updates++);
+  try {
+    fixture.blockWrites(true); setCookieConsent(false); assert.equal(updates, 1);
+    fixture.browser.dispatchEvent(Object.assign(new Event('storage'), { key: null, storageArea: {} }));
+    assert.equal(getCookieConsent(), false); assert.equal(updates, 1);
+    fixture.blockWrites(false); setCookieConsent(false);
+  } finally { unsubscribe(); fixture.restore(); }
+});
+
+test('returning focus refreshes an expired choice without emitting unchanged preference updates', () => {
+  const fixture = browserFixture(); const originalNow = Date.now;
+  let now = originalNow(); Date.now = () => now;
+  setCookieConsent(true); let updates = 0;
+  const unsubscribe = subscribeCookieConsent(() => updates++);
+  try {
+    fixture.browser.dispatchEvent(new Event('focus')); assert.equal(updates, 0);
+    now += COOKIE_CONSENT_MAX_AGE_MS;
+    fixture.browser.dispatchEvent(new Event('focus')); assert.equal(updates, 1); assert.equal(getCookieConsent(), null);
+    fixture.browser.dispatchEvent(new Event('pageshow')); assert.equal(updates, 1);
+  } finally { unsubscribe(); Date.now = originalNow; fixture.restore(); }
 });
 
 test('production analytics sends only after opt-in and discards queued events immediately on withdrawal', async () => {
@@ -100,7 +125,33 @@ test('production analytics sends only after opt-in and discards queued events im
     service!.track('search'); setCookieConsent(false); await flush(); assert.equal(bodies.length, 1);
     setCookieConsent(true); await flush(); assert.equal(bodies.length, 1);
     fixture.values.delete(COOKIE_CONSENT_KEY);
-    fixture.browser.dispatchEvent(Object.assign(new Event('storage'), { key: COOKIE_CONSENT_KEY }));
+    fixture.browser.dispatchEvent(Object.assign(new Event('storage'), { key: COOKIE_CONSENT_KEY, storageArea: fixture.storage }));
     service!.track('search'); await flush(); assert.equal(bodies.length, 1);
   } finally { service?.reset(); globalThis.fetch = originalFetch; fixture.restore(); }
+});
+
+test('consent expiring during App Check attestation prevents the final analytics HTTP request', async () => {
+  const fixture = browserFixture(); Object.assign(fixture.browser, { location: { hostname: 'web-dev.pp.ua' } });
+  const originalNow = Date.now; const originalFetch = globalThis.fetch;
+  let now = originalNow(); Date.now = () => now;
+  let release!: () => void; let started!: () => void;
+  const attesting = new Promise<void>(resolve => { started = resolve; });
+  const state = { attest: () => { started(); return new Promise(resolve => { release = () => resolve({}); }); } };
+  Object.assign(globalThis, { cookieExpiryFixture: state });
+  let requests = 0; globalThis.fetch = async () => { requests++; return new Response('{}', { status: 202 }); };
+  let service: { track: (type: string) => void; reset: () => void } | undefined;
+  try {
+    setCookieConsent(true);
+    const bundle = await build({ entryPoints: ['src/services/analyticsService.ts'], bundle: true, write: false, format: 'esm', platform: 'browser',
+      define: { 'import.meta.env': JSON.stringify({ PROD: true }) }, plugins: [{ name: 'deferred-consent-boundary', setup(builder) {
+        builder.onResolve({ filter: /(?:firebaseClient|authService)\.ts$/ }, args => ({ path: args.path, namespace: 'fixture' }));
+        builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path.includes('firebaseClient')
+          ? 'export const firebaseConfigured=true; export const firebaseAuth=null; export const getAppCheckHeaders=()=>globalThis.cookieExpiryFixture.attest();'
+          : "export const authService={isDemoSession:()=>false,getSessionIdentity:()=>''};" }));
+      } }] });
+    service = (await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`)).analyticsService;
+    service!.track('search'); fixture.browser.dispatchEvent(new Event('online')); await attesting;
+    now += COOKIE_CONSENT_MAX_AGE_MS; release(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests, 0);
+  } finally { service?.reset(); globalThis.fetch = originalFetch; Date.now = originalNow; Reflect.deleteProperty(globalThis, 'cookieExpiryFixture'); fixture.restore(); }
 });

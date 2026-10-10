@@ -191,6 +191,8 @@ const client = createAnalyticsClient({
     const headers = new Headers(options?.headers);
     const attestation = await getAppCheckHeaders(options?.signal ?? undefined);
     for (const [name, value] of Object.entries(attestation)) headers.set(name, value);
+    options?.signal?.throwIfAborted();
+    if (getCookieConsent() !== true) throw new Error('Analytics consent is absent or expired.');
     return fetch(url, { ...options, headers });
   },
 });
