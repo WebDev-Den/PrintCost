@@ -510,10 +510,10 @@ test('native D1 analytics writes fit the reduced intake cap while draining the f
     assert.equal(cleanupWrites, 16_258);
     assert.equal(checkWrites, 4000);
     const maximumAnalyticsWrites = freshWrites + checkWrites + cleanupWrites;
-    assert.ok(maximumAnalyticsWrites <= 58_765);
+    assert.ok(maximumAnalyticsWrites <= 42_764);
     assert.equal((await db.prepare("SELECT COUNT(*) AS count FROM events WHERE utc_day='2024-01-01'").first<{ count: number }>())!.count, 0, 'All4000 legacy events are drained despite the lower intake quota.');
     t.diagnostic(JSON.stringify({ dailyAcceptedEventLimit: 2000, dailyIngestAttemptLimit: 4000, ingestCheckWrites: checkWrites, dedupReads, exhaustedCheckReads, freshDistinctCompanyOfferWrites: freshWrites,
       historicalCleanupSourceEvents: 4000, maximumCleanupWrites: cleanupWrites, maximumCombinedAnalyticsWrites: maximumAnalyticsWrites,
-      conservativeAnalyticsWriteBound: 58765, note: 'Native trigger/index writes for2000 distinct company/offer events and252 canonical filter groups,4000 attempt markers, plus legacy4000 raw/metrics,4001 totals,4252 filters, expired budget markers and completed maintenance. Other API/report/Queue budgets must fit the remaining41235 writes.' }));
+      conservativeAnalyticsWriteBound: 42764, note: 'Measured fixture uses one Kyiv date:2000 distinct company/offer events and252 canonical filter groups,4000 attempt markers, plus bounded legacy cleanup. The safe UTC-day bound allows two Kyiv dates:22506 ingest +4000 checks +16258 cleanup =42764 writes; native DELETE costs one write per row. Other API/report/Queue budgets must fit the remaining57236 writes.' }));
   } finally { await mf.dispose(); }
 });
