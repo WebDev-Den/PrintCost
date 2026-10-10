@@ -55,12 +55,11 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
     if (!reserved.results.length || !result.results.length) exhaustedBudget();
     return result.meta.size_after || 0;
   }
-  async function budget(db: AnalyticsDatabase, role: 'admin' | 'manager') {
+  function budget(db: AnalyticsDatabase, role: 'admin' | 'manager') {
     const column = role === 'admin' ? 'admin_access_checks' : 'access_checks';
     const limit = role === 'admin' ? IMPORT_LIMITS.dailyAdminAccessChecks : IMPORT_LIMITS.dailyManagerAccessChecks;
-    const result = await db.prepare(`INSERT INTO import_daily(day,${column}) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET ${column}=${column}+1 WHERE ${column}<? RETURNING day`)
-      .bind(now().toISOString().slice(0, 10), limit).all();
-    if (!result.results.length) exhaustedBudget();
+    return db.prepare(`INSERT INTO import_daily(day,${column}) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET ${column}=${column}+1 WHERE ${column}<? RETURNING day`)
+      .bind(now().toISOString().slice(0, 10), limit);
   }
   async function authorize(request: Request, env: ImportEnv, jwtOnly = false) {
     const db = configured(env);
@@ -71,6 +70,7 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
     let authTime: number | undefined;
     let identity: VerifiedIdentity | undefined;
     let key: KeyRow | null;
+    let nextAllowed: number | null = null;
     if (bearer.startsWith('kg_api_')) {
       if (jwtOnly || !/^kg_api_[A-Za-z0-9_-]{43}$/.test(bearer)) throw new ApiError(401, 'Потрібна сесія кабінету.');
       key = await db.prepare('SELECT * FROM import_keys WHERE hash=?').bind(await digest(bearer)).first<KeyRow>();
@@ -80,7 +80,14 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
       identity = await verify(bearer, env.FIREBASE_PROJECT_ID, env.FIREBASE_WEB_API_KEY, true);
       uid = identity.uid;
       authTime = identity.authTime;
-      key = await db.prepare('SELECT * FROM import_keys WHERE uid=?').bind(uid).first<KeyRow>();
+      if (jwtOnly && request.method === 'GET') {
+        // This informational cooldown snapshot never replaces the atomic import trigger.
+        // Starting with the UID preserves cooldown metadata even when its key was revoked.
+        const row = await db.prepare('SELECT k.*,l.next_allowed FROM (SELECT ? AS uid) AS caller LEFT JOIN import_keys AS k ON k.uid=caller.uid LEFT JOIN import_limits AS l ON l.uid=caller.uid')
+          .bind(uid).first<KeyRow & { next_allowed: number | null }>();
+        key = row?.uid ? row : null;
+        nextAllowed = row?.next_allowed ?? null;
+      } else key = await db.prepare('SELECT * FROM import_keys WHERE uid=?').bind(uid).first<KeyRow>();
     }
     if (env.IMPORT_RATE_LIMIT && !(await env.IMPORT_RATE_LIMIT.limit({ key: 'uid:' + uid })).success) throw new ApiError(429, 'Забагато запитів для цього акаунта. Спробуйте через хвилину.');
     const databaseSize = await preliminaryBudget(db, uid, key);
@@ -89,8 +96,11 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
       : await firebase.scope(env.FIREBASE_PROJECT_ID, env.FIREBASE_IMPORT_SERVICE_ACCOUNT!, uid, db, false, identity);
     if (authTime !== undefined && authTime < scope.validSince) throw new ApiError(401, 'Сесію відкликано. Увійдіть знову.');
     if (authTime === undefined && key?.fingerprint !== scope.fingerprint) throw new ApiError(403, 'Права змінилися. Оновіть API-ключ у кабінеті.');
-    await budget(db, scope.role);
-    return { db, scope, key, authTime, databaseSize };
+    // Read-only imports reserve the same live-role quota atomically with their gated read.
+    if (jwtOnly || request.method !== 'GET') {
+      if (!(await budget(db, scope.role).all()).results.length) exhaustedBudget();
+    }
+    return { db, scope, key, authTime, databaseSize, nextAllowed };
   }
   async function dispatch(env: ImportEnv, id: string, cursor: number) {
     const db = configured(env);
@@ -137,13 +147,12 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         if (!keyPath && !jobId && url.pathname !== '/api/v1/imports') throw new ApiError(404, 'Endpoint не знайдено.');
         if (keyPath ? !['GET','POST','DELETE'].includes(request.method) : jobId ? request.method !== 'GET' : !['GET','POST'].includes(request.method)) throw new ApiError(405, 'Метод не підтримується.');
         if (request.method === 'POST' && url.pathname === '/api/v1/imports' && Number(request.headers.get('Content-Length')) > IMPORT_LIMITS.bytes) throw new ApiError(413, 'Завеликий запит.');
-        const { db, scope, key, authTime, databaseSize } = await authorize(request, env, keyPath);
+        const { db, scope, key, authTime, databaseSize, nextAllowed } = await authorize(request, env, keyPath);
         if (keyPath) {
           if (request.method === 'GET') {
             const metadata: ApiKeyMetadata | null = key ? { prefix: key.prefix, role: key.role, companyId: key.company_id,
               createdAt: iso(key.created_at), expiresAt: iso(key.expires_at), requiresRotation: key.fingerprint !== scope.fingerprint || key.expires_at <= seconds() } : null;
-            const next = await db.prepare('SELECT next_allowed FROM import_limits WHERE uid=?').bind(scope.uid).first<{ next_allowed: number }>();
-            return json({ key: metadata, role: scope.role, companyId: scope.companyId, nextImportAt: next ? iso(next.next_allowed) : null, limits: IMPORT_LIMITS });
+            return json({ key: metadata, role: scope.role, companyId: scope.companyId, nextImportAt: nextAllowed === null ? null : iso(nextAllowed), limits: IMPORT_LIMITS });
           }
           if (authTime === undefined || seconds() - authTime > 300) throw new ApiError(401, 'Для зміни ключа підтвердьте вхід ще раз.');
           if (request.method === 'POST' && !key && databaseSize >= 450 * 1024 * 1024) throw new ApiError(429, 'База імпорту очікує очищення. Спробуйте через годину.', 3600);
@@ -158,14 +167,19 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         }
         if (request.method === 'GET') {
           if (jobId) {
-            const job = await db.prepare('SELECT ' + summaryColumns + ',results,error FROM import_jobs WHERE id=? AND (?=\'admin\' OR owner_uid=?)').bind(jobId, scope.role, scope.uid).first<JobDetailRow>();
+            const [reserved, result] = await db.batch<JobDetailRow | { day: string }>([budget(db, scope.role),
+              db.prepare('SELECT ' + summaryColumns + ',results,error FROM import_jobs WHERE id=? AND (?=\'admin\' OR owner_uid=?) LIMIT CASE WHEN changes()=1 THEN 1 ELSE 0 END').bind(jobId, scope.role, scope.uid)]);
+            if (!reserved.results.length) exhaustedBudget();
+            const job = result.results[0] as JobDetailRow | undefined;
             if (!job) throw new ApiError(404, 'Імпорт не знайдено.');
             return json(summary(job, true));
           }
+          // LIMIT 0 stops before opening the job scan; a WHERE gate still scans on denial.
           const query = db.prepare('SELECT ' + summaryColumns + ',succeeded,failed FROM import_jobs ' +
-            (scope.role === 'admin' ? '' : 'WHERE owner_uid=? ') + 'ORDER BY created_at DESC LIMIT 30');
-          const jobs = await (scope.role === 'admin' ? query : query.bind(scope.uid)).all<JobSummaryRow>();
-          return json({ jobs: jobs.results.map(job => summary(job)) });
+            (scope.role === 'admin' ? '' : 'WHERE owner_uid=? ') + 'ORDER BY created_at DESC LIMIT CASE WHEN changes()=1 THEN 30 ELSE 0 END');
+          const [reserved, jobs] = await db.batch<JobSummaryRow | { day: string }>([budget(db, scope.role), scope.role === 'admin' ? query : query.bind(scope.uid)]);
+          if (!reserved.results.length) exhaustedBudget();
+          return json({ jobs: (jobs.results as JobSummaryRow[]).map(job => summary(job)) });
         }
         if (!key || key.expires_at <= seconds() || key.fingerprint !== scope.fingerprint) throw new ApiError(403, 'Спочатку створіть актуальний API-ключ у кабінеті.');
         if (!/^application\/json(?:\s*;.*)?$/i.test(request.headers.get('Content-Type') || '')) throw new ApiError(415, 'Потрібен Content-Type: application/json.');

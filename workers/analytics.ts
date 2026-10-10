@@ -301,6 +301,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     const cacheKey = `${env.FIREBASE_PROJECT_ID}/${query.companyId}/${query.from}/${query.to}`;
     const cached = reportCache.get(cacheKey);
     let serialized = cached && cached.expires > date.getTime() ? cached.value : undefined;
+    let acceptedBudget: number | undefined;
     if (!serialized) {
       const reservation = await database.prepare('UPDATE analytics_report_budget SET reserved_reads=reserved_reads+? WHERE day=? AND reserved_reads<=? RETURNING day')
         .bind(REPORT_READ_RESERVATION, utcDay, DAILY_REPORT_READ_LIMIT - REPORT_READ_RESERVATION).all();
@@ -325,9 +326,16 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
           SELECT sized.count AS scan_count,grouped.* FROM sized LEFT JOIN grouped ON 1 ORDER BY grouped.score DESC,grouped.material_type,grouped.packaging,grouped.stock,grouped.has_search`).bind(scope, query.from, query.to),
       ]);
       // Missing D1 usage metadata retains the full reservation; failed queries do too.
+      const finalization: Statement[] = [];
       if (results.length === 3 && results.every(result => result.success && Number.isSafeInteger(result.meta.rows_read) && result.meta.rows_read! >= 0)) {
         const refund = Math.max(0, REPORT_READ_RESERVATION - results.reduce((sum, result) => sum + result.meta.rows_read!, 0));
-        if (refund) await database.prepare('UPDATE analytics_report_budget SET reserved_reads=reserved_reads-? WHERE day=? AND reserved_reads>=?').bind(refund, utcDay, refund).all();
+        if (refund) finalization.push(database.prepare('UPDATE analytics_report_budget SET reserved_reads=reserved_reads-? WHERE day=? AND reserved_reads>=?').bind(refund, utcDay, refund));
+      }
+      if (role === 'admin') finalization.push(database.prepare('SELECT accepted FROM day_budget WHERE day=?').bind(utcDay));
+      if (finalization.length) {
+        // Refund and the administrator's fresh budget share one D1 response.
+        const finalized = await database.batch(finalization);
+        if (role === 'admin') acceptedBudget = Number(finalized[finalized.length - 1].results[0]?.accepted || 0);
       }
       const offersScanLimited = Number(results[1].results[0]?.scan_count || 0) > 20000;
       const offers = results[1].results.filter(row => typeof row.offer_id === 'string');
@@ -346,8 +354,11 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
         reportCache.set(cacheKey, { expires: date.getTime() + 60000, value: serialized });
       }
     }
-    const budget = role === 'admin' ? await database.prepare('SELECT accepted FROM day_budget WHERE day=?').bind(utcDay).first<{ accepted: number }>() : null;
-    const currentBudget = { day: utcDay, accepted: role === 'admin' ? Number(budget?.accepted || 0) : null, limit: DAILY_EVENT_LIMIT };
+    if (role === 'admin' && acceptedBudget === undefined) {
+      const budget = await database.prepare('SELECT accepted FROM day_budget WHERE day=?').bind(utcDay).first<{ accepted: number }>();
+      acceptedBudget = Number(budget?.accepted || 0);
+    }
+    const currentBudget = { day: utcDay, accepted: role === 'admin' ? acceptedBudget! : null, limit: DAILY_EVENT_LIMIT };
     return new Response(`${serialized.slice(0, -1)},"budget":${JSON.stringify(currentBudget)}}`, {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Vary': 'Origin' },
     });

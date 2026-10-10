@@ -294,6 +294,37 @@ test('only complete valid D1 read metadata refunds report reservations', async (
   failed.sqlite.close();
 });
 
+test('report finalizes read refunds and private admin budget in one batch while cached budgets stay fresh', async t => {
+  const f = await fixture(); t.after(() => f.sqlite.close());
+  assert.equal((await f.post([event({ type: 'details', offerId: 'offer-a' })])).status, 202);
+  const batches: string[][] = [];
+  f.env.ANALYTICS_DB = { ...f.binding, batch: async <T>(statements: ReturnType<AnalyticsDatabase['prepare']>[]) => {
+    const before = f.executions.length;
+    const results = await f.binding.batch<T>(statements);
+    const sql = f.executions.slice(before);
+    batches.push(sql);
+    return sql[0].startsWith('SELECT day,') ? results.map(result => ({ ...result, meta: { ...result.meta, rows_read: 7 } })) : results;
+  } };
+  const cold = await f.report('company-a', 'admin');
+  assert.equal(cold.status, 200);
+  assert.equal((await cold.json()).budget.accepted, 1);
+  assert.deepEqual(batches.map(batch => batch.length), [3, 2]);
+  assert.match(batches[1][0], /^UPDATE analytics_report_budget SET reserved_reads=reserved_reads-/);
+  assert.match(batches[1][1], /^SELECT accepted FROM day_budget/);
+  assert.equal(f.sqlite.prepare('SELECT reserved_reads FROM analytics_report_budget').get()!.reserved_reads, 21);
+
+  assert.equal((await (await f.report()).json()).budget.accepted, null, 'Cached company data never exposes an administrator quota to a manager.');
+  f.sqlite.prepare('UPDATE day_budget SET accepted=9').run();
+  assert.equal((await (await f.report('company-a', 'admin')).json()).budget.accepted, 9, 'Cached reports still query the current private budget.');
+  assert.equal(batches.length, 2, 'Cached reports do not aggregate, reserve or refund a second time.');
+
+  const manager = await f.report('company-a', 'manager', 'from=2026-10-08&to=2026-10-08');
+  assert.equal(manager.status, 200); assert.equal((await manager.json()).budget.accepted, null);
+  assert.deepEqual(batches.map(batch => batch.length), [3, 2, 3, 1]);
+  assert.match(batches[3][0], /^UPDATE analytics_report_budget SET reserved_reads=reserved_reads-/);
+  assert.equal(f.sqlite.prepare('SELECT reserved_reads FROM analytics_report_budget').get()!.reserved_reads, 42);
+});
+
 test('analytics storage high-water rejects ingestion before Firestore and writes', async () => {
   const f = await fixture();
   f.env.ANALYTICS_DB = { ...f.binding, prepare: sql => {

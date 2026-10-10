@@ -10,6 +10,39 @@ import { encodeFields } from '../workers/importFirebase.ts';
 import { decodeFields } from '../workers/firebase.ts';
 import { createImportApi } from '../workers/importApi.ts';
 
+test('native Free capacity migration preserves prior usage and admits one concurrent final item', { timeout: 30_000 }, async t => {
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
+    script: 'export default {fetch(){return new Response("fixture")}}', d1Databases: ['CAPACITY_DB'] }));
+  t.after(() => mf.dispose());
+  const db = await mf.getD1Database('CAPACITY_DB');
+  const migrate = async (file: string) => {
+    const migration = await readFile('migrations/' + file, 'utf8');
+    for (const statement of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER|UPDATE|DROP)\b)/i)) await db.prepare(statement).run();
+  };
+  for (const file of ['0001_analytics.sql', '0002_import_api.sql', '0003_import_access_limits.sql', '0004_import_result_counts.sql',
+    '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql', '0009_import_cleanup_budget.sql']) await migrate(file);
+  const time = Date.parse('2026-10-10T12:00:00Z') / 1000, nextDay = time + 86400;
+  for (const uid of ['capacity-a', 'capacity-b']) await db.prepare("INSERT INTO import_keys(uid,hash,prefix,role,fingerprint,valid_since,created_at,expires_at) VALUES(?,?,?,'admin','fixture',0,?,?)")
+    .bind(uid, uid, uid, time, time + 3 * 86400).run();
+  const insert = (id: string, uid: string, created: number, status = 'queued') => db.prepare(`INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,status,total,interval_seconds,created_at,updated_at,expires_at,payload)
+    SELECT ?,uid,hash,fingerprint,?,'raw:fixture',?,1,300,?,?,?,'{}' FROM import_keys WHERE uid=?`)
+    .bind(id, id, status, created, created, created + 86400, uid).run();
+  await db.prepare("INSERT INTO import_daily(day,items) VALUES('2026-10-10',2200)").run();
+  await insert('legacy-capacity', 'capacity-a', time, 'completed');
+  await migrate('0010_import_free_capacity.sql');
+  const prior = await db.prepare("SELECT items,jobs FROM import_daily WHERE day='2026-10-10'").first();
+  assert.deepEqual(prior, { items: 2201, jobs: 1 }, 'Applying the smaller cap never rewrites accepted prior usage.');
+  const legacy = await db.prepare("SELECT status,payload FROM import_jobs WHERE id='legacy-capacity'").first();
+  assert.deepEqual(legacy, { status: 'completed', payload: '{}' }, 'Accepted jobs remain unchanged.');
+  await assert.rejects(insert('over-new-cap', 'capacity-b', time + 300), /IMPORT_BUDGET/);
+  await db.prepare("INSERT INTO import_daily(day,items) VALUES('2026-10-11',?)").bind(IMPORT_LIMITS.dailyItems - 1).run();
+  const results = await Promise.allSettled([insert('final-capacity-a', 'capacity-a', nextDay), insert('final-capacity-b', 'capacity-b', nextDay)]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter(result => result.status === 'rejected' && /IMPORT_BUDGET/.test(String(result.reason))).length, 1);
+  assert.deepEqual(await db.prepare("SELECT items,jobs FROM import_daily WHERE day='2026-10-11'").first(), { items: IMPORT_LIMITS.dailyItems, jobs: 1 });
+  assert.deepEqual(await db.prepare("SELECT items,jobs FROM import_daily WHERE day='2026-10-10'").first(), prior, 'UTC rollover preserves previous reservations.');
+});
+
 test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and retry recovery', { timeout: 120_000 }, async t => {
   const project = 'demo-import-api-' + randomUUID().slice(0, 8);
   const firestoreOrigin = 'http://' + (process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080');
@@ -99,7 +132,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   t.after(async () => { await mf.dispose(); await fetch(firestoreOrigin + '/emulator/v1/projects/' + project + '/databases/(default)/documents', { method: 'DELETE' }); });
   const db = await mf.getD1Database('ANALYTICS_DB');
   for (const file of ['0001_analytics.sql', '0002_import_api.sql', '0003_import_access_limits.sql', '0004_import_result_counts.sql',
-    '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql', '0009_import_cleanup_budget.sql']) {
+    '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql', '0009_import_cleanup_budget.sql', '0010_import_free_capacity.sql']) {
     const migration = await readFile('migrations/' + file, 'utf8');
     for (const statement of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER|UPDATE|DROP)\b)/i)) await db.prepare(statement).run();
   }
@@ -152,8 +185,14 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     assert.equal(await counters(), beforeCounters, 'No D1 UID quota or privileged budget is touched before identity verification.');
     assert.equal(jwksRequests, 0);
   });
+  const noKeyCooldown = Math.floor(Date.now() / 1000) + 3600;
+  await db.prepare('INSERT INTO import_limits(uid,next_allowed) VALUES(?,?)').bind('admin', noKeyCooldown).run();
   const warming = await request('api-key', adminJwt);
   assert.equal(warming.status, 200);
+  const noKeyMetadata = await warming.json() as any;
+  assert.equal(noKeyMetadata.key, null);
+  assert.equal(noKeyMetadata.nextImportAt, new Date(noKeyCooldown * 1000).toISOString(), 'Revoking a key never removes its informational cooldown.');
+  await db.prepare('DELETE FROM import_limits WHERE uid=?').bind('admin').run();
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM firebase_service_tokens').first<{ n: number }>())?.n, 0,
     'A cold browser scope works with an empty service credential broker.');
   assert.equal(oauthRequests, 0, 'Browser scope uses its exact ID token without service OAuth.');
@@ -251,6 +290,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   assert.ok(Number(parallel[0].headers.get('Retry-After')) > 3000);
   const cooldown = await db.prepare('SELECT next_allowed FROM import_limits WHERE uid=?').bind('manager').first<any>();
   assert.equal(cooldown.next_allowed - Date.parse(job.createdAt) / 1000, IMPORT_LIMITS.managerInterval);
+  assert.equal((await (await request('api-key', managerJwt)).json() as any).nextImportAt, new Date(cooldown.next_allowed * 1000).toISOString());
   const oldKey = managerKey;
   managerKey = (await (await request('api-key', managerJwt, 'POST')).json() as any).key;
   assert.equal((await request('imports', oldKey)).status, 401);
@@ -293,31 +333,39 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const environment = { FIREBASE_PROJECT_ID: project, FIREBASE_WEB_API_KEY: webApiKey, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
     IMPORT_QUEUE: { send: async () => { throw new Error('Fixture queue unavailable'); } } };
   const httpJobRows: Record<string, unknown>[] = [];
+  const httpJobQueries = new WeakSet<object>();
+  const captureHttpJobRows = (rows: Record<string, unknown>[]) => {
+    for (const row of rows) {
+      assert.ok(!Object.hasOwn(row, 'payload') && !Object.hasOwn(row, 'key_hash') && !Object.hasOwn(row, 'fingerprint'),
+        'HTTP job reads/INSERT RETURNING must not transfer payloads or private authorization fields from D1.');
+      httpJobRows.push(row);
+    }
+  };
   let databaseSize = 0;
   const projectedDb = new Proxy(db, { get(target, property) {
     if (property === 'batch') return async (statements: Parameters<typeof db.batch>[0]) => {
       const results = await target.batch(statements);
       if (databaseSize) for (const result of results) result.meta.size_after = databaseSize;
+      statements.forEach((statement: object, index: number) => { if (httpJobQueries.has(statement)) captureHttpJobRows(results[index].results); });
       return results;
     };
     if (property === 'prepare') return (sql: string) => {
       const statement = target.prepare(sql);
       if (!sql.includes('import_jobs')) return statement;
-      const watch = (prepared: typeof statement): typeof statement => new Proxy(prepared, { get(current, method) {
+      const watch = (prepared: typeof statement): typeof statement => {
+        const wrapped = new Proxy(prepared, { get(current, method) {
         if (method === 'bind') return (...values: Parameters<typeof statement.bind>) => watch(current.bind(...values));
         if (method === 'first' || method === 'all') return async () => {
           const result = method === 'first' ? await current.first() : await current.all();
           const rows = method === 'first' ? result ? [result] : [] : (result as { results: Record<string, unknown>[] }).results;
-          for (const row of rows as Record<string, unknown>[]) {
-            assert.ok(!Object.hasOwn(row, 'payload') && !Object.hasOwn(row, 'key_hash') && !Object.hasOwn(row, 'fingerprint'),
-              'HTTP job reads/INSERT RETURNING must not transfer payloads or private authorization fields from D1.');
-            httpJobRows.push(row);
-          }
+          captureHttpJobRows(rows as Record<string, unknown>[]);
           return result;
         };
         const value = Reflect.get(current, method, current);
         return typeof value === 'function' ? value.bind(current) : value;
-      } });
+        } });
+        httpJobQueries.add(wrapped); return wrapped;
+      };
       return watch(statement);
     };
     const value = Reflect.get(target, property, target);
@@ -562,12 +610,27 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const batches: number[] = [];
   let beforeBatch: ((index: number) => Promise<void>) | undefined;
   let historyRowsRead = 0;
+  const historyQueries = new WeakSet<object>();
+  const detailQueries = new WeakSet<object>();
   const instrumented = new Proxy(db, { get(target, property) {
-    if (property === 'batch') return async (statements: Parameters<typeof db.batch>[0]) => { batches.push(statements.length); await beforeBatch?.(batches.length); return target.batch(statements); };
+    if (property === 'batch') return async (statements: Parameters<typeof db.batch>[0]) => {
+      batches.push(statements.length); await beforeBatch?.(batches.length);
+      const results = await target.batch(statements);
+      const index = statements.findIndex((statement: object) => historyQueries.has(statement) || detailQueries.has(statement));
+      if (index !== -1) {
+        historyRowsRead = results[index].meta.rows_read;
+        assert.ok(results[index].results.every((row: Record<string, unknown>) => !Object.hasOwn(row, 'payload') && (detailQueries.has(statements[index]) || !Object.hasOwn(row, 'results'))),
+          'D1 transfers summaries without private result arrays or payloads.');
+      }
+      return results;
+    };
     if (property === 'prepare') return (sql: string) => {
       const statement = target.prepare(sql);
-      if (!sql.startsWith('SELECT id,status,total,cursor,created_at,updated_at,succeeded,failed FROM import_jobs ')) return statement;
-      const watch = (prepared: typeof statement): typeof statement => new Proxy(prepared, { get(current, method) {
+      const history = sql.startsWith('SELECT id,status,total,cursor,created_at,updated_at,succeeded,failed FROM import_jobs ');
+      const detail = sql.startsWith('SELECT id,status,total,cursor,created_at,updated_at,results,error FROM import_jobs ');
+      if (!history && !detail) return statement;
+      const watch = (prepared: typeof statement): typeof statement => {
+        const wrapped = new Proxy(prepared, { get(current, method) {
         if (method === 'bind') return (...values: Parameters<typeof statement.bind>) => watch(current.bind(...values));
         if (method === 'all') return async () => {
           const result = await current.all(); historyRowsRead = result.meta.rows_read;
@@ -576,7 +639,9 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
         };
         const value = Reflect.get(current, method, current);
         return typeof value === 'function' ? value.bind(current) : value;
-      } });
+        } });
+        (history ? historyQueries : detailQueries).add(wrapped); return wrapped;
+      };
       return watch(statement);
     };
     const value = Reflect.get(target, property, target);
@@ -625,7 +690,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     batches.length = 0;
     const captured = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { headers: { Authorization: 'Bearer ' + managerKey } }), observed);
     assert.equal(captured.status, 200); assert.deepEqual(await captured.json(), { jobs: expected });
-    assert.deepEqual(batches, [2], 'Known-key preflight reserves the shared budget before its conditional UID write in one batch.');
+    assert.deepEqual(batches, [2, 2], 'Preflight and the final fresh-role quota plus gated summary read use two batches.');
     t.diagnostic(JSON.stringify({ maximumHistoryJobs: 30, resultRecords: 3000, d1RowsRead: historyRowsRead }));
     assert.ok(historyRowsRead > 0 && historyRowsRead <= 90,
       'D1 history reads: ' + historyRowsRead + '; summaries must read only 30 jobs and bounded index rows, independent of the 3000 results.');
@@ -636,6 +701,31 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     batches.length = 0;
     const denied = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/api-key', { headers: { Authorization: 'Bearer ' + userJwt, 'X-Firebase-AppCheck': appCheckToken } }), observed);
     assert.equal(denied.status, 403); assert.deepEqual(batches, [2], 'An unknown UID uses only the discovery reserve and conditional UID claim; no privileged reserve is consumed.');
+  });
+  await t.test('gated history/detail batches read no jobs if the fresh-role quota is exhausted after preflight', async () => {
+    for (const [token, column, limit] of [[managerKey, 'access_checks', IMPORT_LIMITS.dailyManagerAccessChecks],
+      [restoredAdminKey, 'admin_access_checks', IMPORT_LIMITS.dailyAdminAccessChecks]] as const) {
+      for (const path of ['imports', 'imports/' + job.id]) {
+        await db.prepare('UPDATE import_daily SET access_checks=0,admin_access_checks=0,manager_preflight_checks=0,admin_preflight_checks=0 WHERE day=?').bind(day).run();
+        if (path.includes('/')) {
+          const allowed = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/' + path, { headers: { Authorization: 'Bearer ' + token } }), observed);
+          assert.equal(allowed.status, 200);
+          assert.ok(historyRowsRead > 0 && historyRowsRead <= 2, 'Admitted detail uses only its primary-key index and single job row.');
+        }
+        batches.length = 0; historyRowsRead = -1;
+        beforeBatch = async index => {
+          if (index === 2) await db.prepare('UPDATE import_daily SET ' + column + '=? WHERE day=?').bind(limit, day).run();
+        };
+        try {
+          const denied = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/' + path, { headers: { Authorization: 'Bearer ' + token } }), observed);
+          assert.equal(denied.status, 429); assert.ok(Number(denied.headers.get('Retry-After')) > 0);
+          assert.deepEqual(batches, [2, 2]);
+          assert.equal(historyRowsRead, 0, 'A raced exhausted reserve skips every job/index row.');
+          assert.equal((await db.prepare('SELECT ' + column + ' AS n FROM import_daily WHERE day=?').bind(day).first<{ n: number }>())?.n, limit);
+        } finally { beforeBatch = undefined; }
+      }
+    }
+    await db.prepare('UPDATE import_daily SET access_checks=0,admin_access_checks=0 WHERE day=?').bind(day).run();
   });
   await t.test('scheduled batches expire before dispatch, bound recovery and retain live leases and current budgets', async () => {
     await db.prepare('UPDATE import_daily SET dispatches=0,cleanup_claimed=0').run();

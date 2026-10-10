@@ -11,7 +11,7 @@ import type { AnalyticsDatabase } from '../workers/analytics.ts';
 function fixture() {
   const sqlite = new DatabaseSync(':memory:'), queries: string[] = [], sent: unknown[] = [];
   for (const file of ['0001_analytics.sql', '0002_import_api.sql', '0003_import_access_limits.sql', '0004_import_result_counts.sql',
-    '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql', '0009_import_cleanup_budget.sql']) {
+    '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql', '0009_import_cleanup_budget.sql', '0010_import_free_capacity.sql']) {
     sqlite.exec(readFileSync(new URL('../migrations/' + file, import.meta.url), 'utf8'));
   }
   const database: AnalyticsDatabase = {
@@ -38,8 +38,11 @@ test('known crons reserve bounded maintenance messages; cleanup and unknown cron
   assert.equal(f.queries.length, 2);
   assert.ok(f.queries.every(sql => sql.startsWith('INSERT INTO import_daily(day,maintenance_dispatches)')));
   assert.equal(f.sqlite.prepare('SELECT maintenance_dispatches FROM import_daily').get()!.maintenance_dispatches, 2);
-  assert.ok((IMPORT_LIMITS.dailyQueueMessages + IMPORT_LIMITS.dailyMaintenanceMessages) * 11 <= 10000,
-    'The Free reserve covers writes, four deliveries/deletion and prior 24-hour carryover.');
+  const queueBudget = IMPORT_LIMITS.dailyQueueMessages + IMPORT_LIMITS.dailyMaintenanceMessages;
+  assert.ok(2 * queueBudget + 2 * queueBudget * (IMPORT_LIMITS.retries + 2) <= 9600,
+    'The Free model reserves current/prior-day writes plus four deliveries/deletion, including writes delayed across a UTC boundary.');
+  const ordinaryImports = Math.floor((IMPORT_LIMITS.dailyItems + (IMPORT_LIMITS.batchItems - 1) * IMPORT_LIMITS.dailyJobs) / IMPORT_LIMITS.batchItems);
+  assert.ok(ordinaryImports <= IMPORT_LIMITS.dailyQueueMessages - 20, 'Maximum daily intake leaves at least20 import sends for recovery.');
 });
 
 test('maintenance producer reserves one concurrent last slot and starts a fresh UTC day without erasing budgets', async t => {
