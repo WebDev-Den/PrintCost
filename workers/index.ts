@@ -11,6 +11,9 @@ export default {
   fetch(request: Request, env: AnalyticsEnv & TurnstileEnv & ImportEnv, context: Parameters<typeof analytics.fetch>[2]): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path.startsWith('/api/v1/')) return imports.fetch(request, env);
+    if (path === '/' || path === '/filaments' || path.startsWith('/products/') || path.startsWith('/catalog/') || path.startsWith('/api/catalog/') || path === '/sitemap.xml' || path === '/robots.txt') {
+      return import('./catalogSeo.ts').then(module => module.default.fetch(request, env, context));
+    }
     return path === '/api/turnstile/verify'
       ? turnstile.fetch(request, env)
       : analytics.fetch(request, env, context);

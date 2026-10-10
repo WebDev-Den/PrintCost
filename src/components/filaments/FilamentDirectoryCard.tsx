@@ -21,6 +21,7 @@ import { formatUah } from '../../domain/formatters.ts';
 import { Button } from '../common/Button.tsx';
 import { FilamentColorVisual } from './FilamentColorVisual.tsx';
 import { createImpressionGate } from '../../services/analyticsService.ts';
+import { catalogProductPath } from '../../domain/catalogSeo.ts';
 
 export interface FilamentDirectoryCardProps {
   item: ConcreteFilamentSku;
@@ -34,6 +35,7 @@ export interface FilamentDirectoryCardProps {
   onOpenDetails: (item: ConcreteFilamentSku) => void;
   onImpression?: (item: ConcreteFilamentSku) => void;
   onSellerClick?: (item: ConcreteFilamentSku) => void;
+  productPageAvailable?: boolean;
 }
 
 export const FilamentDirectoryCard: React.FC<FilamentDirectoryCardProps> = ({
@@ -47,6 +49,7 @@ export const FilamentDirectoryCard: React.FC<FilamentDirectoryCardProps> = ({
   onOpenDetails,
   onImpression,
   onSellerClick,
+  productPageAvailable = true,
 }) => {
   const isRefill = item.packagingType === 'refill';
   const cardRef = useRef<HTMLDivElement>(null);
@@ -254,7 +257,10 @@ export const FilamentDirectoryCard: React.FC<FilamentDirectoryCardProps> = ({
         </Button>
       </div>
 
-      <a href={item.storeUrl} target="_blank" rel="noopener noreferrer" onClick={event => { event.stopPropagation(); onSellerClick?.(item); }} className="mt-3 inline-flex items-center justify-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 underline"><span>Перейти до продавця</span><ExternalLink className="w-3 h-3" /></a>
+      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-emerald-700 dark:text-emerald-400" onClick={event => event.stopPropagation()}>
+        {productPageAvailable && <a href={catalogProductPath(item)} className="underline">Сторінка товару</a>}
+        <a href={item.storeUrl} target="_blank" rel="noopener noreferrer" onClick={() => onSellerClick?.(item)} className="inline-flex items-center gap-1 underline"><span>До продавця</span><ExternalLink className="w-3 h-3" /></a>
+      </div>
     </div>
   );
 };

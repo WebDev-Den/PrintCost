@@ -168,6 +168,10 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
     }
   }
   return {
+    async catalogReader(project: string, secret: string, database: AnalyticsDatabase) {
+      const c = await client(project, secret, database, false);
+      return { call: c.call, name: c.name };
+    },
     async refreshCredentials(project: string, secret: string, database: AnalyticsDatabase) {
       await token(project, secret, database, true);
     },

@@ -106,12 +106,12 @@ test('production Turnstile Worker with isolated Siteverify and native rate limit
 
   await t.test('unrelated assets remain delegated and API routes are not SPA fallbacks', async () => {
     const before = siteverifyCalls;
-    for (const path of ['/', '/auth/login', '/auth/register', '/app/calculator']) {
+    for (const path of ['/assets/app.js', '/auth/login', '/auth/register', '/app/calculator']) {
       const response = await mf.dispatchFetch(`${ORIGIN}${path}`);
       assert.equal(response.status, 200);
       assert.equal(await response.text(), 'fixture SPA');
     }
-    assert.deepEqual(assets, ['/', '/auth/login', '/auth/register', '/app/calculator']);
+    assert.deepEqual(assets, ['/assets/app.js', '/auth/login', '/auth/register', '/app/calculator']);
     await reject(await mf.dispatchFetch(`${ORIGIN}/api/turnstile/verify`), 405);
     await reject(await mf.dispatchFetch(`${ORIGIN}/api/turnstile/unknown`), 404);
     assert.equal(siteverifyCalls, before);

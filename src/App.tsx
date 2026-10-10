@@ -6,6 +6,7 @@ import { AppDataProvider } from './context/AppDataContext.tsx';
 // Layout
 import { AppLayout } from './components/layout/AppLayout.tsx';
 import { CookieConsent } from './components/common/CookieConsent.tsx';
+import { RouteMetadata } from './components/common/RouteMetadata.tsx';
 
 // Public pages
 import { LandingPage } from './pages/public/LandingPage.tsx';
@@ -34,6 +35,7 @@ const TemplatesPage = lazy(() => import('./pages/app/TemplatesPage.tsx').then((m
 const AnalyticsPage = lazy(() => import('./pages/app/AnalyticsPage.tsx').then((m) => ({ default: m.AnalyticsPage })));
 const ApiPage = lazy(() => import('./pages/app/ApiPage.tsx').then(m => ({ default: m.ApiPage })));
 const PrivacyPage = lazy(() => import('./pages/public/PrivacyPage.tsx').then((m) => ({ default: m.PrivacyPage })));
+const ProductPage = lazy(() => import('./pages/public/ProductPage.tsx').then(m => ({ default: m.ProductPage })));
 const AccountDeletionPage = lazy(() => import('./pages/public/AccountDeletionPage.tsx').then((m) => ({ default: m.AccountDeletionPage })));
 
 // Fallback pages
@@ -42,12 +44,15 @@ import { NotFoundPage } from './pages/NotFoundPage.tsx';
 export default function App() {
   return (
     <BrowserRouter>
+      <RouteMetadata />
       <AuthProvider>
         <AppDataProvider>
           <Suspense fallback={<div role="status" className="p-12 text-center">Завантаження…</div>}><Routes>
             {/* Public Routes */}
             <Route path="/" element={<LandingPage />} />
             <Route path="/filaments" element={<FilamentsDirectoryPage />} />
+            <Route path="/products/offer/:id" element={<ProductPage />} />
+            <Route path="/products/filament/:id/:variant" element={<ProductPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/auth/login" element={<LoginPage />} />
             <Route path="/auth/register" element={<RegisterPage />} />

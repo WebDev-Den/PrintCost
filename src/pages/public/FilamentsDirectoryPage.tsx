@@ -908,6 +908,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
                   <FilamentDirectoryCard
                     key={sku.id}
                     item={sku}
+                    productPageAvailable={!isDemoSession}
                     manufacturer={manufacturerMap.get(sku.manufacturerId)}
                     isLiked={likedIds.includes(sku.id) || likedIds.includes(sku.parentFilamentId)}
                     onToggleLike={handleToggleLike}

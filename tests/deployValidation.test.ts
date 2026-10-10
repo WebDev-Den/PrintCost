@@ -5,7 +5,7 @@ import { validateDeployment } from '../scripts/deploy-validation.ts';
 
 const sitekey = '0x4AAAAAAFR_dav3sbi3wfEO';
 const config = { name: 'kilo-g', vars: { FIREBASE_PROJECT_ID: 'kilo-g', TURNSTILE_HOSTNAMES: 'web-dev.pp.ua,kilo-g.web-developer-den.workers.dev' },
-  secrets: { required: ['TURNSTILE_SECRET_KEY', 'FIREBASE_IMPORT_SERVICE_ACCOUNT'] }, assets: { binding: 'ASSETS', run_worker_first: ['/api/*'] },
+  secrets: { required: ['TURNSTILE_SECRET_KEY', 'FIREBASE_IMPORT_SERVICE_ACCOUNT'] }, assets: { binding: 'ASSETS', run_worker_first: ['/api/*', '/', '/filaments', '/products/*', '/catalog/*', '/sitemap.xml', '/robots.txt'] },
   queues: { producers: [{ binding: 'IMPORT_QUEUE', queue: 'kilog-imports' }], consumers: [{ queue: 'kilog-imports', max_concurrency: 1, max_batch_size: 1, max_retries: 3 }] },
   triggers: { crons: ['*/5 * * * *'] },
   d1_databases: [{ binding: 'ANALYTICS_DB', database_id: 'a2bcb470-785c-44f6-9b77-5dbd9702a9ca' }],
