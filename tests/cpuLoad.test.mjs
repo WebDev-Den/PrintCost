@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+import { createPlan, runPlan } from '../scripts/cpu-load-test.mjs';
+
+test('bounded load harness caps concurrency, redacts credentials and stops on authorization failure', async () => {
+  const publicPlan = createPlan();
+  assert.equal(publicPlan.phases.reduce((total, { requests }) => total + requests.length, 0), 48);
+  assert.equal(publicPlan.skipped.length, 2);
+  const payloadPath = 'output/cpu-load-selfcheck-payload.json', proofPath = 'output/cpu-load-selfcheck-fixture.json';
+  const value = { offers: Array.from({ length: 100 }, (_, index) => ({ externalId: 'fixture-' + index, description: 'x'.repeat(1000) })) };
+  const serialized = JSON.stringify(value), bytes = 128 * 1024;
+  assert.ok(Buffer.byteLength(serialized) < bytes);
+  const body = serialized + ' '.repeat(bytes - Buffer.byteLength(serialized));
+  const jobId = '11111111-1111-4111-a111-111111111111';
+  fs.mkdirSync('output', { recursive: true });
+  fs.writeFileSync(payloadPath, body);
+  fs.writeFileSync(proofPath, JSON.stringify({ jobId, idempotencyKey: 'selfcheck-known-existing-job', payloadSha256: createHash('sha256').update(body).digest('hex') }));
+  try {
+    const plan = createPlan({ firebaseIdToken: 'selfcheck-session-secret', appCheckToken: 'selfcheck-attestation-secret',
+      apiKey: 'selfcheck-api-secret', boundary: { payloadPath, proofPath } });
+    assert.equal(plan.phases.reduce((total, { requests }) => total + requests.length, 0), 70);
+    let inFlight = 0, peak = 0;
+    const fetcher = async (url, request) => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise(resolve => setTimeout(resolve, 1));
+      const path = new URL(url).pathname;
+      let status = !path.startsWith('/api/') ? 200 : path === '/api/analytics/events' ? 400 : request.headers?.Authorization?.includes('selfcheck') ? 200 : 401;
+      if (path === '/api/v1/imports' && request.method === 'POST') status = Buffer.byteLength(request.body) > bytes ? 413 : JSON.parse(request.body).offers.length > 100 ? 422 : 202;
+      --inFlight;
+      return Response.json({ id: jobId }, { status, headers: { 'CF-Ray': 'abcdef1234567890-WAW', 'Cache-Control': path.startsWith('/api/') ? 'no-store' : 'public' } });
+    };
+    const result = await runPlan(plan, fetcher, async () => {});
+    assert.equal(result.passed, true); assert.equal(result.requests.length, 70); assert.ok(peak <= 4);
+    const proof = JSON.stringify(result);
+    assert.ok(!/selfcheck-(?:session|attestation|api)-secret/.test(proof), 'Credentials must not leak into proofs.');
+    assert.ok(result.requests.every(({ rayId }) => rayId === 'abcdef1234567890'));
+    await assert.rejects(runPlan({ ...plan, host: 'https://other.example.com' }, fetcher));
+    await assert.rejects(runPlan({ ...plan, phases: [{ concurrency: 5, requests: [{}] }] }, fetcher));
+    await assert.rejects(runPlan({ ...plan, phases: [{ concurrency: 4, requests: Array(121).fill({}) }] }, fetcher));
+    const stopped = await runPlan(plan, async (url, request) => new URL(url).pathname === '/api/v1/api-key' && request.headers?.Authorization?.includes('selfcheck') ? new Response('{}', { status: 403 }) : fetcher(url, request), async () => {});
+    assert.equal(stopped.passed, false); assert.ok(stopped.aborted); assert.ok(stopped.requests.length < 70);
+  } finally {
+    fs.unlinkSync(payloadPath); fs.unlinkSync(proofPath);
+  }
+});
+
+test('CLI creates an output directory in a clean checkout without sending requests', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kilog-cpu-load-'));
+  const output = path.join(directory, 'output', 'cpu-load-plan.json');
+  try {
+    const run = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/cpu-load-test.mjs', import.meta.url)), 'plan'], { cwd: directory });
+    assert.equal(run.status, 0, run.stderr.toString());
+    assert.equal(JSON.parse(fs.readFileSync(output, 'utf8')).maximumRequests, 48);
+  } finally {
+    if (fs.existsSync(output)) fs.unlinkSync(output);
+    if (fs.existsSync(path.dirname(output))) fs.rmdirSync(path.dirname(output));
+    fs.rmdirSync(directory);
+  }
+});

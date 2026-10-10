@@ -5,9 +5,14 @@ import { readFileSync } from 'node:fs';
 import { createAnalyticsWorker, validateEvents, validateReport, type AnalyticsDatabase, type AnalyticsEnv } from '../workers/analytics.ts';
 import { createFirebaseReader, createTokenVerifier, FIREBASE_JWKS_URL } from '../workers/firebase.ts';
 import { PUBLIC_FILAMENTS_CATALOG, buildConcreteFilamentSkus } from '../src/domain/filamentsDirectory.ts';
+import { LEGACY_CATALOG_SKUS } from '../workers/legacyCatalog.ts';
 
 const date = new Date('2026-10-08T22:15:00Z');
 const event = (extra = {}) => ({ id: crypto.randomUUID(), type: 'search', ...extra });
+test('Worker built-in SKU identities and seller URLs match the canonical frontend catalogue', () => {
+  assert.deepEqual(LEGACY_CATALOG_SKUS, Object.fromEntries(buildConcreteFilamentSkus(PUBLIC_FILAMENTS_CATALOG)
+    .map(({ id, name, storeUrl }) => [id, { name, storeUrl }])));
+});
 function database() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../migrations/0001_analytics.sql', import.meta.url), 'utf8'));
@@ -216,6 +221,8 @@ test('legacy exact SKU lookup is system-only; tombstones, hidden offers and remo
   const f = await fixture();
   const legacy = buildConcreteFilamentSkus(PUBLIC_FILAMENTS_CATALOG)[0];
   assert.equal((await f.post([event({ type: 'details', offerId: legacy.id })])).status, 202);
+  assert.equal((await f.post([event({ type: 'details', offerId: 'unknown-built-in-black-0' })])).status, 400);
+  assert.equal((await f.post([event({ type: 'details', offerId: legacy.parentFilamentId + '-black-999' })])).status, 400);
   const row = f.sqlite.prepare('SELECT company_id FROM events').get()!; assert.equal(row.company_id, '');
   const named = await fixture();
   const parent = PUBLIC_FILAMENTS_CATALOG.find(item => item.id === legacy.parentFilamentId)!;

@@ -71,9 +71,9 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
     const headers = { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' };
     const call = (suffix: string, body?: unknown) => responseJson(root + suffix, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const name = (path: string) => root.slice('https://firestore.googleapis.com/v1/'.length) + '/' + path;
-    async function readMany(paths: string[], transaction?: string): Promise<(Document | null)[]> {
+    async function readMany(paths: string[], transaction?: string, fieldPaths?: string[]): Promise<(Document | null)[]> {
       const documents = paths.map(name);
-      const rows = await call(':batchGet', { documents, ...(transaction ? { transaction } : {}) });
+      const rows = await call(':batchGet', { documents, ...(transaction ? { transaction } : {}), ...(fieldPaths ? { mask: { fieldPaths } } : {}) });
       const found = new Map<string, Document | null>();
       if (!Array.isArray(rows)) throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
       for (const row of rows) {
@@ -94,7 +94,7 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
       return result ? decodeFields(result.fields || {}) : null;
     }
     async function authUser(uid: string) {
-      const result = await responseJson('https://identitytoolkit.googleapis.com/v1/projects/' + project + '/accounts:lookup', { method: 'POST', headers, body: JSON.stringify({ localId: [uid] }) });
+      const result = await responseJson('https://identitytoolkit.googleapis.com/v1/projects/' + project + '/accounts:lookup?fields=users(localId,emailVerified,disabled,validSince)', { method: 'POST', headers, body: JSON.stringify({ localId: [uid] }) });
       const user = result?.users?.find((item: any) => item.localId === uid);
       if (!user || user.disabled || user.emailVerified !== true) throw new ApiError(403, 'Акаунт видалений, заблокований або пошта не підтверджена.');
       const validSince = Number(user.validSince || 0);
@@ -104,11 +104,11 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
     async function scope(uid: string, validSince: number, transaction?: string): Promise<ImportScope> {
       const [registry, access, member, deletion] = await readMany([
         'system/authorization', 'accountAccess/' + uid, 'memberships/' + uid, 'accountDeletion/' + uid,
-      ], transaction);
+      ], transaction, ['adminUids', 'version', 'blocked', 'changeId', 'active', 'companyId']);
       if (!registry || access?.blocked === true || deletion) throw new ApiError(403, 'API доступне лише активним адміністраторам і менеджерам.');
       const admin = Array.isArray(registry.adminUids) && registry.adminUids.includes(uid);
       const companyId = !admin && member?.active === true && typeof member.companyId === 'string' ? member.companyId : null;
-      if (!admin && (!companyId || (await read('companies/' + companyId, transaction))?.status !== 'active')) throw new ApiError(403, 'Немає доступу до активної компанії.');
+      if (!admin && (!companyId || (await readMany(['companies/' + companyId], transaction, ['status']))[0]?.status !== 'active')) throw new ApiError(403, 'Немає доступу до активної компанії.');
       const role = admin ? 'admin' : 'manager';
       return { uid, role, companyId, validSince, registryVersion: Number(registry.version),
         fingerprint: await digest(JSON.stringify([role, companyId, access?.changeId ?? null, member?.changeId ?? null, member?.version ?? null, validSince])) };

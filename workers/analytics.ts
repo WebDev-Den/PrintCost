@@ -1,5 +1,6 @@
-import { PUBLIC_FILAMENTS_CATALOG, buildConcreteFilamentSkus, type PublicFilamentItem } from '../src/domain/filamentsDirectory.ts';
+import { buildConcreteFilamentSkus, type PublicFilamentItem } from '../src/domain/filamentsDirectory.ts';
 import { ApiError, boundedText, createFirebaseReader, createTokenVerifier, type Document } from './firebase.ts';
+import { LEGACY_CATALOG_SKUS } from './legacyCatalog.ts';
 
 const EVENT_TYPES = ['search', 'filter', 'no_results', 'impression', 'details', 'seller_click', 'add_material'] as const;
 const MATERIAL_TYPES = ['all', 'PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'PLA-CF', 'PETG-CF', 'PA-CF', 'PVA', 'HIPS', 'other'] as const;
@@ -154,8 +155,8 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     const parentId = id.slice(0, suffix.index);
     const override = await publicRead(project, `filaments/${parentId}`, appCheckToken);
     if (override?.deleted === true) throw new ApiError(400, 'Пропозиція недоступна.');
-    const parent = override ? validLegacy(override, parentId) : PUBLIC_FILAMENTS_CATALOG.find(item => item.id === parentId);
-    const sku = parent && buildConcreteFilamentSkus([parent]).find(item => item.id === id);
+    const parent = override ? validLegacy(override, parentId) : null;
+    const sku = override ? parent && buildConcreteFilamentSkus([parent]).find(item => item.id === id) : LEGACY_CATALOG_SKUS[id];
     if (!sku || (type === 'seller_click' && !allowedUrl(sku.storeUrl))) throw new ApiError(400, 'Пропозиція недоступна.');
     return { companyId: '', name: sku.name.slice(0, 400) };
   }

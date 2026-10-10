@@ -4,6 +4,7 @@
   "account_id": "5bde96caf887560714ca70d575ed9ea9",
   "compatibility_date": "2026-10-08",
   "main": "workers/index.ts",
+  "minify": true,
   "workers_dev": true,
   "preview_urls": false,
   "observability": {

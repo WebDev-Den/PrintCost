@@ -135,13 +135,14 @@ test('service token refresh reuses one resolved signing key, rotates secrets and
       return Response.json({ access_token: 'fixture-token-' + oauthCalls, expires_in: 3600 });
     }
     assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer fixture-token-' + oauthCalls);
-    if (url === 'https://identitytoolkit.googleapis.com/v1/projects/' + project + '/accounts:lookup') {
+    if (url === 'https://identitytoolkit.googleapis.com/v1/projects/' + project + '/accounts:lookup?fields=users(localId,emailVerified,disabled,validSince)') {
       authCalls++; assert.deepEqual(JSON.parse(init?.body as string), { localId: [uid] });
       return Response.json({ users: [{ localId: uid, emailVerified: true, disabled, validSince: String(validSince) }] });
     }
     assert.equal(url, 'https://firestore.googleapis.com/v1/projects/' + project + '/databases/(default)/documents:batchGet');
     scopeCalls++;
-    const documents = JSON.parse(init?.body as string).documents as string[];
+    const { documents, mask } = JSON.parse(init?.body as string) as { documents: string[]; mask: { fieldPaths: string[] } };
+    assert.deepEqual(mask.fieldPaths, ['adminUids', 'version', 'blocked', 'changeId', 'active', 'companyId']);
     assert.equal(documents.length, 4);
     return Response.json(documents.map(name => name.endsWith('/system/authorization')
       ? { found: { name, fields: encodeFields({ adminUids: admin ? [uid] : [], version: 1 }) } }
@@ -179,4 +180,50 @@ test('service token refresh reuses one resolved signing key, rotates secrets and
   await assert.rejects(adapter.scope(project, oldSecret, uid), { status: 403 });
   assert.deepEqual([imports, signatures, oauthCalls], [3, 4, 4]);
   assert.deepEqual([authCalls, scopeCalls], [9, 8], 'Account revocation and roles remain fresh despite resolved credential caches.');
+});
+
+test('masked access reads omit company logos and keep manager state and deletion fresh', async () => {
+  const project = 'kilo-g', uid = 'manager-fixture';
+  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const secret = JSON.stringify({ project_id: project, client_email: 'import@' + project + '.iam.gserviceaccount.com',
+    private_key: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() });
+  const documents = new Map<string, Record<string, unknown>>([
+    ['system/authorization', { adminUids: [], version: 7, bootstrapUid: 'irrelevant' }],
+    ['accountAccess/' + uid, { blocked: false, changeId: 'access-a' }],
+    ['memberships/' + uid, { active: true, companyId: 'company-a', version: 2, changeId: 'membership-a' }],
+    ['companies/company-a', { status: 'active', logoDataUrl: 'x'.repeat(24 * 1024), allowedDomains: ['shop.example.com'] }],
+  ]);
+  let authCalls = 0, companyReads = 0;
+  const adapter = createImportFirebase(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.hostname === 'oauth2.googleapis.com') return Response.json({ access_token: 'fixture-token', expires_in: 3600 });
+    if (url.hostname === 'identitytoolkit.googleapis.com') {
+      authCalls++;
+      assert.equal(url.searchParams.get('fields'), 'users(localId,emailVerified,disabled,validSince)');
+      return Response.json({ users: [{ localId: uid, emailVerified: true, validSince: '42' }] });
+    }
+    assert.equal(url.pathname.endsWith('/documents:batchGet'), true);
+    const body = JSON.parse(init?.body as string) as { documents: string[]; mask: { fieldPaths: string[] } };
+    if (body.documents.length === 1) {
+      companyReads++;
+      assert.deepEqual(body.mask.fieldPaths, ['status']);
+    } else assert.deepEqual(body.mask.fieldPaths, ['adminUids', 'version', 'blocked', 'changeId', 'active', 'companyId']);
+    const rows = body.documents.map(name => {
+      const document = documents.get(name.split('/documents/')[1]);
+      return document ? { found: { name, fields: encodeFields(Object.fromEntries(body.mask.fieldPaths
+        .filter(field => Object.hasOwn(document, field)).map(field => [field, document[field]]))) } } : { missing: name };
+    });
+    assert.ok(JSON.stringify(rows).length < 2048, 'Scope reads exclude logo and unrelated company data.');
+    return Response.json(rows.reverse());
+  });
+  const first = await adapter.scope(project, secret, uid);
+  assert.equal(first.role, 'manager'); assert.equal(first.companyId, 'company-a'); assert.equal(first.validSince, 42);
+  documents.get('memberships/' + uid)!.changeId = 'membership-b';
+  assert.notEqual((await adapter.scope(project, secret, uid)).fingerprint, first.fingerprint);
+  documents.get('companies/company-a')!.status = 'disabled';
+  await assert.rejects(adapter.scope(project, secret, uid), { status: 403 });
+  documents.get('companies/company-a')!.status = 'active';
+  documents.set('accountDeletion/' + uid, { uid, startedAt: 'fixture' });
+  await assert.rejects(adapter.scope(project, secret, uid), { status: 403 });
+  assert.deepEqual([authCalls, companyReads], [4, 3], 'A masked deletion document with empty fields still denies access.');
 });
