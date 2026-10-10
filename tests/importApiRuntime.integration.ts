@@ -351,7 +351,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const second = await concurrentIds.find(response => response.status === 202)!.json() as any;
   const updated = await waitJob(second.id, managerKey);
   assert.equal(updated.status, 'completed');
-  assert.equal((await read(firstPath)).status, 'hidden', 'a queued update with omitted status returns the offer to drafts');
+  assert.equal((await read(firstPath)).status, 'published', 'queued price-only updates retain existing publication approval');
   assert.equal((await read(firstPath)).priceUah, 615);
   await seed('accountAccess/manager', { blocked: true, changeId: 'blocked' });
   assert.equal((await request('imports', managerKey)).status, 403);
@@ -536,16 +536,22 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   });
   await t.test('legacy normalized jobs remain processable and retain normalized idempotent retries', async () => {
     await db.prepare('UPDATE import_limits SET next_allowed=0').run();
-    const payload = { offers: [{ ...IMPORT_EXAMPLE.offers[0], externalId: 'stage5-legacy' }] };
+    const payload = { offers: [{ ...IMPORT_EXAMPLE.offers[0], externalId: 'stage5-legacy', status: 'published' }] };
     const body = JSON.stringify(payload), idempotency = randomUUID();
     const response = await submitRaw(body, idempotency);
     assert.equal(response.status, 202);
     const accepted = await response.json() as any;
-    const normalized = JSON.stringify(normalizeImportPayload(payload));
+    const legacy = normalizeImportPayload(payload);
+    legacy.offers[0].offer.status = 'hidden';
+    const normalized = JSON.stringify(legacy);
     await db.prepare('UPDATE import_jobs SET payload=?,payload_hash=? WHERE id=?')
       .bind(normalized, createHash('sha256').update(normalized).digest('hex'), accepted.id).run();
     const replay = await submitRaw(JSON.stringify({ companies: [], ...payload }, null, 2), idempotency);
     assert.equal(replay.status, 202); assert.equal((await replay.json() as any).id, accepted.id);
+    assert.equal((await submitRaw(JSON.stringify({ offers: [{ ...payload.offers[0], status: 'hidden' }] }), idempotency)).status, 202,
+      'Legacy publication flags were normalized to hidden, so both retries still match the stored hash.');
+    assert.equal((await submitRaw(JSON.stringify({ offers: [{ ...payload.offers[0], status: 'blocked' }] }), idempotency)).status, 409,
+      'Legacy retries must still distinguish administrator blocking.');
     assert.equal((await submitRaw(JSON.stringify({ offers: [{ ...payload.offers[0], priceUah: 600.333 }] }), idempotency)).status, 422,
       'Legacy retry validation remains immediate because its normalized hash must be reproduced.');
     await runManually(accepted.id);

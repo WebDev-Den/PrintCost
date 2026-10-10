@@ -1,6 +1,6 @@
 import { ApiError, boundedText, decodeFields, type Document, type FirestoreValue, type VerifiedIdentity } from './firebase.ts';
 import { IMPORT_LIMITS, importDomain, profileForImport, type ImportPayload, type ImportItemResult } from '../src/domain/apiImports.ts';
-import { assertCompanyOfferWrite, validateCompanyOfferInput, type CompanyOffer } from '../src/domain/companyOfferValidation.ts';
+import { assertCompanyOfferWrite, OFFER_INPUT_FIELDS, validateCompanyOfferInput, type CompanyOffer } from '../src/domain/companyOfferValidation.ts';
 import { validateCompany, type Company } from '../src/domain/organizations.ts';
 import type { TemperatureProfile } from '../src/domain/filamentsDirectory.ts';
 import type { AnalyticsDatabase } from './analytics.ts';
@@ -275,12 +275,16 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
               const preserved = current ? Object.fromEntries(['description', 'packagingType', 'diameterMm', 'colorTone']
                 .filter(key => !item.optionalFields.includes(key)).map(key => [key, current[key]])) : {};
               const input = validateCompanyOfferInput({ ...item.offer, ...preserved, family }, company.allowedDomains as string[]);
-              // Every import needs manual publication; API updates cannot lift administrator moderation.
-              input.status = current?.status === 'blocked' || input.status === 'blocked' ? 'blocked' : 'hidden';
+              const contentUnchanged = current && OFFER_INPUT_FIELDS.filter(key => !['priceUah', 'inStock', 'status'].includes(key))
+                .every(key => current[key] === input[key]);
+              input.status = current?.status === 'blocked' || input.status === 'blocked' ? 'blocked' :
+                current?.status === 'published' && contentUnchanged && !(item.optionalFields.includes('status') && input.status === 'hidden') ? 'published' : 'hidden';
               assertCompanyOfferWrite({ role: scope.role, companyId: scope.companyId, blocked: false }, company as unknown as Company,
                 current as unknown as CompanyOffer | null, current ? Number(current.version) : undefined, input.status);
-              pending.set('companyOffers/' + id, { ...input, id, companyId: company.id, version: current ? Number(current.version) + 1 : 1,
-                createdAt: current ? new Date(current.createdAt as string) : stamp, createdBy: current?.createdBy ?? uid, updatedAt: stamp, updatedBy: uid });
+              if (!current || !OFFER_INPUT_FIELDS.every(key => current[key] === input[key])) {
+                pending.set('companyOffers/' + id, { ...input, id, companyId: company.id, version: current ? Number(current.version) + 1 : 1,
+                  createdAt: current ? new Date(current.createdAt as string) : stamp, createdBy: current?.createdBy ?? uid, updatedAt: stamp, updatedBy: uid });
+              }
               result.offerId = id;
             }
             result.success = true;

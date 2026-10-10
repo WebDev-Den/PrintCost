@@ -80,21 +80,80 @@ test('transactional import respects ownership, profiles, live roles and crash re
   assert.equal((await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-b', update, 0))[0].success, true);
   assert.equal((await read('companyOffers/' + id)).version, 2);
   assert.equal((await read('companyOffers/' + id)).priceUah, 700);
-  const hidden = normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], status: 'hidden', description: 'Preserve my note', diameterMm: 2.85 }] });
+  const hidden = normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], status: 'hidden', description: 'Preserve my note',
+    diameterMm: 2.85, packagingType: 'refill', colorTone: 'white' }] });
   await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-hidden', hidden, 0);
   await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-preserved', update, 0);
   const preserved = await read('companyOffers/' + id);
   assert.equal(preserved.status, 'hidden'); assert.equal(preserved.description, 'Preserve my note'); assert.equal(preserved.diameterMm, 2.85);
   await seed('companyOffers/' + id, { ...preserved, status: 'published' });
-  await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-published-update', update, 0);
-  const unpublished = await read('companyOffers/' + id);
-  assert.equal(unpublished.status, 'hidden', 'an update with omitted status returns a published offer to drafts');
-  assert.equal(unpublished.description, 'Preserve my note');
+  const priceAndStock = normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], priceUah: 730, inStock: false }] });
+  await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-published-update', priceAndStock, 0);
+  const published = await read('companyOffers/' + id);
+  assert.equal(published.status, 'published', 'price and stock updates preserve approved content');
+  assert.equal(published.priceUah, 730); assert.equal(published.inStock, false);
+  assert.equal(published.description, 'Preserve my note'); assert.equal(published.diameterMm, 2.85);
+  assert.equal(published.packagingType, 'refill'); assert.equal(published.colorTone, 'white');
+  assert.equal(published.version, Number(preserved.version) + 1);
+  await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-published-noop', priceAndStock, 0);
+  assert.deepEqual(await read('companyOffers/' + id), published, 'an unchanged import commits its receipt without changing version or timestamps');
   const legacyPublished = normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], externalId: 'legacy-published', status: 'published' }] });
   legacyPublished.offers[0].offer.status = 'published';
   const legacyResult = (await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-legacy-published', legacyPublished, 0))[0];
   assert.equal(legacyResult.success, true);
   assert.equal((await read('companyOffers/' + legacyResult.offerId)).status, 'hidden', 'a queued payload from an older release cannot publish');
+  await t.test('only price and stock can change without another publication review', async () => {
+    const source = { ...IMPORT_EXAMPLE.offers[0], companyId, description: 'Preserve my note', diameterMm: 2.85,
+      packagingType: 'refill', colorTone: 'white' };
+    const changes = { name: 'Changed title', brand: 'Changed brand', type: 'PETG', family: 'Інженерні', colorName: 'Сірий',
+      colorHex: '#aabbcc', colorTone: 'red', packagingType: 'spool', spoolWeightGrams: 750, diameterMm: 1.75,
+      description: 'Changed note', productUrl: 'https://shop.example.com/new-url' };
+    for (const [field, value] of Object.entries(changes)) {
+      await seed('companyOffers/' + id, published);
+      const changed = normalizeImportPayload({ offers: [{ ...source, [field]: value }] });
+      const result = (await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-content-' + field, changed, 0))[0];
+      assert.equal(result.success, true, field);
+      assert.equal((await read('companyOffers/' + id)).status, 'hidden', field + ' needs publication review');
+    }
+    await seed('companyOffers/' + id, published);
+    const explicitHidden = normalizeImportPayload({ offers: [{ ...source, priceUah: 730, inStock: false, status: 'hidden' }] });
+    await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-explicit-hide', explicitHidden, 0);
+    assert.equal((await read('companyOffers/' + id)).status, 'hidden', 'explicit hiding is not treated as omitted status');
+    const explicitPublish = normalizeImportPayload({ offers: [{ ...source, priceUah: 740, status: 'published' }] });
+    await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-explicit-publish', explicitPublish, 0);
+    assert.equal((await read('companyOffers/' + id)).status, 'hidden', 'import cannot promote a hidden offer');
+    await seed('companyOffers/' + id, published);
+    await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-keep-explicit-published', explicitPublish, 0);
+    assert.equal((await read('companyOffers/' + id)).status, 'published', 'legacy publication flags can retain existing approval');
+    await seed('companyOffers/' + id, published);
+    const company = await read('companies/' + companyId);
+    await seed('companies/' + companyId, { ...company, allowedDomains: ['new-shop.example.com'] });
+    const denied = await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-noop-invalid-domain', priceAndStock, 0);
+    assert.equal(denied[0].success, false, 'an unchanged offer still validates its current allowed domains');
+    assert.equal((await read('companyOffers/' + id)).status, 'published');
+    await seed('companies/' + companyId, company);
+    await seed('temperatureProfiles/PLA', { plasticType: 'PLA', family: 'Композитні', nozzleRange: '190–225 °C' });
+    await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-resolved-family', priceAndStock, 0);
+    assert.equal((await read('companyOffers/' + id)).status, 'hidden', 'a changed resolved family needs review even when omitted in JSON');
+    const removed = await fetch(root + '/temperatureProfiles/PLA', { method: 'DELETE', headers: { Authorization: 'Bearer owner' } });
+    assert.ok(removed.ok);
+    await seed('companyOffers/' + id, published);
+  });
+  await t.test('disabled companies deny published offer no-ops and price-only updates', async () => {
+    const company = await read('companies/' + companyId);
+    await seed('companies/' + companyId, { ...company, status: 'disabled' });
+    try {
+      for (const [label, priceUah] of [['noop', 730], ['price-only', 740]] as const) {
+        const input = normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], companyId, priceUah, inStock: false }] });
+        const result = (await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-disabled-' + label, input, 0))[0];
+        assert.equal(result.success, false, label);
+        assert.match(result.message || '', /активної компанії/, label);
+        assert.deepEqual(await read('companyOffers/' + id), published, label + ' cannot change the offer, version or timestamps');
+      }
+    } finally {
+      await seed('companies/' + companyId, company);
+    }
+  });
   const fallback = normalizeImportPayload({ offers: [{ ...IMPORT_EXAMPLE.offers[0], companyId: 'unknown-company', externalId: 'fallback' }] });
   assert.equal((await adapter.process(project, secret, 'admin', admin.fingerprint, 'job-fallback', fallback, 0))[0].companyId, companyId);
   await seed('memberships/manager', { active: true, companyId, version: 1, changeId: 'membership-a' });

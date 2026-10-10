@@ -224,7 +224,13 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         let legacyHash: string | undefined;
         async function matches(job: JobReplayRow) {
           if (job.payload_hash.startsWith('raw:')) return job.payload_hash === hash;
-          try { legacyHash ??= await digest(JSON.stringify(normalizeImportPayload(value))); }
+          try {
+            if (!legacyHash) {
+              const normalized = normalizeImportPayload(value);
+              for (const item of normalized.offers) item.offer.status = item.offer.status === 'blocked' ? 'blocked' : 'hidden';
+              legacyHash = await digest(JSON.stringify(normalized));
+            }
+          }
           catch (error) { throw new ApiError(422, error instanceof Error ? error.message : 'Некоректний JSON.'); }
           return job.payload_hash === legacyHash;
         }
