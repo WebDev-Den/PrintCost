@@ -1,6 +1,18 @@
 # KILO·G — стан проєкту та задач
 
-## Чинний реліз і CPU-приймання — 10 жовтня 2026
+## Фінальне автоматичне приймання main — 10 жовтня 2026, 10:32 UTC
+
+`main` без конфліктів оновлена до `727f3fff8f57c384598dfa737133fde38fa4970b`. [Main CI](https://github.com/WebDev-Den/PrintCost/actions/runs/38044776321) — SUCCESS. Cloudflare Build `6d5d8e95-a5cd-411e-b666-e1da67edeb8c` — Ready; автоматично опублікований Worker `c90eb652-ebcc-463f-a13c-b5cece2f5d7a` має **100% traffic** від **10:25:26 UTC**. Це новий ID після наведеного нижче ручного приймання. Secrets, Queue/D1/limiters, Logs/traces/redaction збережені; pending migrations немає. Тариф не змінено.
+
+Повторні **62/62 HTTP PASS** на цьому Worker, concurrency до 4; Google/App Check браузерні key/history/report працюють. Новий зовнішній job зі 100 записів / 32768 bytes `55fbdf0d-8bd0-49e7-9a8b-4f892c5d31b4`: HTTP 202 → failed/HTTP_422, 0/100, results [], без запису товарів; idempotency replay без дубля. **47 native invocations**, усі outcome ok. **Фінальні CPU максимуми: POST 21 мс, external list 15 мс (також 13 мс), browser key 6 мс / report 7 мс, detail 5 мс, invalid analytics 2 мс, Cron 3 мс, Queue 9 мс**. Три HTTP samples перевищили 10 мс, runtime errors/exceededCpu немає. Попередні 15 мс ручного релізу не є максимумом автоматичного. **FREE-CPU strict ≤10 мс не закрито**; відсутність errors і запас платформи для рідких overruns не є гарантією для будь-якого трафіку.
+
+**308 тестів PASS** і модель **85464 D1 writes / <3.5m reads / 9600 Queue operations** лишаються чинними для описаних caps/припущень; CPU нової версії виміряно окремо від latency. Рання побайтова звірка з локальним Windows dist не пройшла: його ресурси відрізняються від Linux Cloudflare Build. Фінальна перевірка: **54 запити, 27 точних побайтових порівнянь між двома доменами — PASS**; усі 23 JS/CSS ресурси та HTML-посилання відповідають іменам із успішного CI точного `main`. Favicon і theme script збігаються з Git LF-байтами; 207/207 blobs окремого LF-архіву перевірені. Незалежну локальну LF-збірку не завершено, її власний Vite-процес зупинено; CI не зберігає байти compiled chunks, тому їх незалежне побайтове порівняння зі збіркою не заявляється. Доказ: `output/cpu-canonical-lf-16a45a0a658a482db79c7ff3b5fd4575/ci-asset-proof.json`.
+
+Безпечні локальні артефакти: `output/cpu-load-main.json`, `output/cpu-load-main-native.json`, `output/cpu-external-boundary-final.json`, `output/observability-readback.json`, `output/cpu-main-cloudflare-proof.png`. Значення ключів, raw telemetry та backup у Git відсутні.
+
+Документація після цього deployment збережена в `codex/cpu-free-load`; runtime-код і caps у `main` збігаються. Повнодобове production saturation, максимальний успішний імпорт і максимальний production report не виконувалися. Інші застосунки акаунта, ручні операції та затримки Queue через кілька діб можуть споживати додаткові Free квоти.
+
+## Ручне приймання перед автоматичним main — 10 жовтня 2026
 
 Перевірений runtime source `0bf409c`; виправлення лише діагностики native budget — `31ea73b`. Worker `23aec692-9162-4cb0-a661-963aa5d18f96`, **100% traffic** від **10 жовтня 2026, 10:16:45 UTC**. Cloudflare Free / Firebase Spark збережені. Оптимізований реліз функціонально працює, але **суворе приймання кожного HTTP у 10 мс ще не пройдене**: у точній новій версії є 11–15 мс CPU, усі з outcome `ok`.
 
