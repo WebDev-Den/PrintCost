@@ -1,5 +1,15 @@
 # KILO·G — стан проєкту та задач
 
+## Повторна перевірка й публікація — 10 жовтня 2026, 14:14 UTC
+
+За командою власника перевірено й опубліковано `main` `d5c4780df5d01d7a3f13fd704576d3217e27d2f0`. Відмінність від попереднього runtime `fc3d397` — лише три документи; код, конфігурація, залежності та міграції не змінювалися. [Branch CI](https://github.com/WebDev-Den/PrintCost/actions/runs/38058360545) і [main CI](https://github.com/WebDev-Den/PrintCost/actions/runs/38058621230) — SUCCESS: **345/345 тестів** (203 application/native + 142 emulator), lint/build/deployment validator/Worker dry-run — PASS. Main CI завершено **14:14:08 UTC**. Повторні локальні SEO-тести — **19/19 PASS**.
+
+Cloudflare Build `61d688f4-4fd1-4941-b7ac-70747170036a` для цього коміту — **Ready**; Worker `155a8a4e-a2db-4f22-9d26-a6b2e573b733` отримує **100% traffic** від **14:12:16 UTC**, deployment `366ad354-53f8-40e0-923d-687a8f9a2b67`. Зв'язок Build/commit/version підтверджено у консолі, трафік/налаштування — readback API. Secrets, Queue/D1/limiters, Observability та тарифи збережені. Чинна CLI-авторизація оновлена без розширення прав.
+
+Після публікації — **13 HTTP-перевірок, 5 точних порівнянь assets і 3 еквівалентні environment-бандли PASS**. HTML, canonical, robots/sitemap, CSP, 404/308, noindex кабінету й TTL працюють. Живий `/app/api` у чинній Google-сесії завантажує форму та 10 записів історії без alert-помилок; нових імпортів, ключів чи змін даних під час перевірки не створювали. Докази збережені в ігнорованих `output/catalog-seo-recheck-*`, `output/catalog-seo-live-proof.json` та `output/observability-readback.json`.
+
+Каталог наразі має **0 опублікованих товарів**; sitemap містить 3 базові URL. Фактичну індексацію Google та нове навантаження/CPU цього разу не перевіряли. Обмеження великих sitemap і попередні CPU-ризики залишаються описаними нижче та у `WORKER_LIMITS.md`. Незавершені зміни основного checkout `D:\AI_Work\PrintCost` не включені й не змінені. Цей фінальний звіт збережено в `codex/catalog-seo`, щоб не запускати deployment лише заради його ID.
+
 ## SEO та індексація товарів — 10 жовтня 2026
 
 Опубліковано публічні сторінки товарів, початковий серверний HTML каталогу/товарів, canonical/meta/Open Graph, JSON-LD Product/Offer, robots.txt, повний обмежений sitemap і доступну ботам HTML-пагінацію. Віддаються лише опубліковані пропозиції активних компаній з дозволеним HTTPS-доменом; загальний каталог зберігає overrides/tombstones. Чернетки, приватні актори, API-ключі й кабінет не індексуються. React використовує початкові дані серверної сторінки товару без повторного запиту. Нових залежностей немає.
