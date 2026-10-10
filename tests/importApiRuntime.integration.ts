@@ -11,18 +11,19 @@ import { createImportApi } from '../workers/importApi.ts';
 
 test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and retry recovery', { timeout: 120_000 }, async t => {
   const project = 'demo-import-api-' + randomUUID().slice(0, 8);
+  const firestoreOrigin = 'http://' + (process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080');
+  const webApiKey = 'AIza' + 'x'.repeat(35);
   const root = '/v1/projects/' + project + '/databases/(default)/documents';
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const secret = JSON.stringify({ project_id: project, client_email: 'import@' + project + '.iam.gserviceaccount.com',
     private_key: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() });
-  const jwk = { ...pair.publicKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
   const users = new Map(['admin', 'manager', 'other-manager', 'user'].map(uid => [uid, { localId: uid, emailVerified: true, validSince: '0', disabled: false }]));
   const seed = async (path: string, data: Record<string, unknown>) => {
-    const response = await fetch('http://127.0.0.1:8080' + root + '/' + path, { method: 'PATCH', headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: encodeFields(data) }) });
+    const response = await fetch(firestoreOrigin + root + '/' + path, { method: 'PATCH', headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: encodeFields(data) }) });
     assert.ok(response.ok, 'Fixture HTTP ' + response.status);
   };
   const read = async (path: string) => {
-    const response = await fetch('http://127.0.0.1:8080' + root + '/' + path, { headers: { Authorization: 'Bearer owner' } });
+    const response = await fetch(firestoreOrigin + root + '/' + path, { headers: { Authorization: 'Bearer owner' } });
     assert.ok(response.ok, 'Fixture read HTTP ' + response.status);
     return decodeFields((await response.json()).fields);
   };
@@ -35,10 +36,10 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   await seed('memberships/other-manager', { active: true, companyId: 'company-b', changeId: 'initial', version: 1 });
   const bundle = await build({ entryPoints: ['workers/index.ts'], bundle: true, write: false, format: 'esm', platform: 'browser', metafile: true });
   assert.ok(Object.keys(bundle.metafile.inputs).every(path => !path.includes('node_modules/decimal.js/')), 'Worker validation must keep frontend Decimal initialization out of its bundle.');
-  let failCommitOnce = false, failFirebase = false, firebaseRequests = 0, firestoreWrites = 0, oauthRequests = 0, authRequests = 0;
+  let failCommitOnce = false, failFirebase = false, firebaseRequests = 0, firestoreWrites = 0, oauthRequests = 0, authRequests = 0, remoteAuthRequests = 0, jwksRequests = 0;
   const transport = async (request: Pick<Request, 'url' | 'method' | 'text'>) => {
       const url = new URL(request.url);
-      if (url.hostname === 'www.googleapis.com') return new RuntimeResponse(JSON.stringify({ keys: [jwk] }), { headers: { 'Cache-Control': 'public,max-age=3600' } });
+      if (url.hostname === 'www.googleapis.com') { jwksRequests++; throw new Error('Production-key runtime must not fetch JWKS.'); }
       if (url.hostname === 'oauth2.googleapis.com') {
         oauthRequests++;
         const assertion = new URLSearchParams(await request.text()).get('assertion')!;
@@ -47,8 +48,24 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
         return new RuntimeResponse(JSON.stringify({ access_token: 'fixture', expires_in: 3600 }));
       }
       if (url.hostname === 'identitytoolkit.googleapis.com') {
+        const payload = JSON.parse(await request.text());
+        if (url.pathname === '/v1/accounts:lookup') {
+          remoteAuthRequests++;
+          assert.equal(url.searchParams.get('key'), webApiKey);
+          assert.equal(url.searchParams.get('fields'), 'users(localId,emailVerified,disabled,validSince)');
+          assert.deepEqual(Object.keys(payload), ['idToken'], 'Remote verification never includes admin account selectors.');
+          const parts = payload.idToken.split('.');
+          if (parts.length !== 3 || !verify('RSA-SHA256', Buffer.from(parts[0] + '.' + parts[1]), pair.publicKey, Buffer.from(parts[2], 'base64url'))) {
+            return new RuntimeResponse(JSON.stringify({ error: { message: 'INVALID_ID_TOKEN' } }), { status: 400 });
+          }
+          const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+          assert.equal(claims.aud, project); assert.equal(claims.iss, 'https://securetoken.google.com/' + project);
+          return new RuntimeResponse(JSON.stringify({ users: users.has(claims.sub) ? [users.get(claims.sub)] : [] }));
+        }
         authRequests++;
-        const uid = JSON.parse(await request.text()).localId[0];
+        assert.equal(url.pathname, '/v1/projects/' + project + '/accounts:lookup');
+        assert.deepEqual(Object.keys(payload), ['localId']);
+        const uid = payload.localId[0];
         return new RuntimeResponse(JSON.stringify({ users: users.has(uid) ? [users.get(uid)] : [] }));
       }
       assert.equal(url.hostname, 'firestore.googleapis.com', 'Fixtures never contact a production endpoint.');
@@ -56,30 +73,32 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
       firebaseRequests++;
       if (url.pathname.endsWith(':commit')) firestoreWrites++;
       if (failFirebase) return new RuntimeResponse('{}', { status: 503 });
-      const upstream = await fetch('http://127.0.0.1:8080' + url.pathname + url.search, { method: request.method, headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+      const upstream = await fetch(firestoreOrigin + url.pathname + url.search, { method: request.method, headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
         body: request.method === 'GET' ? undefined : await request.text() });
       if (failCommitOnce && url.pathname.endsWith(':commit') && upstream.ok) { failCommitOnce = false; return new RuntimeResponse('{}', { status: 503 }); }
       return new RuntimeResponse(await upstream.arrayBuffer(), { status: upstream.status, headers: Object.fromEntries(upstream.headers) });
     };
   const mf = new Miniflare(convertV4MiniflareOptions({
     name: 'import-runtime', modules: true, script: bundle.outputFiles[0].text, compatibilityDate: '2026-10-08',
-    bindings: { FIREBASE_PROJECT_ID: project, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret },
+    bindings: { FIREBASE_PROJECT_ID: project, FIREBASE_WEB_API_KEY: webApiKey, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret },
     d1Databases: ['ANALYTICS_DB'], queueProducers: { IMPORT_QUEUE: 'imports' },
     queueConsumers: { imports: { maxBatchSize: 1, maxBatchTimeout: 0, maxRetries: 3, retryDelay: 0 } },
     outboundService: transport,
   }));
-  t.after(async () => { await mf.dispose(); await fetch('http://127.0.0.1:8080/emulator/v1/projects/' + project + '/databases/(default)/documents', { method: 'DELETE' }); });
+  t.after(async () => { await mf.dispose(); await fetch(firestoreOrigin + '/emulator/v1/projects/' + project + '/databases/(default)/documents', { method: 'DELETE' }); });
   const db = await mf.getD1Database('ANALYTICS_DB');
   for (const file of ['0001_analytics.sql', '0002_import_api.sql', '0003_import_access_limits.sql', '0004_import_result_counts.sql',
     '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql', '0009_import_cleanup_budget.sql']) {
     const migration = await readFile('migrations/' + file, 'utf8');
     for (const statement of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER|UPDATE|DROP)\b)/i)) await db.prepare(statement).run();
   }
-  function jwt(uid: string, stale = false) {
+  function jwt(uid: string, stale = false, changes: Record<string, unknown> = {}) {
+    // A signed discovery token represents a real Auth user without privileged role records.
+    if (!users.has(uid)) users.set(uid, { localId: uid, emailVerified: true, validSince: '0', disabled: false });
     const time = Math.floor(Date.now() / 1000);
     const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'fixture' })).toString('base64url');
     const claims = Buffer.from(JSON.stringify({ sub: uid, aud: project, iss: 'https://securetoken.google.com/' + project,
-      iat: time, exp: time + 3600, auth_time: stale ? time - 600 : time, email_verified: true })).toString('base64url');
+      iat: time, exp: time + 3600, auth_time: stale ? time - 600 : time, email_verified: true, ...changes })).toString('base64url');
     const input = header + '.' + claims;
     return input + '.' + sign('RSA-SHA256', Buffer.from(input), pair.privateKey).toString('base64url');
   }
@@ -91,10 +110,40 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     const response = await transport(new Request(String(input), init));
     return new Response(await response.arrayBuffer(), { status: response.status, headers: Object.fromEntries(response.headers) });
   };
+  await t.test('native remote verification rejects forged, foreign, disabled and revoked tokens before D1 or role access', async () => {
+    const beforeFirestore = firebaseRequests, beforeServiceAuth = authRequests;
+    const beforeRemote = remoteAuthRequests;
+    const counters = async () => JSON.stringify(await Promise.all([
+      db.prepare('SELECT * FROM import_daily').all(), db.prepare('SELECT * FROM import_access_daily').all(),
+    ]).then(rows => rows.map((row: { results: unknown[] }) => row.results)));
+    const beforeCounters = await counters();
+    const pieces = adminJwt.split('.');
+    pieces[2] = (pieces[2][0] === 'A' ? 'B' : 'A') + pieces[2].slice(1);
+    assert.equal((await request('api-key', pieces.join('.'))).status, 401, 'Exact supplied signature is verified by Google transport.');
+    assert.equal(remoteAuthRequests, beforeRemote + 1);
+    for (const changes of [{ aud: 'foreign-project' }, { iss: 'https://securetoken.google.com/foreign' }, { exp: 1 }]) {
+      assert.equal((await request('api-key', jwt('admin', false, changes))).status, 401);
+    }
+    assert.equal(remoteAuthRequests, beforeRemote + 1, 'Wrong project or expired claims reject before Google.');
+    const account = users.get('admin')!;
+    try {
+      account.disabled = true;
+      assert.equal((await request('api-key', adminJwt)).status, 403);
+      account.disabled = false; account.emailVerified = false;
+      assert.equal((await request('api-key', adminJwt)).status, 403);
+      account.emailVerified = true; account.validSince = String(Math.floor(Date.now() / 1000) + 1);
+      assert.equal((await request('api-key', adminJwt)).status, 401);
+    } finally { account.disabled = false; account.emailVerified = true; account.validSince = '0'; }
+    assert.equal(remoteAuthRequests, beforeRemote + 4, 'The same token reads current Auth state on every request.');
+    assert.equal(firebaseRequests, beforeFirestore, 'Rejected remote identities never read role or company documents.');
+    assert.equal(authRequests, beforeServiceAuth, 'Rejected tokens never enter privileged scope lookup.');
+    assert.equal(await counters(), beforeCounters, 'No D1 UID quota or privileged budget is touched before identity verification.');
+    assert.equal(jwksRequests, 0);
+  });
   const warming = await request('api-key', adminJwt);
   assert.equal(warming.status, 503); assert.equal(warming.headers.get('Retry-After'), '60');
   assert.equal(oauthRequests, 0, 'Cold HTTP cannot sign or refresh service OAuth credentials.');
-  await createImportApi(importFetcher).refreshCredentials({ FIREBASE_PROJECT_ID: project, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
+  await createImportApi(importFetcher).refreshCredentials({ FIREBASE_PROJECT_ID: project, FIREBASE_WEB_API_KEY: webApiKey, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
     IMPORT_QUEUE: { async send() {} } });
   assert.equal(oauthRequests, 1);
   assert.equal((await request('api-key', jwt('user'))).status, 403);
@@ -181,7 +230,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const adminCreated = await db.prepare('SELECT created_at FROM import_jobs WHERE owner_uid=? ORDER BY created_at DESC LIMIT 1').bind('admin').first<any>();
   assert.equal(adminLimit.next_allowed - adminCreated.created_at, 300);
   assert.equal((await request('imports', managerKey, 'POST', { offers: Array.from({ length: 101 }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: 'large-' + index })) })).status, 422);
-  const huge = await request('imports', managerKey, 'POST', { value: 'x'.repeat(129 * 1024) });
+  const huge = await request('imports', managerKey, 'POST', { value: 'x'.repeat(IMPORT_LIMITS.bytes) });
   assert.equal(huge.status, 413);
   await db.prepare('UPDATE import_limits SET next_allowed=0').run();
   failFirebase = true;
@@ -190,7 +239,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   failFirebase = false;
   // Same production handler with an intentionally unavailable producer: D1 remains the durable outbox.
   const manual = createImportApi(importFetcher);
-  const environment = { FIREBASE_PROJECT_ID: project, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
+  const environment = { FIREBASE_PROJECT_ID: project, FIREBASE_WEB_API_KEY: webApiKey, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
     IMPORT_QUEUE: { send: async () => { throw new Error('Fixture queue unavailable'); } } };
   const httpJobRows: Record<string, unknown>[] = [];
   let databaseSize = 0;
@@ -227,6 +276,24 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const submitRaw = (body: string, idempotency: string) => manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', {
     method: 'POST', headers: { Authorization: 'Bearer ' + adminKey, 'Content-Type': 'application/json', 'Idempotency-Key': idempotency }, body,
   }), httpEnvironment);
+  await t.test('untrusted Content-Length cannot bypass the actual streamed byte and strict UTF-8 limits', async () => {
+    const count = (await db.prepare('SELECT COUNT(*) AS n FROM import_jobs').first<any>()).n;
+    const before = authRequests;
+    const oversized = await submitRaw('{"offers":[null]}' + ' '.repeat(IMPORT_LIMITS.bytes), randomUUID());
+    assert.equal(oversized.status, 413, 'A body without Content-Length is still bounded by its actual streamed bytes.');
+    const falseLength = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + adminKey, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'Content-Length': '1' },
+      body: '{"offers":[null]}' + ' '.repeat(IMPORT_LIMITS.bytes),
+    }), httpEnvironment);
+    assert.equal(falseLength.status, 413, 'A smaller declared size never relaxes the stream limit.');
+    const invalidUtf8 = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + adminKey, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() },
+      body: new Uint8Array([0xff, 0xfe]),
+    }), httpEnvironment);
+    assert.equal(invalidUtf8.status, 422, 'Invalid UTF-8 cannot become a different replacement-character JSON payload.');
+    assert.ok(authRequests > before, 'The stream check is exercised after normal fresh authorization.');
+    assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM import_jobs').first<any>()).n, count);
+  });
   const runManually = async (id: string) => {
     let acknowledgements = 0, retries = 0;
     await manual.queue({ messages: [{ body: { id, cursor: 0 }, ack: () => { acknowledgements++; }, retry: () => { retries++; } }] }, environment);
@@ -281,7 +348,8 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     await db.prepare('UPDATE import_limits SET next_allowed=0').run();
     const payload = { offers: Array.from({ length: 100 }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: 'late-invalid-' + index,
       description: 'private-import-payload', ...(index === 99 ? { priceUah: 600.333 } : {}) })) };
-    const body = JSON.stringify(payload, null, 2), idempotency = randomUUID();
+    const compact = JSON.stringify(payload);
+    const body = compact + ' '.repeat(IMPORT_LIMITS.bytes - new TextEncoder().encode(compact).length), idempotency = randomUUID();
     const response = await submitRaw(body, idempotency);
     assert.equal(response.status, 202);
     const accepted = await response.json() as any;
@@ -688,5 +756,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     await worker.scheduled({ cron: '0 2 * * *' });
     assert.equal((await db.prepare('SELECT maintenance_dispatches FROM import_daily WHERE day=?').bind(day).first<any>()).maintenance_dispatches, IMPORT_LIMITS.dailyMaintenanceMessages);
     assert.equal(oauthRequests, 1, 'All HTTP requests and maintenance consumers reuse the persisted service credential; permissions stay live.');
+    assert.ok(remoteAuthRequests > 10, 'Native and manual browser-session requests exercise production remote verification.');
+    assert.equal(jwksRequests, 0, 'No remote-enabled Worker request silently falls back to JWKS.');
   });
 });

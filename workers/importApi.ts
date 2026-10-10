@@ -4,7 +4,7 @@ import { createImportFirebase, digest } from './importFirebase.ts';
 import { IMPORT_LIMITS, normalizeImportPayload, validateImportEnvelope, type ApiKeyMetadata, type ImportPayload, type ImportItemResult, type ImportJobSummary } from '../src/domain/apiImports.ts';
 
 export interface ImportEnv {
-  ANALYTICS_DB?: AnalyticsDatabase; FIREBASE_PROJECT_ID: string; FIREBASE_IMPORT_SERVICE_ACCOUNT?: string;
+  ANALYTICS_DB?: AnalyticsDatabase; FIREBASE_PROJECT_ID: string; FIREBASE_WEB_API_KEY?: string; FIREBASE_IMPORT_SERVICE_ACCOUNT?: string;
   IMPORT_QUEUE?: { send(body: { id: string; cursor: number } | { maintenance: 'imports' | 'analytics' }): Promise<void> };
   IMPORT_RATE_LIMIT?: { limit(input: { key: string }): Promise<{ success: boolean }> };
 }
@@ -76,7 +76,7 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
       if (!key || key.expires_at <= seconds()) throw new ApiError(401, 'Ключ недійсний або прострочений.');
       uid = key.uid;
     } else {
-      uid = await verify(bearer, env.FIREBASE_PROJECT_ID);
+      uid = await verify(bearer, env.FIREBASE_PROJECT_ID, env.FIREBASE_WEB_API_KEY);
       const claims = JSON.parse(atob(bearer.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
       authTime = claims.auth_time;
       key = await db.prepare('SELECT * FROM import_keys WHERE uid=?').bind(uid).first<KeyRow>();
@@ -133,6 +133,7 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         const jobId = /^\/api\/v1\/imports\/([0-9a-f-]{36})$/.exec(url.pathname)?.[1];
         if (!keyPath && !jobId && url.pathname !== '/api/v1/imports') throw new ApiError(404, 'Endpoint не знайдено.');
         if (keyPath ? !['GET','POST','DELETE'].includes(request.method) : jobId ? request.method !== 'GET' : !['GET','POST'].includes(request.method)) throw new ApiError(405, 'Метод не підтримується.');
+        if (request.method === 'POST' && url.pathname === '/api/v1/imports' && Number(request.headers.get('Content-Length')) > IMPORT_LIMITS.bytes) throw new ApiError(413, 'Завеликий запит.');
         const { db, scope, key, authTime, databaseSize } = await authorize(request, env, keyPath);
         if (keyPath) {
           if (request.method === 'GET') {

@@ -76,6 +76,23 @@ function base64url(value: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+function tokenIdentity(token: string, project: string, seconds: number) {
+  if (token.length > 8192) throw new ApiError(401, 'Некоректна сесія.');
+  const parts = token.split('.');
+  if (parts.length !== 3 || !/^[A-Za-z0-9_-]+$/.test(parts[2])) throw new ApiError(401, 'Некоректна сесія.');
+  const header = JSON.parse(new TextDecoder().decode(base64url(parts[0]))) as { alg?: string; kid?: string };
+  const claims = JSON.parse(new TextDecoder().decode(base64url(parts[1]))) as Record<string, unknown>;
+  if (header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid.length || header.kid.length > 200 ||
+      claims.aud !== project || claims.iss !== `https://securetoken.google.com/${project}` ||
+      typeof claims.sub !== 'string' || !claims.sub.length || claims.sub.length > 128 || claims.sub.includes('/') ||
+      typeof claims.exp !== 'number' || !Number.isSafeInteger(claims.exp) || claims.exp <= seconds ||
+      typeof claims.iat !== 'number' || !Number.isSafeInteger(claims.iat) || claims.iat < 0 || claims.iat > seconds || claims.exp <= claims.iat ||
+      typeof claims.auth_time !== 'number' || !Number.isSafeInteger(claims.auth_time) || claims.auth_time < 0 || claims.auth_time > seconds ||
+      claims.auth_time > claims.iat) throw new ApiError(401, 'Некоректна або прострочена сесія.');
+  if (claims.email_verified !== true) throw new ApiError(403, 'Підтвердьте електронну пошту.');
+  return { parts, kid: header.kid, uid: claims.sub, authTime: claims.auth_time };
+}
+
 export function createTokenVerifier(fetcher: typeof fetch, now: () => Date) {
   // Only Google's public keys are cached; identities and access decisions are always fresh.
   let keys: { expires: number; fetched: number; jwks: Record<string, JsonWebKey>; values: Record<string, CryptoKey> } | undefined;
@@ -99,33 +116,47 @@ export function createTokenVerifier(fetcher: typeof fetch, now: () => Date) {
     if (started === generation) keys = loaded;
     return loaded;
   }
-  return async (token: string, project: string): Promise<string> => {
+  return async (token: string, project: string, webApiKey?: string): Promise<string> => {
     try {
-      if (token.length > 8192) throw new ApiError(401, 'Некоректна сесія.');
-      const parts = token.split('.');
-      if (parts.length !== 3) throw new ApiError(401, 'Некоректна сесія.');
-      const header = JSON.parse(new TextDecoder().decode(base64url(parts[0]))) as { alg?: string; kid?: string };
-      const claims = JSON.parse(new TextDecoder().decode(base64url(parts[1]))) as Record<string, unknown>;
       const seconds = Math.floor(now().getTime() / 1000);
-      if (header.alg !== 'RS256' || typeof header.kid !== 'string' || header.kid.length > 200 ||
-          claims.aud !== project || claims.iss !== `https://securetoken.google.com/${project}` ||
-          typeof claims.sub !== 'string' || !claims.sub.length || claims.sub.length > 128 || claims.sub.includes('/') ||
-          typeof claims.exp !== 'number' || !Number.isSafeInteger(claims.exp) || claims.exp <= seconds ||
-          typeof claims.iat !== 'number' || !Number.isSafeInteger(claims.iat) || claims.iat < 0 || claims.iat > seconds || claims.exp <= claims.iat ||
-          typeof claims.auth_time !== 'number' || !Number.isSafeInteger(claims.auth_time) || claims.auth_time < 0 || claims.auth_time > seconds ||
-          claims.auth_time > claims.iat) throw new ApiError(401, 'Некоректна або прострочена сесія.');
+      const { parts, kid, uid, authTime } = tokenIdentity(token, project, seconds);
+      if (webApiKey !== undefined) {
+        if (!/^AIza[A-Za-z0-9_-]{35}$/.test(webApiKey)) throw new ApiError(503, 'Перевірка сесії ще не налаштована.');
+        let response: Response;
+        try {
+          // Google authenticates this exact token; never add privileged account selectors.
+          response = await fetcher('https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=' + webApiKey +
+            '&fields=users(localId,emailVerified,disabled,validSince)', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken: token }),
+            redirect: 'manual', signal: AbortSignal.timeout(8000),
+          });
+        } catch { throw new ApiError(503, 'Перевірка сесії тимчасово недоступна.'); }
+        if (response.status === 400 || response.status === 401) throw new ApiError(401, 'Некоректна або прострочена сесія.');
+        if (response.status === 403) throw new ApiError(403, 'Доступ заборонено.');
+        if (!response.ok) throw new ApiError(503, 'Перевірка сесії тимчасово недоступна.');
+        let result: { users?: { localId?: unknown; emailVerified?: unknown; disabled?: unknown; validSince?: unknown }[] };
+        try { result = JSON.parse(await boundedText(response, 8192)); }
+        catch { throw new ApiError(503, 'Некоректна відповідь сервісу доступу.'); }
+        if (!Array.isArray(result?.users) || result.users.length !== 1 || result.users[0]?.localId !== uid) throw new ApiError(401, 'Некоректна сесія.');
+        const user = result.users[0];
+        if (user.disabled || user.emailVerified !== true) throw new ApiError(403, 'Акаунт заблокований або пошта не підтверджена.');
+        if (user.validSince !== undefined && (typeof user.validSince !== 'string' || !/^\d+$/.test(user.validSince))) throw new ApiError(503, 'Некоректний стан акаунта.');
+        const validSince = Number(user.validSince ?? '0');
+        if (!Number.isSafeInteger(validSince) || validSince < 0) throw new ApiError(503, 'Некоректний стан акаунта.');
+        if (authTime < validSince) throw new ApiError(401, 'Сесію відкликано. Увійдіть знову.');
+        return uid;
+      }
       let current = keys;
-      if (!current || current.expires <= seconds || (!current.jwks[header.kid] && current.fetched <= seconds - 60)) current = await loadKeys(seconds);
-      let key = current.values[header.kid];
-      if (!key && current.jwks[header.kid]) {
-        key = await crypto.subtle.importKey('jwk', current.jwks[header.kid], { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
-        current.values[header.kid] = key;
+      if (!current || current.expires <= seconds || (!current.jwks[kid] && current.fetched <= seconds - 60)) current = await loadKeys(seconds);
+      let key = current.values[kid];
+      if (!key && current.jwks[kid]) {
+        key = await crypto.subtle.importKey('jwk', current.jwks[kid], { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+        current.values[kid] = key;
       }
       if (!key || !await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, base64url(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`))) {
         throw new ApiError(401, 'Некоректна сесія.');
       }
-      if (claims.email_verified !== true) throw new ApiError(403, 'Підтвердьте електронну пошту.');
-      return claims.sub;
+      return uid;
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(401, 'Некоректна сесія.');

@@ -100,20 +100,20 @@ export function ApiPage() {
       <h2 className="font-semibold">Імпорт JSON</h2>
       <p className="text-sm">Імпортовані товари та оновлення зберігаються як чернетки. Перевірте їх і опублікуйте обрані у <NavLink to="/app/admin/catalog" className="text-emerald-600 underline">адмінці каталогу</NavLink>.</p>
       <p className="text-sm text-neutral-500">Після додавання черга перевірить усі записи. Якщо поля некоректні, імпорт завершиться помилкою без запису товарів; причину дивіться у результаті.</p>
-      <p className="text-sm text-neutral-500">До 100 записів та 128 КіБ за запит. Менеджер — раз на годину, адміністратор — раз на 5 хвилин. Один активний імпорт на акаунт.</p>
+      <p className="text-sm text-neutral-500">До {IMPORT_LIMITS.items} записів та {IMPORT_LIMITS.bytes / 1024} КіБ за запит. Більші файли розділіть на менші порції. Менеджер — раз на годину, адміністратор — раз на 5 хвилин. Один активний імпорт на акаунт.</p>
       {metadata?.nextImportAt && new Date(metadata.nextImportAt).getTime() > Date.now() && <p className="text-sm">Наступний імпорт: {date(metadata.nextImportAt)}</p>}
       <label htmlFor="api-json-file" className="block text-sm font-medium">Завантажити файл JSON</label>
       <input id="api-json-file" type="file" accept=".json,application/json" disabled={busy} className="block max-w-full text-sm" onChange={event => {
         const file = event.target.files?.[0];
         event.target.value = '';
         if (!file) return;
-        void run(async () => { if (file.size > IMPORT_LIMITS.bytes) throw new Error('Файл перевищує 128 КіБ.'); const value = await file.text(); JSON.parse(value); setJsonText(value); idempotency.current = crypto.randomUUID(); });
+        void run(async () => { if (file.size > IMPORT_LIMITS.bytes) throw new Error(`Файл перевищує ${IMPORT_LIMITS.bytes / 1024} КіБ. Розділіть його на менші порції.`); const value = await file.text(); JSON.parse(value); setJsonText(value); idempotency.current = crypto.randomUUID(); });
       }} />
       <label htmlFor="api-json" className="block text-sm font-medium">Вміст JSON</label>
       <textarea id="api-json" rows={12} spellCheck={false} value={jsonText} className="w-full rounded-xl border border-neutral-300 dark:border-neutral-700 bg-transparent p-3 font-mono text-xs" disabled={busy}
         onChange={event => { setJsonText(event.target.value); idempotency.current = crypto.randomUUID(); }} />
       <Button leftIcon={<Upload size={15} />} disabled={busy || !metadata?.key || metadata.key.requiresRotation} onClick={() => void run(async () => {
-        if (new TextEncoder().encode(jsonText).length > IMPORT_LIMITS.bytes) throw new Error('JSON перевищує 128 КіБ.');
+        if (new TextEncoder().encode(jsonText).length > IMPORT_LIMITS.bytes) throw new Error(`JSON перевищує ${IMPORT_LIMITS.bytes / 1024} КіБ. Розділіть його на менші порції.`);
         const result = await api.submit(JSON.parse(jsonText), idempotency.current);
         setNotice('Імпорт додано до черги: ' + result.id + '. Оновіть стан для перевірки результату.');
         await refresh();

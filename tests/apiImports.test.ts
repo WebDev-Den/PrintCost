@@ -3,6 +3,23 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { IMPORT_EXAMPLE, IMPORT_LIMITS, importDomain, normalizeImportPayload, profileForImport, validateImportEnvelope } from '../src/domain/apiImports.ts';
+import { createImportApi } from '../workers/importApi.ts';
+
+test('declared oversized import POSTs stop before authorization or any D1/Firebase work', async () => {
+  let databaseCalls = 0, firebaseCalls = 0;
+  const api = createImportApi(async () => { firebaseCalls++; throw new Error('Must not contact Firebase.'); });
+  const env = { FIREBASE_PROJECT_ID: 'demo-import-size', FIREBASE_IMPORT_SERVICE_ACCOUNT: 'fixture', IMPORT_QUEUE: { async send() {} },
+    ANALYTICS_DB: { prepare() { databaseCalls++; throw new Error('Must not contact D1.'); }, async batch() { databaseCalls++; throw new Error('Must not contact D1.'); } } };
+  const oversized = await api.fetch(new Request('https://import.invalid/api/v1/imports', { method: 'POST',
+    headers: { Authorization: 'Bearer kg_api_' + 'x'.repeat(43), 'Content-Type': 'application/json', 'Content-Length': String(IMPORT_LIMITS.bytes + 1) }, body: '{}' }), env);
+  assert.equal(oversized.status, 413);
+  assert.equal(databaseCalls, 0); assert.equal(firebaseCalls, 0);
+  for (const [path, method, status] of [['imports','GET',401], ['api-key','POST',401], ['unknown','POST',404]] as const) {
+    const response = await api.fetch(new Request('https://import.invalid/api/v1/' + path, { method,
+      headers: { 'Content-Length': String(IMPORT_LIMITS.bytes + 1) } }), env);
+    assert.equal(response.status, status, 'The early body guard applies only to import submission.');
+  }
+});
 
 test('HTTP envelope validation bounds the whole request without validating individual records', () => {
   const offers = Array.from({ length: IMPORT_LIMITS.items }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: String(index) }));

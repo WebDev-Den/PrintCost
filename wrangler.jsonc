@@ -21,6 +21,7 @@
   },
   "vars": {
     "FIREBASE_PROJECT_ID": "kilo-g",
+    "FIREBASE_WEB_API_KEY": "AIzaSyC7VP733Qc-lcCVGFFWRsICUqJ72DVOQQg",
     "TURNSTILE_HOSTNAMES": "web-dev.pp.ua,kilo-g.web-developer-den.workers.dev"
   },
   "secrets": { "required": ["TURNSTILE_SECRET_KEY", "FIREBASE_IMPORT_SERVICE_ACCOUNT"] },

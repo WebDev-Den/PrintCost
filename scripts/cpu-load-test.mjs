@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { IMPORT_LIMITS } from '../src/domain/apiImports.ts';
 
 const hosts = new Set(['https://web-dev.pp.ua', 'https://kilo-g.web-developer-den.workers.dev']);
 const outputPath = /^output\/[a-zA-Z0-9_-]+\.json$/;
@@ -33,7 +34,7 @@ export function createPlan(credentials = {}) {
     const body = fs.readFileSync(payloadPath, 'utf8');
     const value = JSON.parse(body), proof = JSON.parse(fs.readFileSync(proofPath, 'utf8'));
     assert.equal((value.offers?.length || 0) + (value.companies?.length || 0), 100, 'Boundary fixture must contain 100 records.');
-    assert.equal(Buffer.byteLength(body), 128 * 1024, 'Boundary fixture must be exactly 128 KiB.');
+    assert.equal(Buffer.byteLength(body), IMPORT_LIMITS.bytes, `Boundary fixture must be exactly ${IMPORT_LIMITS.bytes / 1024} KiB.`);
     assert.match(proof.jobId, /^[0-9a-f-]{36}$/); assert.match(proof.idempotencyKey, /^[A-Za-z0-9_-]{1,128}$/);
     assert.equal(proof.payloadSha256, createHash('sha256').update(body).digest('hex'), 'Fixture bytes must match the previously accepted job proof.');
     const headers = { ...(credentials.apiKey ? { Authorization: 'Bearer ' + credentials.apiKey } : session),
@@ -43,7 +44,7 @@ export function createPlan(credentials = {}) {
       { path: '/api/v1/imports', method: 'POST', headers, body: body + ' ', expected: [413] },
       { path: '/api/v1/imports', method: 'POST', headers, body: JSON.stringify({ offers: Array.from({ length: 101 }, () => ({})) }), expected: [422] },
     ] });
-  } else skipped.push('100-record / 128-KiB accepted replay and overlimit requests require an existing accepted fixture proof. No import is created automatically.');
+  } else skipped.push(`${IMPORT_LIMITS.items}-record / ${IMPORT_LIMITS.bytes / 1024}-KiB accepted replay and overlimit requests require an existing accepted fixture proof. No import is created automatically.`);
   assert.ok(phases.reduce((total, phase) => total + phase.requests.length, 0) <= 120);
   assert.ok(phases.every(({ concurrency }) => concurrency >= 1 && concurrency <= 4));
   return { host, phases, skipped };

@@ -23,6 +23,7 @@ export interface AnalyticsEnv {
   ANALYTICS_DB?: AnalyticsDatabase;
   ANALYTICS_RATE_LIMIT?: { limit(input: { key: string }): Promise<{ success: boolean }> };
   FIREBASE_PROJECT_ID: string;
+  FIREBASE_WEB_API_KEY?: string;
   ASSETS?: { fetch(request: Request): Promise<Response> };
 }
 interface Context { waitUntil(promise: Promise<unknown>): void }
@@ -166,8 +167,8 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     return { companyId: '', name: sku.name.slice(0, 400) };
   }
 
-  async function access(project: string, token: string, companyId: string, appCheckToken?: string) {
-    const uid = await verifyToken(token, project);
+  async function access(project: string, token: string, companyId: string, appCheckToken?: string, webApiKey?: string) {
+    const uid = await verifyToken(token, project, webApiKey);
     const [account, registry, membership] = await Promise.all([
       read(project, `accountAccess/${uid}`, token, appCheckToken), read(project, 'system/authorization', token, appCheckToken), read(project, `memberships/${uid}`, token, appCheckToken),
     ]);
@@ -266,7 +267,7 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     if (!check.results.length) throw exhausted();
     const token = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(request.headers.get('Authorization') || '')?.[1];
     if (!token) throw new ApiError(401, 'Увійдіть в акаунт.');
-    const role = await access(env.FIREBASE_PROJECT_ID, token, query.companyId, request.headers.get('X-Firebase-AppCheck') || undefined);
+    const role = await access(env.FIREBASE_PROJECT_ID, token, query.companyId, request.headers.get('X-Firebase-AppCheck') || undefined, env.FIREBASE_WEB_API_KEY);
     const scope = query.companyId === 'all' ? '' : query.companyId;
     const global = query.companyId === 'all';
     const cacheKey = `${env.FIREBASE_PROJECT_ID}/${query.companyId}/${query.from}/${query.to}`;

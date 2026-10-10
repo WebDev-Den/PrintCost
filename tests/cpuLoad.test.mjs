@@ -7,14 +7,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createPlan, runPlan } from '../scripts/cpu-load-test.mjs';
+import { IMPORT_LIMITS } from '../src/domain/apiImports.ts';
 
 test('bounded load harness caps concurrency, redacts credentials and stops on authorization failure', async () => {
   const publicPlan = createPlan();
   assert.equal(publicPlan.phases.reduce((total, { requests }) => total + requests.length, 0), 48);
   assert.equal(publicPlan.skipped.length, 2);
   const payloadPath = 'output/cpu-load-selfcheck-payload.json', proofPath = 'output/cpu-load-selfcheck-fixture.json';
-  const value = { offers: Array.from({ length: 100 }, (_, index) => ({ externalId: 'fixture-' + index, description: 'x'.repeat(1000) })) };
-  const serialized = JSON.stringify(value), bytes = 128 * 1024;
+  const value = { offers: Array.from({ length: IMPORT_LIMITS.items }, (_, index) => ({ externalId: 'fixture-' + index, description: 'x'.repeat(100) })) };
+  const serialized = JSON.stringify(value), bytes = IMPORT_LIMITS.bytes;
   assert.ok(Buffer.byteLength(serialized) < bytes);
   const body = serialized + ' '.repeat(bytes - Buffer.byteLength(serialized));
   const jobId = '11111111-1111-4111-a111-111111111111';

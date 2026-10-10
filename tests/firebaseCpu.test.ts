@@ -102,6 +102,92 @@ test('concurrent cold verifications own their fetches and late older responses c
   assert.equal(resolve.length, 2, 'The late older response cannot replace the current set or trigger another fetch.');
 });
 
+function remoteToken(changes: Record<string, unknown> = {}, headerChanges: Record<string, unknown> = {}) {
+  const clock = 1_790_000_000;
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'remote-fixture', ...headerChanges })).toString('base64url');
+  const claims = Buffer.from(JSON.stringify({ sub: 'remote-user', aud: 'kilo-g', iss: 'https://securetoken.google.com/kilo-g',
+    exp: clock + 3600, iat: clock, auth_time: clock - 20, email_verified: true, ...changes })).toString('base64url');
+  return header + '.' + claims + '.fixture_signature';
+}
+const remoteApiKey = 'AIza' + 'x'.repeat(35);
+const remoteClock = () => new Date(1_790_000_000_000);
+
+test('remote account lookup delegates signature verification without RSA or JWKS and keeps live revocation', async t => {
+  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const parts = remoteToken().split('.');
+  const signed = parts[0] + '.' + parts[1];
+  parts[2] = sign('RSA-SHA256', Buffer.from(signed), pair.privateKey).toString('base64url');
+  const token = parts.join('.');
+  const tampered = token.slice(0, signed.length + 1) + (parts[2][0] === 'A' ? 'B' : 'A') + parts[2].slice(1);
+  t.mock.method(crypto.subtle, 'importKey', () => { throw new Error('Remote verification must not import RSA keys.'); });
+  t.mock.method(crypto.subtle, 'verify', () => { throw new Error('Remote verification must not run RSA locally.'); });
+  let requests = 0;
+  const user = { localId: 'remote-user', emailVerified: true, disabled: false, validSince: '0' };
+  const verify = createTokenVerifier(async (input, init) => {
+    requests++;
+    const url = new URL(String(input));
+    assert.equal(url.origin + url.pathname, 'https://identitytoolkit.googleapis.com/v1/accounts:lookup');
+    assert.equal(url.searchParams.get('key'), remoteApiKey);
+    assert.equal(url.searchParams.get('fields'), 'users(localId,emailVerified,disabled,validSince)');
+    assert.equal(init?.method, 'POST'); assert.equal(init?.redirect, 'manual'); assert.ok(init?.signal);
+    assert.equal(new Headers(init?.headers).get('Authorization'), null);
+    const payload = JSON.parse(init?.body as string);
+    assert.deepEqual(Object.keys(payload), ['idToken'], 'Never send privileged localId, email or tenant selectors.');
+    const [head, claims, signature] = payload.idToken.split('.');
+    if (!verifySignature('RSA-SHA256', Buffer.from(head + '.' + claims), pair.publicKey, Buffer.from(signature, 'base64url'))) {
+      return Response.json({ error: { message: 'INVALID_ID_TOKEN' } }, { status: 400 });
+    }
+    return Response.json({ users: [{ ...user }] });
+  }, remoteClock);
+  assert.equal(await verify(token, 'kilo-g', remoteApiKey), 'remote-user');
+  await assert.rejects(verify(tampered, 'kilo-g', remoteApiKey), { status: 401 });
+  user.disabled = true;
+  await assert.rejects(verify(token, 'kilo-g', remoteApiKey), { status: 403 });
+  user.disabled = false; user.emailVerified = false;
+  await assert.rejects(verify(token, 'kilo-g', remoteApiKey), { status: 403 });
+  user.emailVerified = true; user.validSince = '1790000000';
+  await assert.rejects(verify(token, 'kilo-g', remoteApiKey), { status: 401 });
+  user.validSince = '1789999980';
+  assert.equal(await verify(token, 'kilo-g', remoteApiKey), 'remote-user');
+  assert.equal(requests, 6, 'No identity or access result survives a request.');
+});
+
+test('remote verification rejects project, header and time claims before any Google request', async () => {
+  let requests = 0;
+  const verify = createTokenVerifier(async () => { requests++; throw new Error('Unexpected fetch'); }, remoteClock);
+  for (const changes of [{ aud: 'foreign' }, { iss: 'https://evil.example' }, { exp: 1_790_000_000 }, { exp: 1_789_999_999 },
+    { iat: -1 }, { iat: 1_790_000_001 }, { iat: 1.5 }, { auth_time: -1 }, { auth_time: 1_790_000_001 },
+    { iat: 1_789_999_970 }, { sub: '' }, { sub: 'other/path' }, { sub: 'x'.repeat(129) }]) {
+    await assert.rejects(verify(remoteToken(changes), 'kilo-g', remoteApiKey), { status: 401 });
+  }
+  for (const changes of [{ alg: 'none' }, { kid: '' }, { kid: 'x'.repeat(201) }]) {
+    await assert.rejects(verify(remoteToken({}, changes), 'kilo-g', remoteApiKey), { status: 401 });
+  }
+  await assert.rejects(verify(remoteToken({ email_verified: false }), 'kilo-g', remoteApiKey), { status: 403 });
+  await assert.rejects(verify(remoteToken(), 'kilo-g', ''), { status: 503 }, 'An invalid configured key cannot silently fall back to RSA.');
+  assert.equal(requests, 0);
+});
+
+test('remote verification fails closed for transport, upstream errors and malformed account responses', async () => {
+  let reply: () => Response | Promise<Response> = () => Response.json({ users: [{ localId: 'remote-user', emailVerified: true }] });
+  const verify = createTokenVerifier(async () => reply(), remoteClock);
+  const check = (status: number) => assert.rejects(verify(remoteToken(), 'kilo-g', remoteApiKey), { status });
+  assert.equal(await verify(remoteToken(), 'kilo-g', remoteApiKey), 'remote-user', 'Missing optional validSince uses the epoch.');
+  for (const status of [400, 401, 403, 429, 500, 503, 302]) {
+    reply = () => new Response(null, { status });
+    await check(status === 400 || status === 401 ? 401 : status === 403 ? 403 : 503);
+  }
+  reply = () => { throw new Error('network failure'); }; await check(503);
+  for (const body of ['{', 'x'.repeat(8193)]) { reply = () => new Response(body); await check(503); }
+  for (const users of [[], [{ localId: 'wrong', emailVerified: true }],
+    [{ localId: 'remote-user', emailVerified: true }, { localId: 'remote-user', emailVerified: true }]]) {
+    reply = () => Response.json({ users }); await check(401);
+  }
+  for (const validSince of ['', '-1', '1.5', '9007199254740992', true]) {
+    reply = () => Response.json({ users: [{ localId: 'remote-user', emailVerified: true, validSince }] }); await check(503);
+  }
+});
+
 test('service token refresh reuses one resolved signing key, rotates secrets and reads live access on every call', async t => {
   const project = 'kilo-g', uid = 'admin-fixture';
   const oldPair = generateKeyPairSync('rsa', { modulusLength: 2048 });
