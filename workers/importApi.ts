@@ -1,5 +1,5 @@
 import type { AnalyticsDatabase } from './analytics.ts';
-import { ApiError, boundedText, createTokenVerifier } from './firebase.ts';
+import { ApiError, boundedText, createTokenVerifier, type VerifiedIdentity } from './firebase.ts';
 import { createImportFirebase, digest } from './importFirebase.ts';
 import { IMPORT_LIMITS, normalizeImportPayload, validateImportEnvelope, type ApiKeyMetadata, type ImportPayload, type ImportItemResult, type ImportJobSummary } from '../src/domain/apiImports.ts';
 
@@ -69,6 +69,7 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
     if (!bearer) throw new ApiError(401, 'Потрібен Authorization: Bearer.');
     let uid: string;
     let authTime: number | undefined;
+    let identity: VerifiedIdentity | undefined;
     let key: KeyRow | null;
     if (bearer.startsWith('kg_api_')) {
       if (jwtOnly || !/^kg_api_[A-Za-z0-9_-]{43}$/.test(bearer)) throw new ApiError(401, 'Потрібна сесія кабінету.');
@@ -76,14 +77,14 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
       if (!key || key.expires_at <= seconds()) throw new ApiError(401, 'Ключ недійсний або прострочений.');
       uid = key.uid;
     } else {
-      uid = await verify(bearer, env.FIREBASE_PROJECT_ID, env.FIREBASE_WEB_API_KEY);
-      const claims = JSON.parse(atob(bearer.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-      authTime = claims.auth_time;
+      identity = await verify(bearer, env.FIREBASE_PROJECT_ID, env.FIREBASE_WEB_API_KEY, true);
+      uid = identity.uid;
+      authTime = identity.authTime;
       key = await db.prepare('SELECT * FROM import_keys WHERE uid=?').bind(uid).first<KeyRow>();
     }
     if (env.IMPORT_RATE_LIMIT && !(await env.IMPORT_RATE_LIMIT.limit({ key: 'uid:' + uid })).success) throw new ApiError(429, 'Забагато запитів для цього акаунта. Спробуйте через хвилину.');
     const databaseSize = await preliminaryBudget(db, uid, key);
-    const scope = await firebase.scope(env.FIREBASE_PROJECT_ID, env.FIREBASE_IMPORT_SERVICE_ACCOUNT!, uid, db, false);
+    const scope = await firebase.scope(env.FIREBASE_PROJECT_ID, env.FIREBASE_IMPORT_SERVICE_ACCOUNT!, uid, db, false, identity);
     if (authTime !== undefined && authTime < scope.validSince) throw new ApiError(401, 'Сесію відкликано. Увійдіть знову.');
     if (authTime === undefined && key?.fingerprint !== scope.fingerprint) throw new ApiError(403, 'Права змінилися. Оновіть API-ключ у кабінеті.');
     await budget(db, scope.role);

@@ -9,6 +9,7 @@ export type FirestoreValue = {
 };
 export type Document = Record<string, unknown>;
 export const FIREBASE_JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
+export interface VerifiedIdentity { uid: string; authTime: number; validSince?: number }
 
 function decodeValue(value: FirestoreValue): unknown {
   if ('stringValue' in value) return value.stringValue;
@@ -116,7 +117,9 @@ export function createTokenVerifier(fetcher: typeof fetch, now: () => Date) {
     if (started === generation) keys = loaded;
     return loaded;
   }
-  return async (token: string, project: string, webApiKey?: string): Promise<string> => {
+  function verify(token: string, project: string, webApiKey?: string): Promise<string>;
+  function verify(token: string, project: string, webApiKey: string | undefined, details: true): Promise<VerifiedIdentity>;
+  async function verify(token: string, project: string, webApiKey?: string, details = false): Promise<string | VerifiedIdentity> {
     try {
       const seconds = Math.floor(now().getTime() / 1000);
       const { parts, kid, uid, authTime } = tokenIdentity(token, project, seconds);
@@ -144,7 +147,7 @@ export function createTokenVerifier(fetcher: typeof fetch, now: () => Date) {
         const validSince = Number(user.validSince ?? '0');
         if (!Number.isSafeInteger(validSince) || validSince < 0) throw new ApiError(503, 'Некоректний стан акаунта.');
         if (authTime < validSince) throw new ApiError(401, 'Сесію відкликано. Увійдіть знову.');
-        return uid;
+        return details ? { uid, authTime, validSince } : uid;
       }
       let current = keys;
       if (!current || current.expires <= seconds || (!current.jwks[kid] && current.fetched <= seconds - 60)) current = await loadKeys(seconds);
@@ -156,10 +159,11 @@ export function createTokenVerifier(fetcher: typeof fetch, now: () => Date) {
       if (!key || !await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, base64url(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`))) {
         throw new ApiError(401, 'Некоректна сесія.');
       }
-      return uid;
+      return details ? { uid, authTime } : uid;
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(401, 'Некоректна сесія.');
     }
-  };
+  }
+  return verify;
 }

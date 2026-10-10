@@ -126,7 +126,7 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
           return new RuntimeResponse(JSON.stringify({ keys: [jwk] }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' } });
         }
         assert.equal(url.hostname, 'firestore.googleapis.com', 'No external network from integration fixtures.');
-        assert.ok(url.pathname.startsWith(DOCS), 'Fixture cannot access a real Firebase project.');
+        assert.ok(url.pathname.startsWith(DOCS) || url.pathname === DOCS.slice(0, -1) + ':batchGet', 'Fixture cannot access a real Firebase project.');
         firestoreRequests++;
         const upstream = await fetch(`${FIRESTORE}${url.pathname}${url.search}`, { method: request.method, headers: request.headers, body: request.method === 'GET' ? undefined : await request.text() });
         return new RuntimeResponse(await upstream.arrayBuffer(), { status: upstream.status, headers: Object.fromEntries(upstream.headers) });
@@ -163,6 +163,16 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       await localDocument(`accountAccess/${manager.uid}`, { ...access, blocked: true });
       assert.equal((await report(managerToken)).status, 403, 'Blocked account cannot report with its old JWT.');
       await localDocument(`accountAccess/${manager.uid}`, access);
+      for (const [user, restore, expected] of [
+        [admin, { ...membership, companyId: null, active: false }, 200], [manager, membership, 403],
+      ] as const) {
+        const removed = await fetch(`${FIRESTORE}${DOCS}memberships/${user.uid}`, { method: 'DELETE', headers: { Authorization: 'Bearer owner' } });
+        assert.ok(removed.ok);
+        try {
+          assert.equal((await report(user === admin ? adminToken : managerToken, user === admin ? 'all' : companyId)).status, expected,
+            'Rules permit an own missing document: admins need no membership, managers lose company access.');
+        } finally { await localDocument(`memberships/${user.uid}`, restore); }
+      }
     });
     await t.test('malformed, forged, expired and unverified identities deny', async () => {
       const parts = managerToken.split('.');
@@ -279,7 +289,7 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       const checked = await Promise.all([report(managerToken), report(managerToken)]);
       assert.deepEqual(checked.map(response => response.status).sort(), [200, 429]);
       assert.ok(checked.find(response => response.status === 429)!.headers.get('Retry-After'));
-      assert.equal(firestoreRequests - before, 4, 'The denied check cannot reach Firestore; cached data still checks live permissions.');
+      assert.equal(firestoreRequests - before, 2, 'The denied check cannot reach Firestore; cached data still checks live masked permissions and company state.');
       await db.prepare('UPDATE analytics_report_budget SET checks=0,reserved_reads=875000 WHERE day=?').bind(utcDay).run();
       const reserve = () => db.prepare('UPDATE analytics_report_budget SET reserved_reads=reserved_reads+? WHERE day=? AND reserved_reads<=? RETURNING day').bind(125000, utcDay, 875000).all();
       const reserved = await Promise.all([reserve(), reserve()]);

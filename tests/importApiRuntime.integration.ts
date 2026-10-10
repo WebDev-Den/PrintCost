@@ -146,6 +146,18 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   await createImportApi(importFetcher).refreshCredentials({ FIREBASE_PROJECT_ID: project, FIREBASE_WEB_API_KEY: webApiKey, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
     IMPORT_QUEUE: { async send() {} } });
   assert.equal(oauthRequests, 1);
+  await t.test('native browser identity reuses one remote Auth check while every role read stays fresh', async () => {
+    const beforeAuth = authRequests, beforeRemote = remoteAuthRequests, beforeFirestore = firebaseRequests;
+    assert.equal((await request('api-key', adminJwt)).status, 200);
+    assert.equal(remoteAuthRequests, beforeRemote + 1); assert.equal(authRequests, beforeAuth);
+    assert.equal(firebaseRequests, beforeFirestore + 1, 'The role batch is still read on every browser request.');
+    try {
+      await seed('accountAccess/admin', { blocked: true, changeId: 'remote-block' });
+      assert.equal((await request('api-key', adminJwt)).status, 403);
+      assert.equal(remoteAuthRequests, beforeRemote + 2); assert.equal(authRequests, beforeAuth);
+      assert.equal(firebaseRequests, beforeFirestore + 2, 'A role block with the same ID token takes effect immediately.');
+    } finally { await seed('accountAccess/admin', { blocked: false, changeId: 'remote-unblock' }); }
+  });
   assert.equal((await request('api-key', jwt('user'))).status, 403);
   assert.equal((await request('api-key', jwt('admin', true), 'POST')).status, 401);
   assert.equal((await request('api-key', adminJwt, 'GET', undefined, randomUUID(), { Origin: 'https://evil.invalid' })).status, 403);
@@ -156,6 +168,17 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   assert.ok(!JSON.stringify(await (await request('api-key', adminJwt)).json()).includes(adminKey));
   assert.ok(!(await db.prepare('SELECT * FROM import_keys').all()).results.some((row: Record<string, unknown>) => JSON.stringify(row).includes(managerKey)));
   assert.equal((await request('api-key', adminKey)).status, 401);
+  await t.test('native external API keys always read current privileged Auth and roles', async () => {
+    const beforeAuth = authRequests, beforeRemote = remoteAuthRequests, beforeFirestore = firebaseRequests;
+    assert.equal((await request('imports', adminKey)).status, 200);
+    assert.equal(authRequests, beforeAuth + 1); assert.equal(remoteAuthRequests, beforeRemote);
+    assert.equal(firebaseRequests, beforeFirestore + 1);
+    users.get('admin')!.disabled = true;
+    try { assert.equal((await request('imports', adminKey)).status, 403); }
+    finally { users.get('admin')!.disabled = false; }
+    assert.equal(authRequests, beforeAuth + 2, 'Disabling the same API-key owner is checked anew.');
+    assert.equal(firebaseRequests, beforeFirestore + 1, 'Disabled API-key owner never reaches role reads.');
+  });
   const managerPayload = { offers: Array.from({ length: 12 }, (_, index) => ({ ...IMPORT_EXAMPLE.offers[0], externalId: 'p-' + index,
     status: 'published', productUrl: 'https://company-a.example.com/p-' + index })) };
   const idempotency = randomUUID();
@@ -496,11 +519,13 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
         assert.equal((await db.prepare(`SELECT ${column} AS checks FROM import_daily WHERE day=?`).bind(day).first<any>()).checks, 500);
       }
       await db.prepare('UPDATE import_daily SET unknown_preflight_checks=99 WHERE day=?').bind(day).run();
-      const authBeforeDiscovery = authRequests;
+      const authBeforeDiscovery = authRequests, rolesBeforeDiscovery = firebaseRequests, remoteBeforeDiscovery = remoteAuthRequests;
       const discovery = await Promise.all(Array.from({ length: 6 }, () => guardedRequest(jwt('discovery-' + randomUUID()), true)));
       assert.equal(discovery.filter(response => response.status === 403).length, 1);
       assert.equal(discovery.filter(response => response.status === 429).length, 5);
-      assert.equal(authRequests - authBeforeDiscovery, 1, 'Only one discovery UID can reach fresh Firebase Auth.');
+      assert.equal(remoteAuthRequests - remoteBeforeDiscovery, 6, 'Every discovery token obtains its own verified remote account state.');
+      assert.equal(authRequests, authBeforeDiscovery, 'Browser-session scope never repeats the verified Auth lookup.');
+      assert.equal(firebaseRequests - rolesBeforeDiscovery, 1, 'Only the admitted discovery UID reaches fresh role documents.');
       assert.equal((await db.prepare('SELECT unknown_preflight_checks FROM import_daily WHERE day=?').bind(day).first<any>()).unknown_preflight_checks, 100);
     } finally {
       await db.prepare('UPDATE import_daily SET access_checks=0,admin_access_checks=0,admin_preflight_checks=0,manager_preflight_checks=0,unknown_preflight_checks=0 WHERE day=?').bind(day).run();

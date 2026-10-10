@@ -55,6 +55,7 @@ test('JWT imports only requested public keys, reuses resolved keys and honors re
     return payload + '.' + sign('RSA-SHA256', Buffer.from(payload), pair.privateKey).toString('base64url');
   };
   assert.equal(await verify(token(), 'kilo-g'), 'user-a');
+  assert.deepEqual(await verify(token(), 'kilo-g', undefined, true), { uid: 'user-a', authTime: clock }, 'RSA verification never supplies an unchecked account state.');
   assert.equal(await verify(token(oldPair, 'old', { sub: 'user-b' }), 'kilo-g'), 'user-b');
   assert.deepEqual(imported, ['old'], 'An inactive malformed JWK is never imported; no identity is cached.');
   assert.equal(requests, 1);
@@ -140,6 +141,7 @@ test('remote account lookup delegates signature verification without RSA or JWKS
     return Response.json({ users: [{ ...user }] });
   }, remoteClock);
   assert.equal(await verify(token, 'kilo-g', remoteApiKey), 'remote-user');
+  assert.deepEqual(await verify(token, 'kilo-g', remoteApiKey, true), { uid: 'remote-user', authTime: 1_789_999_980, validSince: 0 });
   await assert.rejects(verify(tampered, 'kilo-g', remoteApiKey), { status: 401 });
   user.disabled = true;
   await assert.rejects(verify(token, 'kilo-g', remoteApiKey), { status: 403 });
@@ -149,7 +151,7 @@ test('remote account lookup delegates signature verification without RSA or JWKS
   await assert.rejects(verify(token, 'kilo-g', remoteApiKey), { status: 401 });
   user.validSince = '1789999980';
   assert.equal(await verify(token, 'kilo-g', remoteApiKey), 'remote-user');
-  assert.equal(requests, 6, 'No identity or access result survives a request.');
+  assert.equal(requests, 7, 'No identity or access result survives a request.');
 });
 
 test('remote verification rejects project, header and time claims before any Google request', async () => {
@@ -312,4 +314,25 @@ test('masked access reads omit company logos and keep manager state and deletion
   documents.set('accountDeletion/' + uid, { uid, startedAt: 'fixture' });
   await assert.rejects(adapter.scope(project, secret, uid), { status: 403 });
   assert.deepEqual([authCalls, companyReads], [4, 3], 'A masked deletion document with empty fields still denies access.');
+  documents.delete('accountDeletion/' + uid);
+  const identity = { uid, authTime: 100, validSince: 42 };
+  const verifiedScope = await adapter.scope(project, secret, uid, undefined, true, identity);
+  assert.equal(verifiedScope.validSince, 42);
+  assert.deepEqual([authCalls, companyReads], [4, 4], 'A verified remote account skips only the duplicate privileged Auth lookup.');
+  documents.set('accountAccess/' + uid, { blocked: true, changeId: 'fresh-block' });
+  await assert.rejects(adapter.scope(project, secret, uid, undefined, true, identity), { status: 403 });
+  documents.set('accountAccess/' + uid, { blocked: false, changeId: 'fresh-unblock' });
+  documents.get('companies/company-a')!.status = 'disabled';
+  await assert.rejects(adapter.scope(project, secret, uid, undefined, true, identity), { status: 403 });
+  documents.get('companies/company-a')!.status = 'active';
+  documents.get('memberships/' + uid)!.active = false;
+  await assert.rejects(adapter.scope(project, secret, uid, undefined, true, identity), { status: 403 });
+  assert.deepEqual([authCalls, companyReads], [4, 5], 'Current blocks, company and membership changes remain authoritative.');
+  for (const invalid of [{ ...identity, uid: 'foreign' }, { ...identity, validSince: -1 },
+    { ...identity, validSince: 101 }, { ...identity, authTime: NaN }]) {
+    await assert.rejects(adapter.scope(project, secret, uid, undefined, true, invalid), { status: 401 });
+  }
+  documents.get('memberships/' + uid)!.active = true;
+  assert.equal((await adapter.scope(project, secret, uid, undefined, true, { uid, authTime: 100 })).validSince, 42);
+  assert.deepEqual([authCalls, companyReads], [5, 6], 'RSA-only identity lacks account state and must still read privileged Auth.');
 });

@@ -70,15 +70,21 @@ async function fixture() {
     ['accountAccess/manager', { blocked: false }], ['accountAccess/admin', { blocked: false }],
     ['system/authorization', { adminUids: ['admin'] }], ['memberships/manager', { active: true, companyId: 'company-a' }],
   ]);
-  const calls: { path: string; authorization: string | null; appCheck: string | null }[] = [];
+  const calls: { path: string; authorization: string | null; appCheck: string | null; documents?: string[]; mask?: string[] }[] = [];
   const publicKey = await crypto.subtle.exportKey('jwk', (await keyPair).publicKey);
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url === FIREBASE_JWKS_URL) return Response.json({ keys: [{ ...publicKey, kid: 'fixture-key' }] }, { headers: { 'Cache-Control': 'max-age=3600' } });
-    const path = decodeURIComponent(url.split('/documents/')[1] || '');
+    const path = url.endsWith('/documents:batchGet') ? 'batchGet' : decodeURIComponent(url.split('/documents/')[1] || '');
     const headers = new Headers(init?.headers);
-    calls.push({ path, authorization: headers.get('Authorization'), appCheck: headers.get('X-Firebase-AppCheck') });
+    const body = path === 'batchGet' ? JSON.parse(String(init?.body)) : undefined;
+    calls.push({ path, authorization: headers.get('Authorization'), appCheck: headers.get('X-Firebase-AppCheck'), ...(body ? { documents: body.documents, mask: body.mask.fieldPaths } : {}) });
     if (headers.get('X-Firebase-AppCheck') === 'denied.token.signature') return new Response('', { status: 403 });
+    if (body) return Response.json(body.documents.map((name: string) => {
+      const value = documents.get(name.split('/documents/')[1]);
+      const projected = value && Object.fromEntries(Object.entries(value).filter(([key]) => body.mask.fieldPaths.includes(key)));
+      return projected ? { found: { name, fields: (firestoreValue(projected) as { mapValue: { fields: object } }).mapValue.fields } } : { missing: name };
+    }).reverse());
     const value = documents.get(path);
     return value ? Response.json({ fields: (firestoreValue(value) as { mapValue: { fields: object } }).mapValue.fields }) : new Response('', { status: 404 });
   };
@@ -94,6 +100,37 @@ async function fixture() {
   }
   return { ...db, documents, calls, fetcher, worker, env, context, pending, post, report };
 }
+
+test('report reads one fresh masked access batch, maps unordered/missing documents and rejects malformed snapshots', async t => {
+  const f = await fixture(); t.after(() => f.sqlite.close());
+  const headers = { 'X-Firebase-AppCheck': 'valid.token.signature' };
+  for (let repeat = 0; repeat < 2; repeat++) assert.equal((await f.report('all', 'admin', undefined, headers)).status, 200);
+  const batches = f.calls.filter(call => call.path === 'batchGet');
+  assert.equal(batches.length, 2, 'Cached report data still reads fresh permissions once per request.');
+  assert.deepEqual(batches[0].documents, ['accountAccess/admin','system/authorization','memberships/admin'].map(path => 'projects/kilo-g/databases/(default)/documents/' + path));
+  assert.deepEqual(batches[0].mask, ['blocked','adminUids','active','companyId']);
+  assert.ok(batches.every(call => call.appCheck === headers['X-Firebase-AppCheck'] && call.authorization?.startsWith('Bearer ')));
+  assert.equal(f.calls.length, 2, 'A global administrator needs no separate Firestore GETs; a missing admin membership is valid.');
+  f.documents.set('accountAccess/admin', { blocked: true });
+  assert.equal((await f.report('all', 'admin', undefined, headers)).status, 403);
+  f.documents.set('accountAccess/admin', { blocked: false });
+  const malformed: ((rows: any[]) => unknown)[] = [
+    rows => rows.slice(1), rows => [...rows, rows[0]], rows => [rows[0], rows[0], rows[2]],
+    rows => [{ missing: 'projects/kilo-g/databases/(default)/documents/accountAccess/foreign' }, ...rows.slice(1)],
+    rows => [{ ...rows[0], found: {} }, ...rows.slice(1)],
+    rows => [{ found: { name: rows[1].found.name, fields: [] } }, rows[0], rows[2]],
+  ];
+  for (const corrupt of malformed) {
+    const worker = createAnalyticsWorker({ now: () => date, fetcher: async (input, init) => {
+      const response = await f.fetcher(input, init);
+      return String(input).endsWith('/documents:batchGet') ? Response.json(corrupt(await response.json())) : response;
+    } });
+    const result = await worker.fetch(new Request('https://web-dev.pp.ua/api/analytics/report?companyId=all&from=2026-10-08&to=2026-10-09', {
+      headers: { Authorization: 'Bearer ' + await token('admin'), ...headers },
+    }), f.env, f.context);
+    assert.equal(result.status, 503, 'Malformed or ambiguous permission batches fail closed.');
+  }
+});
 
 test('analytics locale setup waits for date use and reuses one Kyiv formatter across daylight saving and retention', async t => {
   let constructions = 0;
@@ -197,7 +234,7 @@ test('fresh registry, membership, company and account block revoke manager/admin
   f.documents.set('memberships/manager', { active: true, companyId: 'company-a' }); f.documents.set('companies/company-a', { status: 'disabled' }); assert.equal((await f.report()).status, 403);
   assert.equal((await f.report('all', 'admin')).status, 200);
   f.documents.set('system/authorization', { adminUids: [] }); assert.equal((await f.report('all', 'admin')).status, 403);
-  assert.ok(f.calls.filter(call => /^(accountAccess|memberships|system)\//.test(call.path)).every(call => call.authorization?.startsWith('Bearer ')));
+  assert.ok(f.calls.filter(call => call.path === 'batchGet').every(call => call.authorization?.startsWith('Bearer ')));
   assert.equal((await f.report('all', 'admin', 'from=2020-01-01&to=2020-01-02')).status, 400);
   assert.equal((await f.report('all', 'admin', 'from=2026-10-10&to=2026-10-10')).status, 400);
   await Promise.all(f.pending); f.sqlite.close();

@@ -1,5 +1,5 @@
 import { buildConcreteFilamentSkus, type PublicFilamentItem } from '../src/domain/filamentsDirectory.ts';
-import { ApiError, boundedText, createFirebaseReader, createTokenVerifier, type Document } from './firebase.ts';
+import { ApiError, boundedText, createFirebaseReader, createTokenVerifier, decodeFields, type Document, type FirestoreValue } from './firebase.ts';
 import { LEGACY_CATALOG_SKUS } from './legacyCatalog.ts';
 
 const EVENT_TYPES = ['search', 'filter', 'no_results', 'impression', 'details', 'seller_click', 'add_material'] as const;
@@ -169,9 +169,35 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
 
   async function access(project: string, token: string, companyId: string, appCheckToken?: string, webApiKey?: string) {
     const uid = await verifyToken(token, project, webApiKey);
-    const [account, registry, membership] = await Promise.all([
-      read(project, `accountAccess/${uid}`, token, appCheckToken), read(project, 'system/authorization', token, appCheckToken), read(project, `memberships/${uid}`, token, appCheckToken),
-    ]);
+    if (!/^[a-z][a-z0-9-]{4,62}$/.test(project)) throw new ApiError(503, 'Аналітика ще не налаштована.');
+    if (appCheckToken && (appCheckToken.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(appCheckToken))) throw new ApiError(400, 'Некоректне підтвердження застосунку.');
+    const root = `projects/${project}/databases/(default)/documents`;
+    const documents = [`${root}/accountAccess/${uid}`, `${root}/system/authorization`, `${root}/memberships/${uid}`];
+    let response: Response;
+    try {
+      response = await fetcher(`https://firestore.googleapis.com/v1/${root}:batchGet`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(appCheckToken ? { 'X-Firebase-AppCheck': appCheckToken } : {}) },
+        body: JSON.stringify({ documents, mask: { fieldPaths: ['blocked', 'adminUids', 'active', 'companyId'] } }),
+        redirect: 'manual', signal: AbortSignal.timeout(8000),
+      });
+    } catch { throw new ApiError(503, 'Сервіс доступу тимчасово недоступний.'); }
+    if (response.status === 401) throw new ApiError(401, 'Оновіть сесію й повторіть запит.');
+    if (response.status === 403) throw new ApiError(403, 'Доступ заборонено.');
+    if (!response.ok) throw new ApiError(503, 'Сервіс доступу тимчасово недоступний.');
+    // One fresh, masked read replaces three response parsers; no permissions are cached.
+    const rows: unknown = JSON.parse(await boundedText(response, 128 * 1024));
+    if (!Array.isArray(rows) || rows.length !== documents.length) throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
+    const found = new Map<string, Document | null>();
+    for (const row of rows) {
+      if (!record(row)) throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
+      if (Object.hasOwn(row, 'found') && (!record(row.found) || Object.hasOwn(row, 'missing'))) throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
+      const document = record(row.found) ? row.found : undefined;
+      const name = document?.name ?? row.missing;
+      if (typeof name !== 'string' || !documents.includes(name) || found.has(name) ||
+          document && document.fields !== undefined && !record(document.fields)) throw new ApiError(503, 'Некоректна відповідь сервісу доступу.');
+      found.set(name, document ? decodeFields((document.fields || {}) as Record<string, FirestoreValue>) : null);
+    }
+    const [account, registry, membership] = documents.map(name => found.get(name)!);
     if (account && account.blocked !== false) throw new ApiError(403, 'Доступ заборонено.');
     const admins = registry?.adminUids;
     if (!Array.isArray(admins) || admins.length > 32 || admins.some(item => typeof item !== 'string')) throw new ApiError(403, 'Доступ заборонено.');

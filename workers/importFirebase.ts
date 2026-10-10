@@ -1,4 +1,4 @@
-import { ApiError, boundedText, decodeFields, type Document, type FirestoreValue } from './firebase.ts';
+import { ApiError, boundedText, decodeFields, type Document, type FirestoreValue, type VerifiedIdentity } from './firebase.ts';
 import { IMPORT_LIMITS, importDomain, profileForImport, type ImportPayload, type ImportItemResult } from '../src/domain/apiImports.ts';
 import { assertCompanyOfferWrite, validateCompanyOfferInput, type CompanyOffer } from '../src/domain/companyOfferValidation.ts';
 import { validateCompany, type Company } from '../src/domain/organizations.ts';
@@ -159,9 +159,14 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
     async refreshCredentials(project: string, secret: string, database: AnalyticsDatabase) {
       await token(project, secret, database, true);
     },
-    async scope(project: string, secret: string, uid: string, database?: AnalyticsDatabase, allowRefresh = true) {
+    async scope(project: string, secret: string, uid: string, database?: AnalyticsDatabase, allowRefresh = true, identity?: VerifiedIdentity) {
+      if (identity && (identity.uid !== uid || !Number.isSafeInteger(identity.authTime) || identity.authTime < 0 || identity.validSince !== undefined &&
+          (!Number.isSafeInteger(identity.validSince) || identity.validSince < 0 || identity.authTime < identity.validSince))) {
+        throw new ApiError(401, 'Некоректна або відкликана сесія.');
+      }
       const c = await client(project, secret, database, allowRefresh);
-      return c.scope(uid, await c.authUser(uid));
+      // Only a fresh remote check from this request supplies validSince; API keys and RSA fallback still read Auth.
+      return c.scope(uid, identity?.validSince ?? await c.authUser(uid));
     },
     async deleteReceipt(project: string, secret: string, jobId: string, database?: AnalyticsDatabase) {
       const c = await client(project, secret, database);
