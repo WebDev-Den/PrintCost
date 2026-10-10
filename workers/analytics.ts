@@ -50,14 +50,16 @@ const notice = 'Виміряна активність, не продажі. Пі
 function json(value: unknown, status = 200, extra: Record<string, string> = {}) {
   return Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Vary': 'Origin', ...extra } });
 }
-function emptyCounts(): Counts { return Object.fromEntries(EVENT_TYPES.map(type => [type, 0])) as Counts; }
+function emptyCounts(): Counts { return { search: 0, filter: 0, no_results: 0, impression: 0, details: 0, seller_click: 0, add_material: 0 }; }
 function retentionStart(date: Date) {
   const expiry = new Date(`${localDay(date)}T00:00:00Z`);
   expiry.setUTCFullYear(expiry.getUTCFullYear() - 1);
   return expiry.toISOString().slice(0, 10);
 }
 function counts(row: Record<string, unknown>): Counts {
-  return Object.fromEntries(EVENT_TYPES.map(type => [type, Number(row[type] || 0)])) as Counts;
+  return { search: Number(row.search || 0), filter: Number(row.filter || 0), no_results: Number(row.no_results || 0),
+    impression: Number(row.impression || 0), details: Number(row.details || 0),
+    seller_click: Number(row.seller_click || 0), add_material: Number(row.add_material || 0) };
 }
 function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 

@@ -38,6 +38,9 @@ test('bounded load harness caps concurrency, redacts credentials and stops on au
     };
     const result = await runPlan(plan, fetcher, async () => {});
     assert.equal(result.passed, true); assert.equal(result.requests.length, 70); assert.ok(peak <= 4);
+    const apiOnly = await runPlan(createPlan({ apiKey: 'selfcheck-api-secret', boundary: { payloadPath, proofPath } }), fetcher, async () => {});
+    assert.equal(apiOnly.passed, true); assert.equal(apiOnly.requests.length, 62);
+    assert.equal(apiOnly.summary['boundary-existing-job-replays'].requests, 4, 'API-key-only plans retain proven boundary replays.');
     const proof = JSON.stringify(result);
     assert.ok(!/selfcheck-(?:session|attestation|api)-secret/.test(proof), 'Credentials must not leak into proofs.');
     assert.ok(result.requests.every(({ rayId }) => rayId === 'abcdef1234567890'));
@@ -51,14 +54,50 @@ test('bounded load harness caps concurrency, redacts credentials and stops on au
   }
 });
 
-test('CLI creates an output directory in a clean checkout without sending requests', () => {
+test('external API-key reads use imports only, redact proofs and stop on rejected access', async () => {
+  const apiKey = 'selfcheck-external-api-secret', plan = createPlan({ apiKey });
+  const external = plan.phases.find(({ name }) => name === 'external-api-key-reads');
+  assert.ok(external); assert.equal(external.requests.length, 8); assert.equal(external.concurrency, 2);
+  assert.equal(plan.phases.reduce((total, { requests }) => total + requests.length, 0), 56);
+  assert.ok(external.requests.every(spec => spec.path === '/api/v1/imports' && (!spec.method || spec.method === 'GET') &&
+    spec.headers.Authorization === 'Bearer ' + apiKey && spec.expected.length === 1 && spec.expected[0] === 200));
+  assert.ok(!plan.phases.some(({ requests }) => requests.some(spec => spec.path === '/api/v1/api-key' && spec.expected.includes(200))),
+    'API-key metadata requires a browser session and cannot be treated as an API-key success.');
+  assert.ok(!createPlan({ apiKey, firebaseIdToken: 'selfcheck-session' }).phases.some(({ name }) => name === 'external-api-key-reads'));
+  const fetcher = async (url, request) => {
+    const pathname = new URL(url).pathname, suppliedKey = request.headers?.Authorization === 'Bearer ' + apiKey;
+    if (suppliedKey) assert.equal(pathname, '/api/v1/imports');
+    return new Response(apiKey, { status: suppliedKey || !pathname.startsWith('/api/') ? 200 : pathname === '/api/analytics/events' ? 400 : 401 });
+  };
+  const result = await runPlan(plan, fetcher, async () => {});
+  assert.equal(result.passed, true); assert.equal(result.requests.length, 56);
+  assert.equal(result.summary['external-api-key-reads'].requests, 8);
+  assert.ok(!JSON.stringify(result).includes(apiKey), 'Neither request headers nor upstream bodies may leak into the result.');
+  const stopped = await runPlan(plan, async (url, request) => request.headers?.Authorization === 'Bearer ' + apiKey
+    ? new Response(apiKey, { status: 403 }) : fetcher(url, request), async () => {});
+  assert.equal(stopped.passed, false); assert.ok(stopped.aborted);
+  assert.equal(stopped.summary['external-api-key-reads'].requests, 2, 'Only the initial bounded pair is sent after authorization rejection.');
+  assert.ok(!JSON.stringify(stopped).includes(apiKey));
+});
+
+test('CLI creates a redacted public plan and output directory without sending requests', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kilog-cpu-load-'));
   const output = path.join(directory, 'output', 'cpu-load-plan.json');
+  const credentials = path.join(directory, 'output', 'cpu-load-selfcheck-credentials.json'), apiKey = 'selfcheck-cli-api-secret';
   try {
     const run = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/cpu-load-test.mjs', import.meta.url)), 'plan'], { cwd: directory });
     assert.equal(run.status, 0, run.stderr.toString());
     assert.equal(JSON.parse(fs.readFileSync(output, 'utf8')).maximumRequests, 48);
+    fs.writeFileSync(credentials, JSON.stringify({ apiKey }));
+    const keyed = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/cpu-load-test.mjs', import.meta.url)), 'plan',
+      'output/cpu-load-plan.json', 'output/cpu-load-selfcheck-credentials.json'], { cwd: directory });
+    assert.equal(keyed.status, 0, keyed.stderr.toString());
+    const serialized = fs.readFileSync(output, 'utf8'), publicPlan = JSON.parse(serialized);
+    assert.equal(publicPlan.maximumRequests, 56);
+    assert.deepEqual(publicPlan.phases.find(({ name }) => name === 'external-api-key-reads'), { name: 'external-api-key-reads', concurrency: 2, requests: 8 });
+    assert.ok(!serialized.includes(apiKey) && !keyed.stdout.toString().includes(apiKey), 'CLI plans and console metadata must exclude API keys.');
   } finally {
+    if (fs.existsSync(credentials)) fs.unlinkSync(credentials);
     if (fs.existsSync(output)) fs.unlinkSync(output);
     if (fs.existsSync(path.dirname(output))) fs.rmdirSync(path.dirname(output));
     fs.rmdirSync(directory);

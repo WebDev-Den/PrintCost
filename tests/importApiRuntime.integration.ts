@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { build } from 'esbuild';
 import { Miniflare, Response as RuntimeResponse, convertV4MiniflareOptions } from 'miniflare';
 import { IMPORT_EXAMPLE, IMPORT_LIMITS, normalizeImportPayload } from '../src/domain/apiImports.ts';
@@ -13,6 +14,11 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const project = 'demo-import-api-' + randomUUID().slice(0, 8);
   const firestoreOrigin = 'http://' + (process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080');
   const webApiKey = 'AIza' + 'x'.repeat(35);
+  const appCheckToken = 'fixture.attestation.token';
+  const emulator = new URL(firestoreOrigin);
+  const rules = await initializeTestEnvironment({ projectId: project, firestore: { host: emulator.hostname, port: Number(emulator.port),
+    rules: await readFile('firestore.rules', 'utf8') } });
+  t.after(() => rules.cleanup());
   const root = '/v1/projects/' + project + '/databases/(default)/documents';
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const secret = JSON.stringify({ project_id: project, client_email: 'import@' + project + '.iam.gserviceaccount.com',
@@ -37,7 +43,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   const bundle = await build({ entryPoints: ['workers/index.ts'], bundle: true, write: false, format: 'esm', platform: 'browser', metafile: true });
   assert.ok(Object.keys(bundle.metafile.inputs).every(path => !path.includes('node_modules/decimal.js/')), 'Worker validation must keep frontend Decimal initialization out of its bundle.');
   let failCommitOnce = false, failFirebase = false, firebaseRequests = 0, firestoreWrites = 0, oauthRequests = 0, authRequests = 0, remoteAuthRequests = 0, jwksRequests = 0;
-  const transport = async (request: Pick<Request, 'url' | 'method' | 'text'>) => {
+  const transport = async (request: Pick<Request, 'url' | 'method' | 'text' | 'headers'>) => {
       const url = new URL(request.url);
       if (url.hostname === 'www.googleapis.com') { jwksRequests++; throw new Error('Production-key runtime must not fetch JWKS.'); }
       if (url.hostname === 'oauth2.googleapis.com') {
@@ -73,7 +79,12 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
       firebaseRequests++;
       if (url.pathname.endsWith(':commit')) firestoreWrites++;
       if (failFirebase) return new RuntimeResponse('{}', { status: 503 });
-      const upstream = await fetch(firestoreOrigin + url.pathname + url.search, { method: request.method, headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+      const service = request.headers.get('Authorization') === 'Bearer fixture';
+      // The emulator evaluates real Rules for exact browser ID tokens. Its App Check
+      // enforcement is simulated here; a denied browser call never receives owner credentials.
+      if (!service && request.headers.get('X-Firebase-AppCheck') !== appCheckToken) return new RuntimeResponse('{}', { status: 403 });
+      const upstream = await fetch(firestoreOrigin + url.pathname + url.search, { method: request.method, headers: {
+        Authorization: service ? 'Bearer owner' : request.headers.get('Authorization')!, 'Content-Type': 'application/json' },
         body: request.method === 'GET' ? undefined : await request.text() });
       if (failCommitOnce && url.pathname.endsWith(':commit') && upstream.ok) { failCommitOnce = false; return new RuntimeResponse('{}', { status: 503 }); }
       return new RuntimeResponse(await upstream.arrayBuffer(), { status: upstream.status, headers: Object.fromEntries(upstream.headers) });
@@ -103,7 +114,8 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     return input + '.' + sign('RSA-SHA256', Buffer.from(input), pair.privateKey).toString('base64url');
   }
   const request = (path: string, token: string, method = 'GET', payload?: unknown, idempotency = randomUUID(), extra: Record<string, string> = {}) =>
-    mf.dispatchFetch('https://import-runtime.invalid/api/v1/' + path, { method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'Idempotency-Key': idempotency, ...extra },
+    mf.dispatchFetch('https://import-runtime.invalid/api/v1/' + path, { method, headers: { Authorization: 'Bearer ' + token, 'X-Firebase-AppCheck': appCheckToken,
+      'Content-Type': 'application/json', 'Idempotency-Key': idempotency, ...extra },
       body: payload === undefined ? undefined : JSON.stringify(payload) });
   const adminJwt = jwt('admin'), managerJwt = jwt('manager');
   const importFetcher: typeof fetch = async (input, init) => {
@@ -141,8 +153,10 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     assert.equal(jwksRequests, 0);
   });
   const warming = await request('api-key', adminJwt);
-  assert.equal(warming.status, 503); assert.equal(warming.headers.get('Retry-After'), '60');
-  assert.equal(oauthRequests, 0, 'Cold HTTP cannot sign or refresh service OAuth credentials.');
+  assert.equal(warming.status, 200);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM firebase_service_tokens').first<{ n: number }>())?.n, 0,
+    'A cold browser scope works with an empty service credential broker.');
+  assert.equal(oauthRequests, 0, 'Browser scope uses its exact ID token without service OAuth.');
   await createImportApi(importFetcher).refreshCredentials({ FIREBASE_PROJECT_ID: project, FIREBASE_WEB_API_KEY: webApiKey, FIREBASE_IMPORT_SERVICE_ACCOUNT: secret, ANALYTICS_DB: db,
     IMPORT_QUEUE: { async send() {} } });
   assert.equal(oauthRequests, 1);
@@ -157,6 +171,20 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
       assert.equal(remoteAuthRequests, beforeRemote + 2); assert.equal(authRequests, beforeAuth);
       assert.equal(firebaseRequests, beforeFirestore + 2, 'A role block with the same ID token takes effect immediately.');
     } finally { await seed('accountAccess/admin', { blocked: false, changeId: 'remote-unblock' }); }
+  });
+  await t.test('native browser scope enforces App Check and real owner Rules without service fallback', async () => {
+    const beforeAuth = authRequests, beforeOAuth = oauthRequests;
+    for (const attestation of ['', 'invalid.attestation.token']) {
+      assert.equal((await request('api-key', adminJwt, 'GET', undefined, randomUUID(), { 'X-Firebase-AppCheck': attestation })).status, 403);
+    }
+    assert.equal(authRequests, beforeAuth); assert.equal(oauthRequests, beforeOAuth);
+    const name = 'projects/' + project + '/databases/(default)/documents/';
+    const own = await fetch(firestoreOrigin + root + ':batchGet', { method: 'POST', headers: {
+      Authorization: 'Bearer ' + managerJwt, 'Content-Type': 'application/json' }, body: JSON.stringify({ documents: [name + 'accountDeletion/manager'] }) });
+    assert.equal(own.status, 200, 'Rules permit the required own deletion-marker get even when absent.');
+    const foreign = await fetch(firestoreOrigin + root + ':batchGet', { method: 'POST', headers: {
+      Authorization: 'Bearer ' + managerJwt, 'Content-Type': 'application/json' }, body: JSON.stringify({ documents: [name + 'accountDeletion/other-manager'] }) });
+    assert.equal(foreign.status, 403, 'The exact browser identity cannot read a foreign private deletion marker.');
   });
   assert.equal((await request('api-key', jwt('user'))).status, 403);
   assert.equal((await request('api-key', jwt('admin', true), 'POST')).status, 401);
@@ -336,7 +364,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
       assert.match((await denied.json() as any).error.message, /очікує очищення/);
       assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM import_jobs').first<any>()).count, before);
       const get = (path: string, token: string) => manual.fetch(new Request('https://import-runtime.invalid/api/v1/' + path,
-        { headers: { Authorization: 'Bearer ' + token } }), httpEnvironment);
+        { headers: { Authorization: 'Bearer ' + token, 'X-Firebase-AppCheck': appCheckToken } }), httpEnvironment);
       assert.equal((await get('api-key', adminJwt)).status, 200);
       assert.equal((await get('imports', adminKey)).status, 200);
       assert.equal((await get('imports/' + job.id, adminKey)).status, 200);
@@ -349,7 +377,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
       assert.equal(resumed.id, job.id); assert.equal(resumed.succeeded, 12); assert.equal(resumed.failed, 0);
       const savedKey = await db.prepare('SELECT * FROM import_keys WHERE uid=?').bind('other-manager').first<any>();
       const changeKey = (method: string) => manual.fetch(new Request('https://import-runtime.invalid/api/v1/api-key', {
-        method, headers: { Authorization: 'Bearer ' + jwt('other-manager') },
+        method, headers: { Authorization: 'Bearer ' + jwt('other-manager'), 'X-Firebase-AppCheck': appCheckToken },
       }), httpEnvironment);
       try {
         assert.equal((await changeKey('POST')).status, 201, 'An existing key can rotate above the storage high-water mark.');
@@ -500,7 +528,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     } });
     const guard = createImportApi(importFetcher);
     const guardedRequest = (token: string, keyPath = false) => guard.fetch(new Request('https://import-runtime.invalid/api/v1/' + (keyPath ? 'api-key' : 'imports'),
-      { headers: { Authorization: 'Bearer ' + token } }), { ...environment, ANALYTICS_DB: guardedDb });
+      { headers: { Authorization: 'Bearer ' + token, 'X-Firebase-AppCheck': appCheckToken } }), { ...environment, ANALYTICS_DB: guardedDb });
     await db.prepare('UPDATE import_daily SET access_checks=0,admin_access_checks=0,admin_preflight_checks=500,manager_preflight_checks=500,unknown_preflight_checks=100 WHERE day=?').bind(day).run();
     const beforeUids = await db.prepare('SELECT COUNT(*) AS rows,SUM(checks) AS checks FROM import_access_daily WHERE day=?').bind(day).first<any>();
     const beforeAuth = authRequests, beforeFirebase = firebaseRequests;
@@ -606,7 +634,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     assert.equal(capturedAdmin.status, 200); assert.deepEqual(await capturedAdmin.json(), all);
     assert.ok(historyRowsRead > 0 && historyRowsRead <= 90, 'The global admin history also stays bounded to 30 indexed job rows.');
     batches.length = 0;
-    const denied = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/api-key', { headers: { Authorization: 'Bearer ' + userJwt } }), observed);
+    const denied = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/api-key', { headers: { Authorization: 'Bearer ' + userJwt, 'X-Firebase-AppCheck': appCheckToken } }), observed);
     assert.equal(denied.status, 403); assert.deepEqual(batches, [2], 'An unknown UID uses only the discovery reserve and conditional UID claim; no privileged reserve is consumed.');
   });
   await t.test('scheduled batches expire before dispatch, bound recovery and retain live leases and current budgets', async () => {

@@ -1,14 +1,17 @@
 import { IMPORT_LIMITS, type ApiKeyMetadata, type ImportJobSummary } from '../domain/apiImports.ts';
 
 export interface ApiKeyResponse { key: ApiKeyMetadata | null; role: 'admin' | 'manager'; companyId: string | null; nextImportAt: string | null; limits: typeof IMPORT_LIMITS }
-export function createApiImportClient(token: () => Promise<string>, assertSession: () => void, fetcher: typeof fetch = fetch) {
+export function createApiImportClient(token: () => Promise<string>, assertSession: () => void, fetcher: typeof fetch = fetch,
+  attestation: (signal?: AbortSignal) => Promise<Record<string, string>> = async () => ({})) {
   async function request<T>(path: string, method = 'GET', payload?: unknown, idempotency?: string): Promise<T> {
     assertSession();
-    const bearer = await token();
+    const signal = AbortSignal.timeout(30_000);
+    const [bearer, appCheck] = await Promise.all([token(), attestation(signal)]);
+    signal.throwIfAborted();
     assertSession();
     const response = await fetcher('/api/v1/' + path, { method, credentials: 'same-origin', redirect: 'error',
-      headers: { Authorization: 'Bearer ' + bearer, ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }), ...(idempotency ? { 'Idempotency-Key': idempotency } : {}) },
-      body: payload === undefined ? undefined : JSON.stringify(payload), signal: AbortSignal.timeout(30_000) });
+      headers: { ...appCheck, Authorization: 'Bearer ' + bearer, ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }), ...(idempotency ? { 'Idempotency-Key': idempotency } : {}) },
+      body: payload === undefined ? undefined : JSON.stringify(payload), signal });
     assertSession();
     if (!response.headers.get('Content-Type')?.includes('application/json')) throw new Error('API імпорту ще не активовано.');
     const value = await response.json();

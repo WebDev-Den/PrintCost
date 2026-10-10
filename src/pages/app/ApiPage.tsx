@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { Copy, KeyRound, RefreshCw, Upload } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage, authService, reauthenticateAccount } from '../../services/authService.ts';
-import { firebaseAuth } from '../../services/firebaseClient.ts';
+import { firebaseAuth, getAppCheckHeaders } from '../../services/firebaseClient.ts';
 import { createApiImportClient, type ApiKeyResponse } from '../../services/apiImportClient.ts';
 import { IMPORT_EXAMPLE, IMPORT_LIMITS, type ImportJobSummary, type ImportStatus } from '../../domain/apiImports.ts';
 import { Button } from '../../components/common/Button.tsx';
@@ -41,7 +41,7 @@ export function ApiPage() {
       const current = firebaseAuth?.currentUser;
       if (current?.uid !== uid) throw new Error('Увійдіть повторно.');
       return current.getIdToken(true);
-    }, assertCurrent);
+    }, assertCurrent, fetch, getAppCheckHeaders);
   }, [uid]);
   useEffect(() => {
     let active = true;

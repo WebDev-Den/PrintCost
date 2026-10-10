@@ -84,7 +84,9 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
     }
     if (env.IMPORT_RATE_LIMIT && !(await env.IMPORT_RATE_LIMIT.limit({ key: 'uid:' + uid })).success) throw new ApiError(429, 'Забагато запитів для цього акаунта. Спробуйте через хвилину.');
     const databaseSize = await preliminaryBudget(db, uid, key);
-    const scope = await firebase.scope(env.FIREBASE_PROJECT_ID, env.FIREBASE_IMPORT_SERVICE_ACCOUNT!, uid, db, false, identity);
+    const scope = identity?.validSince !== undefined
+      ? await firebase.scopeForSession(env.FIREBASE_PROJECT_ID, bearer, identity, request.headers.get('X-Firebase-AppCheck') || undefined)
+      : await firebase.scope(env.FIREBASE_PROJECT_ID, env.FIREBASE_IMPORT_SERVICE_ACCOUNT!, uid, db, false, identity);
     if (authTime !== undefined && authTime < scope.validSince) throw new ApiError(401, 'Сесію відкликано. Увійдіть знову.');
     if (authTime === undefined && key?.fingerprint !== scope.fingerprint) throw new ApiError(403, 'Права змінилися. Оновіть API-ключ у кабінеті.');
     await budget(db, scope.role);

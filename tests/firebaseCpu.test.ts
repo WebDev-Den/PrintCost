@@ -336,3 +336,53 @@ test('masked access reads omit company logos and keep manager state and deletion
   assert.equal((await adapter.scope(project, secret, uid, undefined, true, { uid, authTime: 100 })).validSince, 42);
   assert.deepEqual([authCalls, companyReads], [5, 6], 'RSA-only identity lacks account state and must still read privileged Auth.');
 });
+
+test('browser scope uses only its ID token and App Check for fresh masked role reads without a broker', async () => {
+  const project = 'kilo-g', uid = 'own-manager';
+  const identity = { uid, authTime: 100, validSince: 42 };
+  const documents = new Map<string, Record<string, unknown>>([
+    ['system/authorization', { adminUids: ['other-admin'], version: 7 }],
+    ['accountAccess/' + uid, { blocked: false, changeId: 'access-a' }],
+    ['memberships/' + uid, { active: true, companyId: 'company-a', version: 2, changeId: 'membership-a' }],
+    ['companies/company-a', { status: 'active', logoDataUrl: 'x'.repeat(24 * 1024) }],
+  ]);
+  let requests = 0, deniedStatus = 0;
+  const adapter = createImportFirebase(async (input, init) => {
+    requests++;
+    const url = new URL(String(input));
+    assert.equal(url.hostname, 'firestore.googleapis.com', 'No OAuth, Auth or service-broker fallback is reachable.');
+    assert.equal(url.pathname.endsWith('/documents:batchGet'), true);
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get('Authorization'), 'Bearer own-id-token');
+    if (headers.get('X-Firebase-AppCheck') !== 'fixture.appcheck.signature') return new Response(null, { status: 403 });
+    if (deniedStatus) return new Response(null, { status: deniedStatus });
+    const body = JSON.parse(init?.body as string) as { documents: string[]; mask: { fieldPaths: string[] } };
+    assert.deepEqual(body.mask.fieldPaths, body.documents.length === 1 ? ['status'] : ['adminUids', 'version', 'blocked', 'changeId', 'active', 'companyId']);
+    assert.ok(body.documents.every(name => /\/(system\/authorization|accountAccess\/own-manager|memberships\/own-manager|accountDeletion\/own-manager|companies\/company-a)$/.test(name)));
+    return Response.json(body.documents.map(name => {
+      const document = documents.get(name.split('/documents/')[1]);
+      return document ? { found: { name, fields: encodeFields(Object.fromEntries(body.mask.fieldPaths.filter(field => Object.hasOwn(document, field)).map(field => [field, document[field]]))) } } : { missing: name };
+    }).reverse());
+  });
+  const scope = () => adapter.scopeForSession(project, 'own-id-token', identity, 'fixture.appcheck.signature');
+  const first = await scope();
+  assert.equal(first.role, 'manager'); assert.equal(first.validSince, 42); assert.equal(requests, 2);
+  documents.get('memberships/' + uid)!.changeId = 'membership-b';
+  assert.notEqual((await scope()).fingerprint, first.fingerprint);
+  documents.get('accountAccess/' + uid)!.blocked = true;
+  await assert.rejects(scope(), { status: 403 });
+  documents.get('accountAccess/' + uid)!.blocked = false;
+  documents.set('accountDeletion/' + uid, { uid });
+  await assert.rejects(scope(), { status: 403 }, 'Even an empty masked deletion document revokes scope.');
+  documents.delete('accountDeletion/' + uid);
+  documents.get('companies/company-a')!.status = 'disabled';
+  await assert.rejects(scope(), { status: 403 });
+  documents.get('companies/company-a')!.status = 'active';
+  await assert.rejects(adapter.scopeForSession(project, 'own-id-token', identity), { status: 403 });
+  deniedStatus = 401; await assert.rejects(scope(), { status: 401 });
+  deniedStatus = 403; await assert.rejects(scope(), { status: 403 });
+  const before = requests;
+  await assert.rejects(adapter.scopeForSession(project, 'own-id-token', identity, 'invalid attestation'), { status: 400 });
+  await assert.rejects(adapter.scopeForSession(project, 'own-id-token', { uid, authTime: 100 }), { status: 401 });
+  assert.equal(requests, before, 'Malformed App Check or unverified identity fails before any document read.');
+});

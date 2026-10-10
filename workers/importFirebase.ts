@@ -39,11 +39,12 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
     const key = await crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
     return encryption = { project, secret, fingerprint, key };
   }
-  async function responseJson(url: string, init: RequestInit): Promise<any> {
+  async function responseJson(url: string, init: RequestInit, userRequest = false): Promise<any> {
     let response: Response;
     try { response = await fetcher(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(8000) }); }
     catch { throw new ApiError(503, 'Firebase тимчасово недоступний.'); }
     if (response.status === 404) return null;
+    if (userRequest && (response.status === 401 || response.status === 403)) throw new ApiError(response.status, 'Оновіть сесію або підтвердження застосунку.');
     if (!response.ok) throw new ApiError(response.status === 409 ? 409 : 503, response.status === 409 ? 'Конфлікт одночасних змін. Повторіть імпорт.' : 'Firebase тимчасово недоступний або не налаштований.');
     const text = await boundedText(response, 256 * 1024);
     return text ? JSON.parse(text) : {};
@@ -105,11 +106,12 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
       return cached.token;
     } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(503, 'Сервісний акаунт імпорту не налаштований.'); }
   }
-  async function client(project: string, secret: string, database?: AnalyticsDatabase, allowRefresh = true) {
-    const accessToken = await token(project, secret, database, allowRefresh);
+  function documentClient(project: string, accessToken: string, appCheckToken?: string, userRequest = false) {
+    if (!/^[a-z][a-z0-9-]{4,62}$/.test(project)) throw new ApiError(503, 'Сервіс доступу ще не налаштований.');
+    if (appCheckToken && (appCheckToken.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(appCheckToken))) throw new ApiError(400, 'Некоректне підтвердження застосунку.');
     const root = 'https://firestore.googleapis.com/v1/projects/' + project + '/databases/(default)/documents';
-    const headers = { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' };
-    const call = (suffix: string, body?: unknown) => responseJson(root + suffix, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const headers = { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json', ...(appCheckToken ? { 'X-Firebase-AppCheck': appCheckToken } : {}) };
+    const call = (suffix: string, body?: unknown) => responseJson(root + suffix, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) }, userRequest);
     const name = (path: string) => root.slice('https://firestore.googleapis.com/v1/'.length) + '/' + path;
     async function readMany(paths: string[], transaction?: string, fieldPaths?: string[]): Promise<(Document | null)[]> {
       const documents = paths.map(name);
@@ -133,14 +135,6 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
       const result = await call('/' + path.split('/').map(encodeURIComponent).join('/'));
       return result ? decodeFields(result.fields || {}) : null;
     }
-    async function authUser(uid: string) {
-      const result = await responseJson('https://identitytoolkit.googleapis.com/v1/projects/' + project + '/accounts:lookup?fields=users(localId,emailVerified,disabled,validSince)', { method: 'POST', headers, body: JSON.stringify({ localId: [uid] }) });
-      const user = result?.users?.find((item: any) => item.localId === uid);
-      if (!user || user.disabled || user.emailVerified !== true) throw new ApiError(403, 'Акаунт видалений, заблокований або пошта не підтверджена.');
-      const validSince = Number(user.validSince || 0);
-      if (!Number.isSafeInteger(validSince) || validSince < 0) throw new ApiError(503, 'Некоректний стан акаунта.');
-      return validSince;
-    }
     async function scope(uid: string, validSince: number, transaction?: string): Promise<ImportScope> {
       const [registry, access, member, deletion] = await readMany([
         'system/authorization', 'accountAccess/' + uid, 'memberships/' + uid, 'accountDeletion/' + uid,
@@ -153,20 +147,41 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
       return { uid, role, companyId, validSince, registryVersion: Number(registry.version),
         fingerprint: await digest(JSON.stringify([role, companyId, access?.changeId ?? null, member?.changeId ?? null, member?.version ?? null, validSince])) };
     }
-    return { call, name, read, authUser, scope, headers, root };
+    return { call, name, read, scope, headers, root };
+  }
+  async function client(project: string, secret: string, database?: AnalyticsDatabase, allowRefresh = true) {
+    const c = documentClient(project, await token(project, secret, database, allowRefresh));
+    async function authUser(uid: string) {
+      const result = await responseJson('https://identitytoolkit.googleapis.com/v1/projects/' + project + '/accounts:lookup?fields=users(localId,emailVerified,disabled,validSince)', { method: 'POST', headers: c.headers, body: JSON.stringify({ localId: [uid] }) });
+      const user = result?.users?.find((item: any) => item.localId === uid);
+      if (!user || user.disabled || user.emailVerified !== true) throw new ApiError(403, 'Акаунт видалений, заблокований або пошта не підтверджена.');
+      const validSince = Number(user.validSince || 0);
+      if (!Number.isSafeInteger(validSince) || validSince < 0) throw new ApiError(503, 'Некоректний стан акаунта.');
+      return validSince;
+    }
+    return { ...c, authUser };
+  }
+  function assertIdentity(uid: string, identity?: VerifiedIdentity) {
+    if (identity && (identity.uid !== uid || !Number.isSafeInteger(identity.authTime) || identity.authTime < 0 || identity.validSince !== undefined &&
+        (!Number.isSafeInteger(identity.validSince) || identity.validSince < 0 || identity.authTime < identity.validSince))) {
+      throw new ApiError(401, 'Некоректна або відкликана сесія.');
+    }
   }
   return {
     async refreshCredentials(project: string, secret: string, database: AnalyticsDatabase) {
       await token(project, secret, database, true);
     },
     async scope(project: string, secret: string, uid: string, database?: AnalyticsDatabase, allowRefresh = true, identity?: VerifiedIdentity) {
-      if (identity && (identity.uid !== uid || !Number.isSafeInteger(identity.authTime) || identity.authTime < 0 || identity.validSince !== undefined &&
-          (!Number.isSafeInteger(identity.validSince) || identity.validSince < 0 || identity.authTime < identity.validSince))) {
-        throw new ApiError(401, 'Некоректна або відкликана сесія.');
-      }
+      assertIdentity(uid, identity);
       const c = await client(project, secret, database, allowRefresh);
       // Only a fresh remote check from this request supplies validSince; API keys and RSA fallback still read Auth.
       return c.scope(uid, identity?.validSince ?? await c.authUser(uid));
+    },
+    async scopeForSession(project: string, idToken: string, identity: VerifiedIdentity, appCheckToken?: string) {
+      assertIdentity(identity.uid, identity);
+      if (identity.validSince === undefined) throw new ApiError(401, 'Потрібна перевірена сесія.');
+      // Firestore Rules and App Check authenticate this request; no service credential is used or retried.
+      return documentClient(project, idToken, appCheckToken, true).scope(identity.uid, identity.validSince);
     },
     async deleteReceipt(project: string, secret: string, jobId: string, database?: AnalyticsDatabase) {
       const c = await client(project, secret, database);

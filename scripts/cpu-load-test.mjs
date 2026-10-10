@@ -27,6 +27,9 @@ export function createPlan(credentials = {}) {
     phases.push({ name: 'authenticated-reads', concurrency: 2, requests: repeat(8, index => ({ path: index % 2 ? '/api/v1/imports' : '/api/v1/api-key', headers: session, expected: [200] })) });
     phases.push({ name: 'analytics-authorized-report', concurrency: 2, requests: repeat(8, () => ({ path: report, headers: session, expected: [200] })) });
   } else skipped.push('Authenticated imports/key reads and analytics reports require a fresh session credential, never copied into results.');
+  if (credentials.apiKey && !session) phases.push({ name: 'external-api-key-reads', concurrency: 2, requests: repeat(8, () => ({
+    path: '/api/v1/imports', headers: { Authorization: 'Bearer ' + credentials.apiKey }, expected: [200],
+  })) });
   if (credentials.boundary) {
     assert.ok(session || credentials.apiKey, 'A real authorized credential is required for boundary requests.');
     const { payloadPath, proofPath } = credentials.boundary;
@@ -76,7 +79,7 @@ export async function runPlan(plan, fetcher = fetch, pause = ms => new Promise(r
       }));
       result.requests.push(...batch);
       // Stop before another burst when an accepted fixture replay or authorization fails.
-      if (batch.some(row => !row.passed && ['authenticated-reads', 'analytics-authorized-report', 'boundary-existing-job-replays'].includes(row.phase))) {
+      if (batch.some(row => !row.passed && ['authenticated-reads', 'external-api-key-reads', 'analytics-authorized-report', 'boundary-existing-job-replays'].includes(row.phase))) {
         result.aborted = 'Required authorized scenario failed; further requests were not sent.';
         break;
       }

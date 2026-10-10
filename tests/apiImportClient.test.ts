@@ -20,3 +20,19 @@ test('API client explains quotas and does not mistake SPA HTML for a working API
   const html = createApiImportClient(async () => 'token', () => {}, async () => new Response('<html/>', { headers: { 'Content-Type': 'text/html' } }));
   await assert.rejects(html.metadata(), /ще не активовано/);
 });
+
+test('browser API forwards App Check and refuses to send without successful attestation', async () => {
+  let calls = 0;
+  const api = createApiImportClient(async () => 'session-token', () => {}, async (_url, init) => {
+    calls++;
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get('Authorization'), 'Bearer session-token');
+    assert.equal(headers.get('X-Firebase-AppCheck'), 'fixture.appcheck.signature');
+    return Response.json({ key: null });
+  }, async signal => { assert.ok(signal); return { 'X-Firebase-AppCheck': 'fixture.appcheck.signature' }; });
+  await api.metadata();
+  const denied = createApiImportClient(async () => 'session-token', () => {}, async () => { calls++; return Response.json({}); },
+    async () => { throw new Error('Attestation refused'); });
+  await assert.rejects(denied.rotate(), /Attestation refused/);
+  assert.equal(calls, 1, 'Attestation failure never falls back to a request without App Check.');
+});
