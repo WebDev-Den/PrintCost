@@ -30,6 +30,7 @@ import { BrandLogo } from '../common/BrandLogo.tsx';
 import { ErrorPage } from '../../pages/ErrorPage.tsx';
 import { authErrorMessage } from '../../services/authService.ts';
 import { useDialogFocus } from '../common/useDialogFocus.ts';
+import { openCookieSettings } from '../../services/cookieConsentService.ts';
 
 export const AppLayout: React.FC = () => {
   const { user, logout, isLoading: authLoading, isDemoSession, authError, reloadUser } = useAuth();
@@ -363,6 +364,10 @@ export const AppLayout: React.FC = () => {
             {actionError && <div role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 flex items-center justify-between gap-3"><span>{actionError}</span><button onClick={clearActionError} aria-label="Закрити повідомлення"><X className="w-4 h-4" /></button></div>}
             <Outlet key={isDemoSession ? 'demo' : user.id} />
           </main>
+          <footer className="px-3 sm:px-5 lg:px-6 py-3 flex flex-wrap justify-end gap-4 border-t border-neutral-200 dark:border-neutral-800 text-xs text-neutral-500 dark:text-neutral-400">
+            <NavLink to="/privacy" className="hover:text-neutral-800 dark:hover:text-neutral-200">Дані та приватність</NavLink>
+            <button type="button" onClick={openCookieSettings} className="hover:text-neutral-800 dark:hover:text-neutral-200">Налаштування кукі</button>
+          </footer>
         </div>
       </div>
 

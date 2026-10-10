@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { QueryDocumentSnapshot } from 'firebase/firestore';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
@@ -55,14 +55,15 @@ import type { CompanyOffer } from '../../domain/companyOffers.ts';
 import { toConcreteCompanyOffer } from '../../domain/companyOffers.ts';
 import { companyOfferRepository } from '../../services/companyOfferRepository.ts';
 import { companyLogoRepository } from '../../services/companyLogoRepository.ts';
-import { analyticsMaterialCategory, analyticsOptedOut, analyticsService, type AnalyticsDimensions } from '../../services/analyticsService.ts';
+import { analyticsMaterialCategory, analyticsService, type AnalyticsDimensions } from '../../services/analyticsService.ts';
+import { getCookieConsent, subscribeCookieConsent } from '../../services/cookieConsentService.ts';
 
 export const FilamentsDirectoryPage: React.FC = () => {
   const navigate = useNavigate();
   const { addMaterial } = useAppData();
   const { user, isDemoSession } = useAuth();
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [analyticsDisabled, setAnalyticsDisabled] = useState(analyticsOptedOut);
+  const analyticsAllowed = useSyncExternalStore(subscribeCookieConsent, getCookieConsent, () => null) === true;
   const analyticsDimensions = (sku: ConcreteFilamentSku): AnalyticsDimensions => ({ offerId: sku.offerId || sku.id,
     materialType: analyticsMaterialCategory(sku.type), packaging: sku.packagingType, stock: sku.inStock ? 'in_stock' : 'out_of_stock' });
   useEffect(() => { analyticsService.reset(); analyticsService.beginPage(); }, [user?.id, isDemoSession]);
@@ -373,7 +374,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
     if (searchQuery.trim() !== previous.search) pendingAnalyticsFilters.current.search = true;
     if (previous.filters && filters !== previous.filters) pendingAnalyticsFilters.current.filter = true;
     previousAnalyticsFilters.current = { search: searchQuery.trim(), filters };
-    if (activeTab !== 'catalog' || analyticsDisabled || isDemoSession || !concreteSkus.length) { pendingAnalyticsFilters.current = { search: false, filter: false }; return; }
+    if (activeTab !== 'catalog' || !analyticsAllowed || isDemoSession || !concreteSkus.length) { pendingAnalyticsFilters.current = { search: false, filter: false }; return; }
     const timer = setTimeout(() => {
       const pending = pendingAnalyticsFilters.current;
       if (!pending.search && !pending.filter) return;
@@ -385,7 +386,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
       pendingAnalyticsFilters.current = { search: false, filter: false };
     }, 800);
     return () => clearTimeout(timer);
-  }, [searchQuery, selectedType, selectedManufacturer, selectedColorTone, packagingFilter, stockFilter, likesOnlyFilter, selectedSeller, sortBy, filteredSkus.length, concreteSkus.length, activeTab, analyticsDisabled, isDemoSession]);
+  }, [searchQuery, selectedType, selectedManufacturer, selectedColorTone, packagingFilter, stockFilter, likesOnlyFilter, selectedSeller, sortBy, filteredSkus.length, concreteSkus.length, activeTab, analyticsAllowed, isDemoSession]);
 
   const allowPrivateAction = () => {
     if (!user) { navigate('/auth/login'); return false; }
@@ -445,10 +446,6 @@ export const FilamentsDirectoryPage: React.FC = () => {
       <main className="flex-1">
         {!firebaseConfigured && !isDemoSession && <p role="status" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-amber-700">Показано базовий каталог.</p>}
         {catalogError && <p role="alert" className="px-4 sm:px-6 lg:px-8 py-4 text-sm text-red-700">{catalogError}</p>}
-        <div className="px-4 sm:px-6 lg:px-8 py-2 text-xs text-neutral-500 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <label className="flex items-center gap-2"><input type="checkbox" checked={!analyticsDisabled} onChange={event => { const disabled = !event.target.checked; setAnalyticsDisabled(disabled); analyticsService.setOptedOut(disabled); }} />Дозволити анонімну аналітику</label>
-          <NavLink to="/privacy" className="underline hover:text-primary-600">Приватність</NavLink>
-        </div>
         {/* Header Hero Section */}
         <section className="bg-white dark:bg-neutral-900/60 border-b border-neutral-200 dark:border-neutral-800 py-6 px-4 sm:px-6 lg:px-8">
           <div className="space-y-4">
@@ -919,7 +916,7 @@ export const FilamentsDirectoryPage: React.FC = () => {
                     onCalculatePrint={handleCalculatePrint}
                     onSelectType={(t) => setSelectedType(t)}
                     onOpenDetails={handleOpenDetails}
-                    onImpression={analyticsDisabled || isDemoSession ? undefined : sku => analyticsService.impression(sku.offerId || sku.id, analyticsDimensions(sku))}
+                    onImpression={!analyticsAllowed || isDemoSession ? undefined : sku => analyticsService.impression(sku.offerId || sku.id, analyticsDimensions(sku))}
                     onSellerClick={sku => analyticsService.track('seller_click', analyticsDimensions(sku))}
                   />
                 ))

@@ -5,6 +5,7 @@ import { AppDataProvider } from './context/AppDataContext.tsx';
 
 // Layout
 import { AppLayout } from './components/layout/AppLayout.tsx';
+import { CookieConsent } from './components/common/CookieConsent.tsx';
 
 // Public pages
 import { LandingPage } from './pages/public/LandingPage.tsx';
@@ -79,6 +80,7 @@ export default function App() {
             {/* 404 Catch-All */}
             <Route path="*" element={<NotFoundPage />} />
           </Routes></Suspense>
+          <CookieConsent />
         </AppDataProvider>
       </AuthProvider>
     </BrowserRouter>

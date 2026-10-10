@@ -1,5 +1,6 @@
 import { firebaseAuth, firebaseConfigured, getAppCheckHeaders } from './firebaseClient.ts';
 import { authService } from './authService.ts';
+import { getCookieConsent, subscribeCookieConsent } from './cookieConsentService.ts';
 
 export const ANALYTICS_EVENT_TYPES = ['search', 'filter', 'no_results', 'impression', 'details', 'seller_click', 'add_material'] as const;
 export type AnalyticsEventType = typeof ANALYTICS_EVENT_TYPES[number];
@@ -20,14 +21,12 @@ export interface AnalyticsReport {
   filtersLimit: number; filtersTruncated: boolean;
   budget: { day: string; accepted: number | null; limit: number }; notice: string;
 }
-const OPT_OUT_KEY = 'kilog_analytics_opt_out';
 const PRODUCTION_HOSTS = ['web-dev.pp.ua', 'kilo-g.web-developer-den.workers.dev'];
 const MAX_QUEUE = 100;
 const MAX_BATCH = 20;
 const MAX_BODY_BYTES = 16 * 1024;
 const QUEUE_TTL_MS = 60 * 60 * 1000;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-let memoryOptOut = false;
 
 export function analyticsMaterialCategory(value: unknown): AnalyticsMaterialType {
   const type = typeof value === 'string' ? value.trim().toUpperCase() : '';
@@ -38,9 +37,6 @@ export function analyticsAllowed(input: { hostname: string; configured: boolean;
   if (input.demo || input.optedOut || input.override === 'false' || !input.configured) return false;
   if (input.override === 'true') return !input.production && ['localhost', '127.0.0.1', '[::1]', '::1'].includes(input.hostname);
   return input.production && PRODUCTION_HOSTS.includes(input.hostname);
-}
-export function analyticsOptedOut(): boolean {
-  try { return memoryOptOut || localStorage.getItem(OPT_OUT_KEY) === 'true'; } catch { return memoryOptOut; }
 }
 
 export function createImpressionGate(onImpression: () => void, options: {
@@ -189,7 +185,7 @@ export function createAnalyticsClient(options: { enabled: () => boolean; scope: 
 const env = import.meta.env || {};
 const client = createAnalyticsClient({
   enabled: () => typeof window !== 'undefined' && analyticsAllowed({ hostname: window.location.hostname,
-    configured: firebaseConfigured, production: env.PROD === true, demo: authService.isDemoSession(), optedOut: analyticsOptedOut(), override: env.VITE_ANALYTICS_ENABLED }),
+    configured: firebaseConfigured, production: env.PROD === true, demo: authService.isDemoSession(), optedOut: getCookieConsent() !== true, override: env.VITE_ANALYTICS_ENABLED }),
   scope: () => authService.getSessionIdentity(),
   fetcher: async (url, options) => {
     const headers = new Headers(options?.headers);
@@ -200,11 +196,6 @@ const client = createAnalyticsClient({
 });
 export const analyticsService = {
   track: client.track, impression: client.impression, beginPage: client.beginPage,
-  setOptedOut(value: boolean) {
-    memoryOptOut = value;
-    try { localStorage.setItem(OPT_OUT_KEY, String(value)); } catch { /* Keep working when storage is unavailable. */ }
-    client.reset();
-  },
   reset: client.reset,
   async getReport(companyId: string, from: string, to: string, signal?: AbortSignal): Promise<AnalyticsReport> {
     const current = firebaseAuth?.currentUser;
@@ -237,5 +228,5 @@ export const analyticsService = {
 };
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => { void client.flush(); });
-  window.addEventListener('storage', event => { if (event.key === OPT_OUT_KEY) { memoryOptOut = event.newValue === 'true'; client.reset(); } });
+  subscribeCookieConsent(client.reset);
 }

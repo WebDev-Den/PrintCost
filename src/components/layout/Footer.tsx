@@ -2,6 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext.tsx';
 import { Sun, Moon } from 'lucide-react';
+import { openCookieSettings } from '../../services/cookieConsentService.ts';
 
 export const Footer: React.FC = () => {
   const { theme, setTheme } = useAppData();
@@ -18,6 +19,7 @@ export const Footer: React.FC = () => {
           <NavLink to="/privacy" className="hover:text-neutral-800 dark:hover:text-neutral-200">
             Дані та приватність
           </NavLink>
+          <button type="button" onClick={openCookieSettings} className="hover:text-neutral-800 dark:hover:text-neutral-200">Налаштування кукі</button>
           <NavLink to="/filaments" className="hover:text-neutral-800 dark:hover:text-neutral-200">
             Каталог пластиків
           </NavLink>
