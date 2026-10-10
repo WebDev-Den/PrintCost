@@ -722,12 +722,12 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     for (let index = 0; index < 30; index++) {
       const succeeded = index % 3 === 0 ? 100 : index % 3 === 1 ? 0 : 37;
       const results = Array.from({ length: 100 }, (_, item) => ({ index: item, kind: 'offer', success: item < succeeded, message: 'x'.repeat(240) }));
-      const created = clock + (index + 1) * 3600;
+      const created = clock + (index + 1) * 7200;
       const id = await seedJob('manager', created, results);
       expected.unshift({ id, status: succeeded === 100 ? 'completed' : succeeded === 0 ? 'failed' : 'partial', total: 100,
         processed: 100, succeeded, failed: 100 - succeeded, createdAt: new Date(created * 1000).toISOString(), updatedAt: new Date(created * 1000).toISOString() });
     }
-    const emptyId = await seedJob('other-manager', clock + 31 * 3600, []);
+    const emptyId = await seedJob('other-manager', clock + 31 * 7200, []);
     const result = await request('imports', managerKey);
     assert.equal(result.status, 200); assert.deepEqual(await result.json(), { jobs: expected });
     assert.equal((await request('imports/' + emptyId, managerKey)).status, 404);
