@@ -4,14 +4,19 @@ import { LEGACY_CATALOG_SKUS } from './legacyCatalog.ts';
 
 const EVENT_TYPES = ['search', 'filter', 'no_results', 'impression', 'details', 'seller_click', 'add_material'] as const;
 const MATERIAL_TYPES = ['all', 'PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'PLA-CF', 'PETG-CF', 'PA-CF', 'PVA', 'HIPS', 'other'] as const;
-const DAILY_EVENT_LIMIT = 4000;
+const DAILY_EVENT_LIMIT = 2000;
+const DAILY_INGEST_CHECK_LIMIT = 4000;
+const DAILY_REPORT_CHECK_LIMIT = 1500;
+const DAILY_REPORT_READ_LIMIT = 1_000_000;
+// Native D1 maximum measured below 125k for both full detail snapshots and 366 days.
+const REPORT_READ_RESERVATION = 125_000;
 export type EventType = typeof EVENT_TYPES[number];
 type Counts = Record<EventType, number>;
 export interface AnalyticsEvent {
   id: string; type: EventType; offerId?: string; materialType?: typeof MATERIAL_TYPES[number];
   packaging?: 'all' | 'spool' | 'refill'; stock?: 'all' | 'in_stock' | 'out_of_stock'; hasSearch?: boolean; resultCount?: number;
 }
-interface Result<T = Record<string, unknown>> { results: T[]; meta: { changes?: number; rows_read?: number; rows_written?: number }; success: boolean }
+interface Result<T = Record<string, unknown>> { results: T[]; meta: { changes?: number; rows_read?: number; rows_written?: number; size_after?: number }; success: boolean }
 interface Statement { bind(...values: (string | number | null)[]): Statement; all<T = Record<string, unknown>>(): Promise<Result<T>>; first<T = Record<string, unknown>>(): Promise<T | null> }
 export interface AnalyticsDatabase { prepare(sql: string): Statement; batch<T = Record<string, unknown>>(statements: Statement[]): Promise<Result<T>[]> }
 export interface AnalyticsEnv {
@@ -40,9 +45,9 @@ const ID = /^[A-Za-z0-9_-]{1,200}$/;
 const fields = ['id', 'type', 'offerId', 'materialType', 'packaging', 'stock', 'hasSearch', 'resultCount'];
 const sumColumns = EVENT_TYPES.map(type => `SUM(${type}) AS ${type}`).join(', ');
 const countScore = EVENT_TYPES.join('+');
-const notice = 'Виміряна активність, не продажі. Підсумки й дні повні; пропозиції та фільтри — до 100 груп за період. Деталізація пропозицій доступна до 20 000 денних рядків: для більшого обсягу звузьте період. Дні звіту: Europe/Kyiv; спільна квота: UTC. Дедуплікація й детальні події: 30 днів; агрегати: 12 місяців. Дані звіту можуть затримуватися до 60 секунд.';
-function json(value: unknown, status = 200) {
-  return Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Vary': 'Origin' } });
+const notice = 'Виміряна активність, не продажі. Підсумки й дні повні; пропозиції та фільтри — до 100 груп за період. Деталізація пропозицій доступна до 20 000 денних рядків, фільтрів — до 5000: для більшого обсягу звузьте період. Дні звіту: Europe/Kyiv; спільна квота: UTC. Дедуплікація й детальні події: 30 днів; агрегати: 12 місяців. Дані звіту можуть затримуватися до 60 секунд.';
+function json(value: unknown, status = 200, extra: Record<string, string> = {}) {
+  return Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Vary': 'Origin', ...extra } });
 }
 function emptyCounts(): Counts { return Object.fromEntries(EVENT_TYPES.map(type => [type, 0])) as Counts; }
 function retentionStart(date: Date) {
@@ -183,18 +188,24 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     const utcDay = date.toISOString().slice(0, 10);
     const metricExpiry = retentionStart(date);
     const eventExpiry = new Date(date.getTime() - 30 * 86400000).toISOString().slice(0, 10);
-    // One bounded chunk per UTC day. A backlog is drained without spending the next day's quota.
+    // Raw deletion runs once; an unfinished rollup batch can retry without deleting more events.
     await database.batch([
-      database.prepare('INSERT INTO maintenance(day) VALUES(?) ON CONFLICT DO NOTHING').bind(utcDay),
+      database.prepare('INSERT INTO maintenance(day,complete) VALUES(?,0) ON CONFLICT DO NOTHING').bind(utcDay),
       database.prepare('DELETE FROM events WHERE id IN (SELECT id FROM events WHERE utc_day < ? AND changes() = 1 LIMIT 4000)').bind(eventExpiry),
+      database.prepare('SELECT complete FROM maintenance WHERE day=?').bind(utcDay),
     ]).then(async results => {
-      if (!results[0].meta.changes) return;
+      if (results[2].results[0]?.complete !== 0) return;
+      // Every delete and the completion marker share one atomic transaction. A concurrent
+      // retry checks the marker inside that transaction and cannot delete a second chunk.
+      const pending = '(SELECT complete FROM maintenance WHERE day=?)=0';
       await database.batch([
-        database.prepare('DELETE FROM daily_totals WHERE (company_id,day) IN (SELECT company_id,day FROM daily_totals WHERE day < ? LIMIT 4001)').bind(metricExpiry),
-        database.prepare('DELETE FROM daily_metrics WHERE (company_id,day,offer_id) IN (SELECT company_id,day,offer_id FROM daily_metrics WHERE day < ? LIMIT 4000)').bind(metricExpiry),
-        database.prepare('DELETE FROM daily_filters WHERE (company_id,day,material_type,packaging,stock,has_search) IN (SELECT company_id,day,material_type,packaging,stock,has_search FROM daily_filters WHERE day < ? LIMIT 4252)').bind(metricExpiry),
-        database.prepare('DELETE FROM day_budget WHERE day < ?').bind(metricExpiry),
-        database.prepare('DELETE FROM maintenance WHERE day < ?').bind(utcDay),
+        database.prepare(`DELETE FROM daily_totals WHERE (company_id,day) IN (SELECT company_id,day FROM daily_totals WHERE day < ? AND ${pending} LIMIT 4001)`).bind(metricExpiry, utcDay),
+        database.prepare(`DELETE FROM daily_metrics WHERE (company_id,day,offer_id) IN (SELECT company_id,day,offer_id FROM daily_metrics WHERE day < ? AND ${pending} LIMIT 4000)`).bind(metricExpiry, utcDay),
+        database.prepare(`DELETE FROM daily_filters WHERE (company_id,day,material_type,packaging,stock,has_search) IN (SELECT company_id,day,material_type,packaging,stock,has_search FROM daily_filters WHERE day < ? AND ${pending} LIMIT 4252)`).bind(metricExpiry, utcDay),
+        database.prepare(`DELETE FROM day_budget WHERE day < ? AND ${pending}`).bind(metricExpiry, utcDay),
+        database.prepare(`DELETE FROM analytics_report_budget WHERE day < ? AND ${pending}`).bind(metricExpiry, utcDay),
+        database.prepare(`DELETE FROM maintenance WHERE day < ? AND ${pending}`).bind(utcDay, utcDay),
+        database.prepare('UPDATE maintenance SET complete=1 WHERE day=? AND complete=0').bind(utcDay),
       ]);
     });
   }
@@ -207,13 +218,18 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
     catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(400, 'Некоректний JSON.'); }
     const events = validateEvents(parsed), date = now(), utcDay = date.toISOString().slice(0, 10), day = localDay(date);
     const placeholders = events.map(() => '?').join(',');
-    const initial = await database.batch([
-      database.prepare('SELECT accepted FROM day_budget WHERE day = ?').bind(utcDay),
-      database.prepare(`SELECT id FROM events WHERE id IN (${placeholders})`).bind(...events.map(event => event.id)),
-    ]);
-    const existing = new Set(initial[1].results.map(row => String(row.id)));
+    const checked = await database.prepare('INSERT INTO day_budget(day,accepted,ingest_checks) VALUES(?,0,1) ON CONFLICT(day) DO UPDATE SET ingest_checks=ingest_checks+1 WHERE ingest_checks<? RETURNING accepted')
+      .bind(utcDay, DAILY_INGEST_CHECK_LIMIT).all();
+    if (!checked.results.length) throw new ApiError(429, 'Денний ліміт запитів аналітики вичерпано. Спробуйте завтра (UTC).',
+      86400 - Math.floor(date.getTime() / 1000) % 86400);
+    if (Number(checked.meta.size_after) >= 450 * 1024 * 1024) {
+      throw new ApiError(429, 'Сховище аналітики заповнене. Спробуйте пізніше.', 3600);
+    }
+    // A separate quota check prevents SQLite from evaluating dedup index probes after denial.
+    const dedup = await database.prepare(`SELECT id FROM events WHERE id IN (${placeholders})`).bind(...events.map(event => event.id)).all();
+    const existing = new Set(dedup.results.map(row => String(row.id)));
     const fresh = events.filter(event => !existing.has(event.id));
-    const acceptedBefore = Number(initial[0].results[0]?.accepted || 0);
+    const acceptedBefore = Number(checked.results[0].accepted || 0);
     if (!fresh.length || acceptedBefore >= DAILY_EVENT_LIMIT) {
       return json({ accepted: 0, duplicates: existing.size, dropped: fresh.length, budget: { day: utcDay, accepted: null, limit: DAILY_EVENT_LIMIT }, notice }, fresh.length ? 429 : 200);
     }
@@ -241,18 +257,25 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
   }
 
   async function report(request: Request, env: AnalyticsEnv, database: AnalyticsDatabase) {
+    const date = now(), utcDay = date.toISOString().slice(0, 10);
     const query = validateReport(new URL(request.url));
-    if (query.from < retentionStart(now()) || query.to > localDay(now())) throw new ApiError(400, 'Звіт доступний за останні 12 місяців до сьогодні (Europe/Kyiv).');
+    if (query.from < retentionStart(date) || query.to > localDay(date)) throw new ApiError(400, 'Звіт доступний за останні 12 місяців до сьогодні (Europe/Kyiv).');
+    const exhausted = () => new ApiError(429, 'Денний ліміт звітів вичерпано. Спробуйте завтра (UTC).', 86400 - Math.floor(date.getTime() / 1000) % 86400);
+    const check = await database.prepare('INSERT INTO analytics_report_budget(day,checks,reserved_reads) VALUES(?,1,0) ON CONFLICT(day) DO UPDATE SET checks=checks+1 WHERE checks<? RETURNING day')
+      .bind(utcDay, DAILY_REPORT_CHECK_LIMIT).all();
+    if (!check.results.length) throw exhausted();
     const token = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(request.headers.get('Authorization') || '')?.[1];
     if (!token) throw new ApiError(401, 'Увійдіть в акаунт.');
     const role = await access(env.FIREBASE_PROJECT_ID, token, query.companyId, request.headers.get('X-Firebase-AppCheck') || undefined);
     const scope = query.companyId === 'all' ? '' : query.companyId;
     const global = query.companyId === 'all';
-    const date = now(), utcDay = date.toISOString().slice(0, 10);
     const cacheKey = `${env.FIREBASE_PROJECT_ID}/${query.companyId}/${query.from}/${query.to}`;
     const cached = reportCache.get(cacheKey);
     let serialized = cached && cached.expires > date.getTime() ? cached.value : undefined;
     if (!serialized) {
+      const reservation = await database.prepare('UPDATE analytics_report_budget SET reserved_reads=reserved_reads+? WHERE day=? AND reserved_reads<=? RETURNING day')
+        .bind(REPORT_READ_RESERVATION, utcDay, DAILY_REPORT_READ_LIMIT - REPORT_READ_RESERVATION).all();
+      if (!reservation.results.length) throw exhausted();
       // The primary key bounds company scans by day; the day index bounds global scans.
       const offerSource = `daily_metrics${global ? ' INDEXED BY metrics_retention' : ''}`;
       const offerWhere = `${global ? '' : 'company_id=? AND '}day BETWEEN ? AND ?`;
@@ -266,17 +289,28 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
           grouped AS (SELECT offer_id,company_id,MAX(CASE WHEN offer_name<>'' THEN day||'|'||offer_name END) AS label,${sumColumns},SUM(${countScore}) AS score
             FROM bounded,sized WHERE sized.count<=20000 GROUP BY company_id,offer_id ORDER BY score DESC,offer_id LIMIT 101)
           SELECT sized.count AS scan_count,grouped.* FROM sized LEFT JOIN grouped ON 1 ORDER BY grouped.score DESC,grouped.offer_id`).bind(...offerBindings),
-        database.prepare(`SELECT material_type,packaging,stock,has_search,${sumColumns},SUM(${countScore}) AS score FROM daily_filters WHERE company_id=? AND day BETWEEN ? AND ? GROUP BY material_type,packaging,stock,has_search ORDER BY score DESC,material_type,packaging,stock,has_search LIMIT 101`).bind(scope, query.from, query.to),
+        database.prepare(`WITH bounded AS MATERIALIZED (SELECT * FROM daily_filters WHERE company_id=? AND day BETWEEN ? AND ? LIMIT 5001),
+          sized AS (SELECT COUNT(*) AS count FROM bounded),
+          grouped AS (SELECT material_type,packaging,stock,has_search,${sumColumns},SUM(${countScore}) AS score FROM bounded,sized WHERE sized.count<=5000
+            GROUP BY material_type,packaging,stock,has_search ORDER BY score DESC,material_type,packaging,stock,has_search LIMIT 101)
+          SELECT sized.count AS scan_count,grouped.* FROM sized LEFT JOIN grouped ON 1 ORDER BY grouped.score DESC,grouped.material_type,grouped.packaging,grouped.stock,grouped.has_search`).bind(scope, query.from, query.to),
       ]);
+      // Missing D1 usage metadata retains the full reservation; failed queries do too.
+      if (results.length === 3 && results.every(result => result.success && Number.isSafeInteger(result.meta.rows_read) && result.meta.rows_read! >= 0)) {
+        const refund = Math.max(0, REPORT_READ_RESERVATION - results.reduce((sum, result) => sum + result.meta.rows_read!, 0));
+        if (refund) await database.prepare('UPDATE analytics_report_budget SET reserved_reads=reserved_reads-? WHERE day=? AND reserved_reads>=?').bind(refund, utcDay, refund).all();
+      }
       const offersScanLimited = Number(results[1].results[0]?.scan_count || 0) > 20000;
       const offers = results[1].results.filter(row => typeof row.offer_id === 'string');
+      const filters = results[2].results.filter(row => typeof row.material_type === 'string');
+      const filtersScanLimited = Number(results[2].results[0]?.scan_count || 0) > 5000;
       const totals = emptyCounts();
       const days = results[0].results.map(row => { const values = counts(row); for (const type of EVENT_TYPES) totals[type] += values[type]; return { day: String(row.day), counts: values }; });
       const value: Omit<AnalyticsReport, 'budget'> = { companyId: global ? null : scope, from: query.from, to: query.to, totals, days,
         offers: offers.slice(0, 100).map(row => ({ offerId: String(row.offer_id), companyId: row.company_id ? String(row.company_id) : null, name: row.label ? String(row.label).slice(11) : null, counts: counts(row) })),
         offersLimit: 100, offersTruncated: offers.length > 100, offersScanLimited,
-        filters: results[2].results.slice(0, 100).map(row => ({ materialType: String(row.material_type), packaging: String(row.packaging), stock: String(row.stock), hasSearch: row.has_search === 1, counts: counts(row) })),
-        filtersLimit: 100, filtersTruncated: results[2].results.length > 100, notice };
+        filters: filters.slice(0, 100).map(row => ({ materialType: String(row.material_type), packaging: String(row.packaging), stock: String(row.stock), hasSearch: row.has_search === 1, counts: counts(row) })),
+        filtersLimit: 100, filtersTruncated: filtersScanLimited || filters.length > 100, notice };
       serialized = JSON.stringify(value);
       if (new TextEncoder().encode(serialized).length <= 192 * 1024) {
         if (reportCache.size >= 16) reportCache.delete(reportCache.keys().next().value!);
@@ -306,11 +340,15 @@ export function createAnalyticsWorker(dependencies: { fetcher?: typeof fetch; no
       } catch (error) {
         const status = error instanceof ApiError ? error.status : 503;
         if (status === 503) console.error(JSON.stringify({ event: 'analytics_unavailable', status }));
-        return json({ error: error instanceof ApiError ? error.message : 'Аналітика тимчасово недоступна.' }, status);
+        return json({ error: error instanceof ApiError ? error.message : 'Аналітика тимчасово недоступна.' }, status,
+          error instanceof ApiError && error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
       }
     },
     async scheduled(_controller: unknown, env: AnalyticsEnv, context: Context) {
-      if (env.ANALYTICS_DB) context.waitUntil(cleanup(env.ANALYTICS_DB, now()).catch(() => console.error(JSON.stringify({ event: 'analytics_cleanup_unavailable' }))));
+      if (env.ANALYTICS_DB) context.waitUntil(cleanup(env.ANALYTICS_DB, now()).catch(error => {
+        console.error(JSON.stringify({ event: 'analytics_cleanup_unavailable' }));
+        throw error;
+      }));
     },
   };
 }

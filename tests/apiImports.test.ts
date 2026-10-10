@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
 import { IMPORT_EXAMPLE, IMPORT_LIMITS, importDomain, normalizeImportPayload, profileForImport, validateImportEnvelope } from '../src/domain/apiImports.ts';
 
 test('HTTP envelope validation bounds the whole request without validating individual records', () => {
@@ -45,4 +47,44 @@ test('company JSON preserves omitted fields for later admin completion', () => {
   assert.deepEqual(normalizeImportPayload({ companies: [{ website: 'https://shop.example.com' }] }).companies,
     [{ website: 'https://shop.example.com/' }]);
   assert.equal(normalizeImportPayload({ companies: [{ website: 'https://shop.example.com', name: ' Seller ', status: 'disabled' }] }).companies[0].name, 'Seller');
+});
+
+test('import count migration backfills legacy results and atomically maintains every result writer', t => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  for (const file of ['0002_import_api.sql', '0003_import_access_limits.sql']) {
+    db.exec(readFileSync(new URL('../migrations/' + file, import.meta.url), 'utf8'));
+  }
+  const time = 1_700_000_000;
+  function seed(id: string, results: unknown[]) {
+    db.prepare('INSERT INTO import_keys(uid,hash,prefix,role,fingerprint,valid_since,created_at,expires_at) VALUES(?,?,?,\'admin\',\'current\',0,?,?)')
+      .run(id, id, id, time, time + 86400);
+    db.prepare('INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,status,total,cursor,results,interval_seconds,created_at,updated_at,expires_at) VALUES(?,?,?,\'current\',?,\'hash\',\'completed\',?,?,?,?,?,?,?)')
+      .run(id, id, id, id, Math.max(1, results.length), results.length, JSON.stringify(results), 300, time, time, time + 86400);
+  }
+  seed('legacy-empty', []);
+  seed('legacy-full', Array.from({ length: 100 }, (_, index) => ({ success: index < 37 })));
+  seed('legacy-missing', [{ success: true }, { success: false }, {}, { success: null }]);
+  db.exec(readFileSync(new URL('../migrations/0004_import_result_counts.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0007_maintenance_budget.sql', import.meta.url), 'utf8'));
+  const counts = (id: string) => ({ ...db.prepare('SELECT succeeded,failed FROM import_jobs WHERE id=?').get(id) });
+  assert.deepEqual(counts('legacy-empty'), { succeeded: 0, failed: 0 });
+  assert.deepEqual(counts('legacy-full'), { succeeded: 37, failed: 63 });
+  assert.deepEqual(counts('legacy-missing'), { succeeded: 1, failed: 3 });
+  seed('inserted-full', [{ success: false }, { success: true }]);
+  assert.deepEqual(counts('inserted-full'), { succeeded: 1, failed: 1 }, 'Nonempty fixture/legacy INSERTs update the same counters.');
+  const results = JSON.stringify([{ success: true }, { success: true }, { success: false }]);
+  db.prepare('UPDATE import_jobs SET results=?,cursor=3,status=\'partial\' WHERE id=?').run(results, 'inserted-full');
+  assert.deepEqual(counts('inserted-full'), { succeeded: 2, failed: 1 });
+  const before = db.prepare('SELECT total_changes() AS value').get()!.value as number;
+  db.prepare('UPDATE import_jobs SET results=?,status=\'cancelled\' WHERE id=?').run(results, 'inserted-full');
+  assert.equal(Number(db.prepare('SELECT total_changes() AS value').get()!.value) - before, 1, 'An identical result array does not repeat its counter write.');
+  assert.deepEqual(counts('inserted-full'), { succeeded: 2, failed: 1 }, 'Status-only terminal/cancellation changes preserve counts.');
+  db.exec('BEGIN');
+  db.prepare('UPDATE import_jobs SET results=\'[]\' WHERE id=?').run('inserted-full');
+  assert.deepEqual(counts('inserted-full'), { succeeded: 0, failed: 0 });
+  assert.throws(() => db.prepare('UPDATE import_jobs SET total=0 WHERE id=?').run('inserted-full'));
+  db.exec('ROLLBACK');
+  assert.deepEqual(counts('inserted-full'), { succeeded: 2, failed: 1 }, 'Result arrays and counters roll back in the same transaction.');
+  assert.equal(db.prepare('SELECT results FROM import_jobs WHERE id=?').get('inserted-full')!.results, results);
 });

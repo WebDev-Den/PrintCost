@@ -16,6 +16,8 @@ test('Worker built-in SKU identities and seller URLs match the canonical fronten
 function database() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../migrations/0001_analytics.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0005_analytics_report_budget.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0008_analytics_event_budget.sql', import.meta.url), 'utf8'));
   const executions: string[] = [];
   const prepare = (sql: string, values: (string | number | null)[] = []) => ({
     sql, values,
@@ -201,20 +203,91 @@ test('fresh registry, membership, company and account block revoke manager/admin
   await Promise.all(f.pending); f.sqlite.close();
 });
 
-test('quota cannot exceed 4000; cap precheck avoids Firestore and duplicate retries never count', async () => {
+test('quota cannot exceed2000; cap precheck avoids Firestore and duplicate retries never count', async () => {
   const f = await fixture();
-  f.sqlite.prepare('INSERT INTO day_budget(day,accepted) VALUES(?,?)').run('2026-10-08', 3999);
+  f.sqlite.prepare('INSERT INTO day_budget(day,accepted) VALUES(?,?)').run('2026-10-08', 1999);
   const events = [event(), event()];
   const response = await f.post(events);
   assert.equal(response.status, 429);
-  const body = await response.json() as { accepted: number; dropped: number };
+  const body = await response.json() as { accepted: number; dropped: number; budget: { limit: number } };
   assert.equal(body.accepted, 1); assert.equal(body.dropped, 1);
-  assert.equal(f.sqlite.prepare('SELECT accepted FROM day_budget').get()!.accepted, 4000);
+  assert.equal(body.budget.limit, 2000);
+  assert.equal(f.sqlite.prepare('SELECT accepted FROM day_budget').get()!.accepted, 2000);
   const before = f.calls.length;
   assert.equal((await f.post([event({ type: 'details', offerId: 'arbitrary-unknown' })])).status, 429);
   assert.equal(f.calls.length, before);
   assert.equal((await f.post([events[0]])).status, 200);
   await Promise.all(f.pending); f.sqlite.close();
+});
+
+test('report check and read budgets count failures and cached reads, and reject before further Firebase work', async () => {
+  const f = await fixture();
+  const unauthorized = await f.worker.fetch(new Request('https://web-dev.pp.ua/api/analytics/report?companyId=company-a&from=2026-10-08&to=2026-10-09'), f.env, f.context);
+  assert.equal(unauthorized.status, 401);
+  assert.equal(f.sqlite.prepare('SELECT checks FROM analytics_report_budget').get()!.checks, 1);
+  assert.equal((await f.report()).status, 200);
+  assert.equal((await f.report()).status, 200);
+  assert.deepEqual({ ...f.sqlite.prepare('SELECT checks,reserved_reads FROM analytics_report_budget').get() }, { checks: 3, reserved_reads: 125000 }, 'Absent metadata retains the reservation; a cached report uses only a check.');
+  f.sqlite.prepare('UPDATE analytics_report_budget SET checks=1500').run();
+  const before = f.calls.length;
+  const exhausted = await f.report();
+  assert.equal(exhausted.status, 429); assert.equal(exhausted.headers.get('Retry-After'), '6300');
+  assert.equal(f.calls.length, before, 'Daily check exhaustion precedes fresh role reads.');
+  f.sqlite.prepare('UPDATE analytics_report_budget SET checks=0,reserved_reads=875001').run();
+  const capped = await f.report('company-a', 'manager', 'from=2026-10-09&to=2026-10-09');
+  assert.equal(capped.status, 429); assert.equal(capped.headers.get('Retry-After'), '6300');
+  assert.equal(f.sqlite.prepare('SELECT reserved_reads FROM analytics_report_budget').get()!.reserved_reads, 875001);
+  f.sqlite.close();
+});
+
+test('only complete valid D1 read metadata refunds report reservations', async () => {
+  for (const metadata of [7, undefined, -1, NaN]) {
+    const f = await fixture();
+    f.env.ANALYTICS_DB = { ...f.binding, batch: async <T>(statements: ReturnType<AnalyticsDatabase['prepare']>[]) => (await f.binding.batch<T>(statements))
+      .map(result => ({ ...result, meta: { ...result.meta, rows_read: metadata } })) };
+    assert.equal((await f.report()).status, 200);
+    assert.equal(f.sqlite.prepare('SELECT reserved_reads FROM analytics_report_budget').get()!.reserved_reads,
+      metadata === 7 ? 21 : 125000);
+    f.sqlite.close();
+  }
+  const failed = await fixture();
+  failed.env.ANALYTICS_DB = { ...failed.binding, batch: async () => { throw new Error('D1 unavailable'); } };
+  assert.equal((await failed.report()).status, 503);
+  assert.equal(failed.sqlite.prepare('SELECT reserved_reads FROM analytics_report_budget').get()!.reserved_reads, 125000);
+  failed.sqlite.close();
+});
+
+test('analytics storage high-water rejects ingestion before Firestore and writes', async () => {
+  const f = await fixture();
+  f.env.ANALYTICS_DB = { ...f.binding, prepare: sql => {
+    let statement = f.binding.prepare(sql);
+    return { bind(...values) { statement = statement.bind(...values); return this; }, first: <T>() => statement.first<T>(),
+      all: async <T>() => { const result = await statement.all<T>(); return { ...result, meta: { ...result.meta, size_after: 450 * 1024 * 1024 } }; } };
+  } };
+  const response = await f.post([event({ type: 'details', offerId: 'offer-a' })]);
+  assert.equal(response.status, 429); assert.equal(response.headers.get('Retry-After'), '3600');
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 0);
+  assert.ok(f.executions.every(sql => sql.startsWith('SELECT') || sql.startsWith('INSERT INTO day_budget(day,accepted,ingest_checks)')));
+  assert.deepEqual({ ...f.sqlite.prepare('SELECT accepted,ingest_checks FROM day_budget').get() }, { accepted: 0, ingest_checks: 1 }, 'Only the bounded attempt marker may be written before storage rejection.');
+  f.sqlite.close();
+});
+
+test('ingest attempt quota counts duplicates and stops dedup before any offer lookup', async () => {
+  const f = await fixture(), original = event();
+  assert.equal((await f.post([original])).status, 202);
+  assert.equal((await f.post([original])).status, 200);
+  assert.equal(f.sqlite.prepare('SELECT ingest_checks FROM day_budget').get()!.ingest_checks, 2);
+  f.sqlite.prepare('UPDATE day_budget SET ingest_checks=3999').run();
+  assert.equal((await f.post([original])).status, 200);
+  const response = await f.post([event({ type: 'details', offerId: 'offer-a' })]);
+  assert.equal(response.status, 429); assert.equal(response.headers.get('Retry-After'), '6300');
+  assert.equal(f.calls.length, 0); assert.equal(f.sqlite.prepare('SELECT ingest_checks FROM day_budget').get()!.ingest_checks, 4000);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 1);
+  const malformed = await f.worker.fetch(new Request('https://web-dev.pp.ua/api/analytics/events', { method: 'POST',
+    headers: { Origin: 'https://web-dev.pp.ua', 'Content-Type': 'application/json' }, body: '{"events":[]}' }), f.env, f.context);
+  assert.equal(malformed.status, 400); assert.equal(f.sqlite.prepare('SELECT ingest_checks FROM day_budget').get()!.ingest_checks, 4000);
+  f.sqlite.close();
 });
 
 test('legacy exact SKU lookup is system-only; tombstones, hidden offers and removed URL domains reject events', async () => {
@@ -305,7 +378,7 @@ test('serialized report cache preserves a full year, 100 escaped offer names and
   assert.ok(first.offers.every(offer => offer.name === name)); assert.equal(first.budget.accepted, 0);
   const before = f.executions.filter(sql => sql.startsWith('WITH bounded')).length;
   const second = await (await f.report('company-a', 'manager', range)).json();
-  assert.deepEqual(second, { ...first, budget: { day: '2026-10-08', accepted: null, limit: 4000 } });
+  assert.deepEqual(second, { ...first, budget: { day: '2026-10-08', accepted: null, limit: 2000 } });
   assert.equal(f.executions.filter(sql => sql.startsWith('WITH bounded')).length, before);
   f.sqlite.close();
 });
@@ -339,6 +412,14 @@ test('HTTP analytics never runs retention work; only the daily cron removes expi
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 2);
   await f.worker.scheduled(undefined, f.env, f.context); await Promise.all(f.pending);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 1);
+  f.sqlite.close();
+});
+
+test('scheduled analytics cleanup propagates failures so the durable maintenance queue can retry', async () => {
+  const f = await fixture(), failure = new Error('D1 unavailable');
+  f.env.ANALYTICS_DB = { ...f.binding, batch: async () => { throw failure; } };
+  await f.worker.scheduled(undefined, f.env, f.context);
+  await assert.rejects(Promise.all(f.pending), error => error === failure);
   f.sqlite.close();
 });
 
@@ -390,15 +471,40 @@ test('offer scans stop at 20001 indexed day rows, while the exact 20000 boundary
   await Promise.all(f.pending); f.sqlite.close();
 });
 
+test('filter scans stop at 5001 rows and preserve exact independent totals', async () => {
+  const f = await fixture();
+  const types = ['all', 'PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'PLA-CF', 'PETG-CF', 'PA-CF', 'PVA', 'HIPS', 'other'];
+  const insert = f.sqlite.prepare('INSERT INTO daily_filters(company_id,day,material_type,packaging,stock,has_search,details) VALUES(?,?,?,?,?,?,1)');
+  const row = (index: number) => [ 'company-a', new Date(Date.parse('2026-10-09') - Math.floor(index / 252) * 86400000).toISOString().slice(0, 10),
+    types[index % 14], ['all', 'spool', 'refill'][Math.floor(index / 14) % 3], ['all', 'in_stock', 'out_of_stock'][Math.floor(index / 42) % 3], Math.floor(index / 126) % 2 ];
+  f.sqlite.exec('BEGIN');
+  for (let index = 0; index < 5000; index++) insert.run(...row(index));
+  f.sqlite.exec('COMMIT');
+  f.sqlite.prepare('INSERT INTO daily_totals(company_id,day,details) VALUES(?,?,?)').run('company-a', '2026-10-09', 5001);
+  const range = 'from=2026-09-01&to=2026-10-09';
+  const boundary = await (await f.report('company-a', 'manager', range)).json() as { totals: { details: number }; filters: unknown[]; filtersTruncated: boolean };
+  assert.equal(boundary.totals.details, 5001); assert.equal(boundary.filters.length, 100); assert.equal(boundary.filtersTruncated, true);
+  insert.run(...row(5000));
+  const limited = await (await f.report('company-a', 'manager', 'from=2026-09-02&to=2026-10-09')).json() as typeof boundary & { notice: string };
+  assert.equal(limited.totals.details, 5001); assert.deepEqual(limited.filters, []); assert.equal(limited.filtersTruncated, true);
+  assert.match(limited.notice, /5000/);
+  f.sqlite.close();
+});
+
 test('cleanup is indexed, bounded and admitted only once per UTC day even after a backlog', async () => {
   const f = await fixture();
+  f.sqlite.prepare('INSERT INTO analytics_report_budget(day,checks,reserved_reads) VALUES(?,?,?)').run('2025-01-01', 1500, 1000000);
   const insert = f.sqlite.prepare('INSERT INTO events(id,day,utc_day,type,has_search) VALUES(?,?,?,?,?)');
-  for (let index = 0; index < 6000; index++) insert.run(crypto.randomUUID(), index < 4000 ? '2025-01-01' : '2025-01-02', index < 4000 ? '2025-01-01' : '2025-01-02', 'search', 0);
+  for (let index = 0; index < 6000; index++) {
+    const day = ['2025-01-01', '2025-01-02', '2025-01-03'][Math.floor(index / 2000)];
+    insert.run(crypto.randomUUID(), day, day, 'search', 0);
+  }
   await f.worker.scheduled(undefined, f.env, f.context); await Promise.all(f.pending);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 2000);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM daily_totals').get()!.count, 0);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM daily_metrics').get()!.count, 0);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM daily_filters').get()!.count, 0);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM analytics_report_budget').get()!.count, 0);
   await f.worker.scheduled(undefined, f.env, f.context); await Promise.all(f.pending);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM events').get()!.count, 2000);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM maintenance').get()!.count, 1);

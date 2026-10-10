@@ -227,13 +227,18 @@ test('entrypoint composes Turnstile without changing assets, analytics authoriza
     cleanupQueries.push(sql);
     return { bind() { return this; }, all: async () => ({ results: [], meta: {}, success: true }), first: async () => null };
   }, batch: async statements => statements.map(() => ({ results: [], meta: { changes: 0 }, success: true })) };
-  await worker.scheduled({ cron: '*/5 * * * *' }, { ...configuration, ANALYTICS_DB: cleanupDatabase }, context);
+  const queueEnv = { ...configuration, ANALYTICS_DB: cleanupDatabase, IMPORT_QUEUE: { async send() {} } };
+  await worker.scheduled({ cron: '*/5 * * * *' }, queueEnv, context);
   await Promise.all(pending.splice(0));
-  assert.equal(cleanupQueries.length, 0, 'import outbox cron does not run analytics cleanup');
-  await worker.scheduled({ cron: '0 2 * * *' }, { ...configuration, ANALYTICS_DB: cleanupDatabase }, context);
+  assert.ok(cleanupQueries.every(sql => sql.includes('maintenance_dispatches')), 'import cron only reserves producer work');
+  await worker.scheduled({ cron: '0 2 * * *' }, queueEnv, context);
   await Promise.all(pending.splice(0));
-  assert.ok(cleanupQueries.some(sql => sql.includes('DELETE FROM events')), 'daily analytics cleanup is retained');
-  const database: AnalyticsDatabase = { prepare: () => { throw new Error('Unexpected database access'); }, batch: async () => { throw new Error('Unexpected database access'); } };
+  assert.ok(cleanupQueries.every(sql => sql.includes('maintenance_dispatches')), 'analytics cleanup also runs outside the Cron CPU limit');
+  const database: AnalyticsDatabase = { prepare: sql => {
+    assert.ok(sql.startsWith('INSERT INTO analytics_report_budget'), 'Only the preliminary report quota may precede authentication.');
+    return { bind() { return this; }, async all<T>() { return { results: [{ day: 'fixture' }] as T[], meta: {}, success: true }; },
+      async first<T>() { assert.fail('Unauthenticated reports must not read data.'); return null as T | null; } };
+  }, batch: async () => { throw new Error('Unexpected database access'); } };
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const report = await worker.fetch(new Request(`${origin}/api/analytics/report?companyId=all&from=${today}&to=${today}`),
     { ...configuration, ...env(), ANALYTICS_DB: database }, context);

@@ -3,6 +3,7 @@ import { IMPORT_LIMITS, importDomain, profileForImport, type ImportPayload, type
 import { assertCompanyOfferWrite, validateCompanyOfferInput, type CompanyOffer } from '../src/domain/companyOfferValidation.ts';
 import { validateCompany, type Company } from '../src/domain/organizations.ts';
 import type { TemperatureProfile } from '../src/domain/filamentsDirectory.ts';
+import type { AnalyticsDatabase } from './analytics.ts';
 
 export interface ImportScope { uid: string; role: 'admin' | 'manager'; companyId: string | null; fingerprint: string; validSince: number; registryVersion: number }
 function base64(value: Uint8Array): string { return btoa(String.fromCharCode(...value)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_'); }
@@ -29,6 +30,15 @@ export function encodeFields(value: Document): Record<string, FirestoreValue> {
 export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => Date = () => new Date()) {
   let cached: { project: string; secret: string; token: string; expires: number } | undefined;
   let signing: { project: string; secret: string; key: CryptoKey } | undefined;
+  let encryption: { project: string; secret: string; fingerprint: string; key: CryptoKey } | undefined;
+  async function tokenEncryption(project: string, secret: string) {
+    if (encryption?.project === project && encryption.secret === secret) return encryption;
+    // Public row identity and the encryption key use different derivation domains.
+    const fingerprint = await digest('kilog/oauth/identity/v1/' + project + '/' + secret);
+    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('kilog/oauth/encryption/v1/' + project + '/' + secret));
+    const key = await crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
+    return encryption = { project, secret, fingerprint, key };
+  }
   async function responseJson(url: string, init: RequestInit): Promise<any> {
     let response: Response;
     try { response = await fetcher(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(8000) }); }
@@ -38,8 +48,28 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
     const text = await boundedText(response, 256 * 1024);
     return text ? JSON.parse(text) : {};
   }
-  async function token(project: string, secret: string): Promise<string> {
-    if (cached?.project === project && cached.secret === secret && cached.expires > now().getTime() + 60_000) return cached.token;
+  async function token(project: string, secret: string, database?: AnalyticsDatabase, allowRefresh = true): Promise<string> {
+    if (!allowRefresh && !database) throw new ApiError(503, 'Службовий доступ Firebase ще не налаштований.', 60);
+    const threshold = now().getTime() + (allowRefresh && database ? 300_000 : 60_000);
+    if (cached?.project === project && cached.secret === secret && cached.expires > threshold) return cached.token;
+    const cipher = database ? await tokenEncryption(project, secret) : undefined;
+    if (database && cipher) {
+      const row = await database.prepare('SELECT nonce,ciphertext,expires_at FROM firebase_service_tokens WHERE project=? AND fingerprint=?')
+        .bind(project, cipher.fingerprint).first<{ nonce: string; ciphertext: string; expires_at: number }>();
+      if (row && Number.isSafeInteger(row.expires_at) && row.expires_at > threshold && row.expires_at <= now().getTime() + 3_600_000 &&
+          /^[A-Za-z0-9_-]{16}$/.test(row.nonce) && /^[A-Za-z0-9_-]{24,12000}$/.test(row.ciphertext)) {
+        try {
+          const decode = (value: string) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), char => char.charCodeAt(0));
+          const bytes = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(row.nonce),
+            additionalData: new TextEncoder().encode(project + '/' + cipher.fingerprint + '/' + row.expires_at) }, cipher.key, decode(row.ciphertext));
+          const accessToken = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+          if (!accessToken || accessToken.length > 8192) throw new Error();
+          cached = { project, secret, token: accessToken, expires: row.expires_at };
+          return accessToken;
+        } catch { /* Corrupt credentials are refreshed only in the Queue consumer. */ }
+      }
+      if (!allowRefresh) throw new ApiError(503, 'Службовий доступ Firebase оновлюється. Повторіть запит через хвилину.', 60);
+    }
     let account: { project_id: string; client_email: string; private_key: string };
     try {
       account = JSON.parse(secret);
@@ -61,12 +91,22 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
       const assertion = input + '.' + base64(new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(input))));
       const result = await responseJson('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }).toString() });
       if (typeof result?.access_token !== 'string' || !Number.isFinite(result.expires_in)) throw new Error();
-      cached = { project, secret, token: result.access_token, expires: now().getTime() + Math.min(result.expires_in, 3600) * 1000 };
+      if (!result.access_token || result.access_token.length > 8192 || result.expires_in <= 60) throw new Error();
+      const expires = Math.floor(now().getTime() + Math.min(result.expires_in, 3600) * 1000);
+      if (database && cipher) {
+        const nonce = crypto.getRandomValues(new Uint8Array(12));
+        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce,
+          additionalData: new TextEncoder().encode(project + '/' + cipher.fingerprint + '/' + expires) }, cipher.key, new TextEncoder().encode(result.access_token));
+        await database.prepare('INSERT INTO firebase_service_tokens(project,fingerprint,nonce,ciphertext,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(project,fingerprint) DO UPDATE SET nonce=excluded.nonce,ciphertext=excluded.ciphertext,expires_at=excluded.expires_at WHERE excluded.expires_at>=expires_at')
+          .bind(project, cipher.fingerprint, base64(nonce), base64(new Uint8Array(encrypted)), expires).all();
+        await database.prepare('DELETE FROM firebase_service_tokens WHERE expires_at<=?').bind(now().getTime()).all();
+      }
+      cached = { project, secret, token: result.access_token, expires };
       return cached.token;
     } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(503, 'Сервісний акаунт імпорту не налаштований.'); }
   }
-  async function client(project: string, secret: string) {
-    const accessToken = await token(project, secret);
+  async function client(project: string, secret: string, database?: AnalyticsDatabase, allowRefresh = true) {
+    const accessToken = await token(project, secret, database, allowRefresh);
     const root = 'https://firestore.googleapis.com/v1/projects/' + project + '/databases/(default)/documents';
     const headers = { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' };
     const call = (suffix: string, body?: unknown) => responseJson(root + suffix, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -116,21 +156,24 @@ export function createImportFirebase(fetcher: typeof fetch = fetch, now: () => D
     return { call, name, read, authUser, scope, headers, root };
   }
   return {
-    async scope(project: string, secret: string, uid: string) {
-      const c = await client(project, secret);
+    async refreshCredentials(project: string, secret: string, database: AnalyticsDatabase) {
+      await token(project, secret, database, true);
+    },
+    async scope(project: string, secret: string, uid: string, database?: AnalyticsDatabase, allowRefresh = true) {
+      const c = await client(project, secret, database, allowRefresh);
       return c.scope(uid, await c.authUser(uid));
     },
-    async deleteReceipt(project: string, secret: string, jobId: string) {
-      const c = await client(project, secret);
+    async deleteReceipt(project: string, secret: string, jobId: string, database?: AnalyticsDatabase) {
+      const c = await client(project, secret, database);
       await responseJson(c.root + '/importReceipts/' + jobId, { method: 'DELETE', headers: c.headers });
     },
-    async receipt(project: string, secret: string, jobId: string): Promise<ImportItemResult[] | null> {
-      const c = await client(project, secret);
+    async receipt(project: string, secret: string, jobId: string, database?: AnalyticsDatabase): Promise<ImportItemResult[] | null> {
+      const c = await client(project, secret, database);
       const receipt = await c.read('importReceipts/' + jobId);
       return receipt ? receipt.results as ImportItemResult[] : null;
     },
-    async process(project: string, secret: string, uid: string, fingerprint: string, jobId: string, payload: ImportPayload, cursor: number): Promise<ImportItemResult[]> {
-      const c = await client(project, secret);
+    async process(project: string, secret: string, uid: string, fingerprint: string, jobId: string, payload: ImportPayload, cursor: number, database?: AnalyticsDatabase): Promise<ImportItemResult[]> {
+      const c = await client(project, secret, database);
       const validSince = await c.authUser(uid);
       const { transaction } = await c.call(':beginTransaction', { options: { readWrite: {} } });
       try {

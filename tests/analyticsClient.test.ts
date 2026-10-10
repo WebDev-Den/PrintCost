@@ -83,7 +83,7 @@ test('actual impression gate requires at least 50% visibility continuously for o
 test('malformed report categories or counts fail before React render; manager budget hides global acceptance', () => {
   const counts = Object.fromEntries(ANALYTICS_EVENT_TYPES.map(type => [type, 0]));
   const report = { companyId: 'company-id', from: '2026-10-01', to: '2026-10-08', totals: counts, days: [], offers: [], offersLimit: 100, offersTruncated: false, offersScanLimited: false,
-    filters: [], filtersLimit: 100, filtersTruncated: false, budget: { day: '2026-10-08', accepted: null, limit: 4000 }, notice: 'Best effort' };
+    filters: [], filtersLimit: 100, filtersTruncated: false, budget: { day: '2026-10-08', accepted: null, limit: 2000 }, notice: 'Best effort' };
   assert.doesNotThrow(() => validateAnalyticsReport(report));
   assert.doesNotThrow(() => validateAnalyticsReport({ ...report, offersScanLimited: true }));
   assert.throws(() => validateAnalyticsReport({ ...report, offersScanLimited: undefined }));

@@ -7,6 +7,7 @@ import test from 'node:test';
 import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { build } from 'esbuild';
 import { Miniflare, Response as RuntimeResponse, convertV4MiniflareOptions } from 'miniflare';
+import { createAnalyticsWorker, type AnalyticsDatabase } from '../workers/analytics.ts';
 
 // Explicit integration command: npx tsx --test tests/analyticsRuntime.integration.ts.
 // Requires a Firestore emulator; installs real Rules in its own fresh project.
@@ -115,6 +116,8 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       inspectorPort: process.env.MEASURE_ANALYTICS_CPU === '1' ? 9339 : undefined,
       modules: true, script: bundle.outputFiles[0].text, compatibilityDate: '2026-10-08',
       bindings: { FIREBASE_PROJECT_ID: PROJECT }, d1Databases: ['ANALYTICS_DB'],
+      queueProducers: { IMPORT_QUEUE: 'analytics-maintenance' },
+      queueConsumers: { 'analytics-maintenance': { maxBatchSize: 1, maxBatchTimeout: 0, maxRetries: 3, retryDelay: 0 } },
       serviceBindings: { ASSETS: () => new RuntimeResponse('fixture SPA') },
       outboundService: async request => {
         const url = new URL(request.url);
@@ -131,10 +134,10 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       ratelimits: { ANALYTICS_RATE_LIMIT: { namespace_id: 'analytics-runtime', simple: { limit: 10_000, period: 60 } } },
     }));
     const db = await mf.getD1Database('ANALYTICS_DB');
-    const migration = await readFile('migrations/0001_analytics.sql', 'utf8');
-    // D1 exec treats newlines as statement separators; preserve each trigger body.
-    for (const statement of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=CREATE\b)/i)) {
-      await db.prepare(statement).run();
+    for (const file of ['0001_analytics.sql', '0002_import_api.sql', '0005_analytics_report_budget.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql']) {
+      const migration = await readFile('migrations/' + file, 'utf8');
+      // D1 exec treats newlines as statement separators; preserve each trigger body.
+      for (const statement of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER|DROP)\b)/i)) await db.prepare(statement).run();
     }
     const managerToken = signedToken(manager.payload, pair.privateKey);
     const userToken = signedToken(plainUser.payload, pair.privateKey);
@@ -196,38 +199,39 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       assert.equal(await (await mf!.dispatchFetch(`${ORIGIN}/app/dashboard`)).text(), 'fixture SPA');
     });
     await t.test('daily quota is atomic across simultaneous batches and duplicate retries', async () => {
-      await db.prepare('UPDATE day_budget SET accepted=3999 WHERE day=?').bind(utcDay).run();
+      await db.prepare('UPDATE day_budget SET accepted=1999 WHERE day=?').bind(utcDay).run();
       const batches = await Promise.all([post(Array.from({ length: 20 }, () => ({ id: randomUUID(), type: 'search' }))), post(Array.from({ length: 20 }, () => ({ id: randomUUID(), type: 'filter' })))]);
       const bodies = await Promise.all(batches.map(async response => { assert.equal(response.status, 429); return response.json() as Promise<{ accepted: number; dropped: number }> }));
       assert.equal(bodies.reduce((sum, item) => sum + item.accepted, 0), 1);
       assert.equal(bodies.reduce((sum, item) => sum + item.dropped, 0), 39);
-      assert.equal((await db.prepare('SELECT accepted FROM day_budget WHERE day=?').bind(utcDay).first<{ accepted: number }>())?.accepted, 4000);
+      assert.equal((await db.prepare('SELECT accepted FROM day_budget WHERE day=?').bind(utcDay).first<{ accepted: number }>())?.accepted, 2000);
       assert.equal((await post([firstEvent])).status, 200);
       assert.equal((await post([{ id: randomUUID(), type: 'search' }])).status, 429);
-      const globalReport = await (await report(adminToken, 'all')).json() as { budget: { accepted: number } };
-      assert.equal(globalReport.budget.accepted, 4000);
+      const globalReport = await (await report(adminToken, 'all')).json() as { budget: { accepted: number; limit: number } };
+      assert.equal(globalReport.budget.accepted, 2000); assert.equal(globalReport.budget.limit, 2000);
     });
     await t.test('retention removes one bounded chunk, preserves rollups and claims one cleanup per UTC day', async () => {
       const expired = new Date(Date.now() - 32 * 86400000).toISOString().slice(0, 10);
       const secondExpired = new Date(Date.now() - 33 * 86400000).toISOString().slice(0, 10);
-      for (const [day, offset, length] of [[expired, 0, 2001], [secondExpired, 2001, 2000]] as const) {
+      const thirdExpired = new Date(Date.now() - 34 * 86400000).toISOString().slice(0, 10);
+      for (const [day, offset, length] of [[expired, 0, 2000], [secondExpired, 2000, 2000], [thirdExpired, 4000, 1]] as const) {
         await db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<?) INSERT INTO events(id,day,utc_day,type,has_search) SELECT 'aaaaaaaa-aaaa-4aaa-8aaa-'||printf('%012d',n+?),?,?, 'search',0 FROM seq`).bind(length, offset, day, day).run();
       }
       await db.prepare('DELETE FROM maintenance WHERE day=?').bind(utcDay).run();
       assert.equal((await report(managerToken)).status, 200);
       assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM events WHERE utc_day<?').bind(expired + 'z').first<{ count: number }>())?.count, 4001,
         'HTTP reports never spend their CPU budget on retention maintenance.');
-      const worker = await mf!.getWorker() as unknown as { scheduled(controller: { cron: string }): Promise<unknown> };
-      await worker.scheduled({ cron: '0 2 * * *' });
+      const worker = await mf!.getWorker() as unknown as { scheduled(controller: { cron: string }): Promise<{ outcome: string }> };
+      assert.equal((await worker.scheduled({ cron: '0 2 * * *' })).outcome, 'ok', 'Cron must enqueue analytics maintenance successfully.');
       let remaining = (await db.prepare('SELECT COUNT(*) AS count FROM events WHERE utc_day<?').bind(expired + 'z').first<{ count: number }>())?.count;
-      for (let attempt = 0; remaining === 4001 && attempt < 10; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 10));
+      for (let attempt = 0; remaining === 4001 && attempt < 20; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 50));
         remaining = (await db.prepare('SELECT COUNT(*) AS count FROM events WHERE utc_day<?').bind(expired + 'z').first<{ count: number }>())?.count;
       }
       assert.equal(remaining, 1);
-      assert.equal((await db.prepare("SELECT SUM(search) AS count FROM daily_totals WHERE company_id='' AND day IN (?,?)").bind(expired, secondExpired).first<{ count: number }>())?.count, 4001, 'Deleting raw events never decrements retained daily aggregates.');
+      assert.equal((await db.prepare("SELECT SUM(search) AS count FROM daily_totals WHERE company_id='' AND day IN (?,?,?)").bind(expired, secondExpired, thirdExpired).first<{ count: number }>())?.count, 4001, 'Deleting raw events never decrements retained daily aggregates.');
       assert.equal((await report(managerToken)).status, 200);
-      await worker.scheduled({ cron: '0 2 * * *' });
+      assert.equal((await worker.scheduled({ cron: '0 2 * * *' })).outcome, 'ok');
       assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM events WHERE utc_day<?').bind(expired + 'z').first<{ count: number }>())?.count, 1, 'The second daily cron cannot run the cleanup twice.');
     });
     await t.test('one bounded report snapshot protects full-month and full-year capacity', async () => {
@@ -260,14 +264,58 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       assert.equal(actualBody.offersScanLimited, true);
       assert.deepEqual(actualBody.offers, []);
       assert.equal(actualBody.totals.impression, 1, 'Full totals remain available independently of bounded offer detail.');
-      t.diagnostic(JSON.stringify({ reportScans: measurements, fixtureOfferRows: 120_000, theoreticalYearOfferRowsAtDailyQuota: 4000 * 366, note: 'One materialized20001-row snapshot suppresses large offer aggregates without a count/ingest race; full totals use separate small indexed daily rows. Short cached reports still perform fresh access checks.' }));
+      t.diagnostic(JSON.stringify({ reportScans: measurements, historicalFixtureOfferRows: 120_000, theoreticalYearOfferRowsAtCurrentDailyQuota: 2000 * 366, note: 'The historical fixture preserves4000 daily rows to verify legacy backlog. One materialized20001-row snapshot suppresses large offer aggregates without a count/ingest race; full totals use separate small indexed daily rows. Short cached reports still perform fresh access checks.' }));
       await db.prepare("DELETE FROM daily_metrics WHERE offer_id LIKE 'capacity-%'").run();
       const writeProbe = await db.prepare('INSERT INTO events(id,day,utc_day,type,company_id,offer_id,has_search) VALUES(?,?,?,?,?,?,0)').bind(randomUUID(), '2026-01-01', '2026-01-01', 'impression', 'capacity-new-company', 'capacity-new-offer').run();
       const steady = await db.batch(Array.from({ length: 20 }, (_, index) => db.prepare('INSERT INTO events(id,day,utc_day,type,company_id,offer_id,has_search) VALUES(?,?,?,?,?,?,0)').bind(randomUUID(), '2026-01-01', '2026-01-01', 'impression', `capacity-company-${index}`, `capacity-offer-${index}`)));
       const materialTypes = ['all', 'PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'PLA-CF', 'PETG-CF', 'PA-CF', 'PVA', 'HIPS', 'other'];
       const diverse = await db.batch(Array.from({ length: 20 }, (_, index) => db.prepare('INSERT INTO events(id,day,utc_day,type,company_id,offer_id,material_type,packaging,stock,has_search) VALUES(?,?,?,?,?,?,?,?,?,1)').bind(randomUUID(), '2026-01-01', '2026-01-01', 'impression', `capacity-other-company-${index}`, `capacity-other-offer-${index}`, materialTypes[index % 14], index % 2 ? 'spool' : 'refill', ['all', 'in_stock', 'out_of_stock'][index % 3])));
       const writtenRows = (sum: number, item: { meta: { rows_written: number } }) => sum + item.meta.rows_written;
-      t.diagnostic(JSON.stringify({ firstDistinctCompanyOfferRowsWritten: writeProbe.meta.rows_written, steadyDistinctCompanyOfferBatchRowsWritten: steady.reduce(writtenRows, 0), differentFilterGroupsBatchRowsWritten: diverse.reduce(writtenRows, 0), batchSize: 20, estimatedMaxDailyWritesAt4000EventsIncludingCurrentBoundedCleanup: 76_763, note: 'Includes actual trigger/index writes. First fresh event13; steady new company/offer11; a new global filter adds1. Upper estimate includes252 global filter groups and prior-day maximum retention deletes.' }));
+      t.diagnostic(JSON.stringify({ firstDistinctCompanyOfferRowsWritten: writeProbe.meta.rows_written, steadyDistinctCompanyOfferBatchRowsWritten: steady.reduce(writtenRows, 0), differentFilterGroupsBatchRowsWritten: diverse.reduce(writtenRows, 0), batchSize: 20, historicalEstimatedDailyWritesAt4000Events: 76_763, note: 'These probe rows preserve the old4000/day capacity estimate as historical. Current intake is2000/day; the separate native combined-budget test measures current attempt counters and full legacy cleanup.' }));
+    });
+    await t.test('real D1 report budgets admit one concurrent last slot and refund measured reads', async () => {
+      await db.prepare('UPDATE analytics_report_budget SET checks=1499,reserved_reads=0 WHERE day=?').bind(utcDay).run();
+      const before = firestoreRequests;
+      const checked = await Promise.all([report(managerToken), report(managerToken)]);
+      assert.deepEqual(checked.map(response => response.status).sort(), [200, 429]);
+      assert.ok(checked.find(response => response.status === 429)!.headers.get('Retry-After'));
+      assert.equal(firestoreRequests - before, 4, 'The denied check cannot reach Firestore; cached data still checks live permissions.');
+      await db.prepare('UPDATE analytics_report_budget SET checks=0,reserved_reads=875000 WHERE day=?').bind(utcDay).run();
+      const reserve = () => db.prepare('UPDATE analytics_report_budget SET reserved_reads=reserved_reads+? WHERE day=? AND reserved_reads<=? RETURNING day').bind(125000, utcDay, 875000).all();
+      const reserved = await Promise.all([reserve(), reserve()]);
+      assert.deepEqual(reserved.map((result: { results: unknown[] }) => result.results.length).sort(), [0, 1]);
+      assert.equal((await db.prepare('SELECT reserved_reads FROM analytics_report_budget WHERE day=?').bind(utcDay).first<{ reserved_reads: number }>())!.reserved_reads, 1000000);
+      const yesterday = new Date(Date.parse(today) - 86400000).toISOString().slice(0, 10);
+      assert.equal((await report(adminToken, 'all', yesterday, today)).status, 429);
+      await db.prepare('UPDATE analytics_report_budget SET checks=0,reserved_reads=0 WHERE day=?').bind(utcDay).run();
+      assert.equal((await report(adminToken, 'all', yesterday, today)).status, 200);
+      const usage = (await db.prepare('SELECT reserved_reads FROM analytics_report_budget WHERE day=?').bind(utcDay).first<{ reserved_reads: number }>())!.reserved_reads;
+      assert.ok(usage >= 0 && usage < 125000, 'Native D1 rows_read refunds the conservative reservation.');
+      t.diagnostic(JSON.stringify({ measuredSmallReportReads: usage, concurrentLastCheckWinners: 1, concurrentLastReadReservationWinners: 1 }));
+    });
+    await t.test('complete maximum offer and filter snapshots fit the conservative daily read reservation', async () => {
+      await db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<20000)
+        INSERT INTO daily_metrics(company_id,day,offer_id,offer_name,impression) SELECT ?,?,'worst-'||n,'Worst case fixture',1 FROM seq`).bind(foreignCompanyId, today).run();
+      const types = ['all', 'PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'PLA-CF', 'PETG-CF', 'PA-CF', 'PVA', 'HIPS', 'other'];
+      const material = types.map((type, index) => `WHEN ${index} THEN '${type}'`).join(' ');
+      await db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM seq WHERE n<4999)
+        INSERT INTO daily_filters(company_id,day,material_type,packaging,stock,has_search,search)
+        SELECT ?,date(?,'-'||(n/252)||' days'),CASE n%14 ${material} END,
+          CASE (n/14)%3 WHEN 0 THEN 'all' WHEN 1 THEN 'spool' ELSE 'refill' END,
+          CASE (n/42)%3 WHEN 0 THEN 'all' WHEN 1 THEN 'in_stock' ELSE 'out_of_stock' END,(n/126)%2,1 FROM seq`).bind(foreignCompanyId, today).run();
+      await db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM seq WHERE n<365)
+        INSERT INTO daily_totals(company_id,day,impression) SELECT ?,date(?,'-'||n||' days'),1 FROM seq`).bind(foreignCompanyId, today).run();
+      await db.prepare('UPDATE analytics_report_budget SET checks=0,reserved_reads=0 WHERE day=?').bind(utcDay).run();
+      const from = new Date(Date.parse(today) - 365 * 86400000).toISOString().slice(0, 10);
+      const response = await report(adminToken, foreignCompanyId, from);
+      assert.equal(response.status, 200);
+      const body = await response.json() as { totals: { impression: number }; days: unknown[]; offers: unknown[]; offersScanLimited: boolean; filters: unknown[]; filtersTruncated: boolean };
+      assert.equal(body.totals.impression, 366); assert.equal(body.days.length, 366);
+      assert.equal(body.offers.length, 100); assert.equal(body.offersScanLimited, false);
+      assert.equal(body.filters.length, 100); assert.equal(body.filtersTruncated, true);
+      const usage = (await db.prepare('SELECT reserved_reads FROM analytics_report_budget WHERE day=?').bind(utcDay).first<{ reserved_reads: number }>())!.reserved_reads;
+      assert.ok(usage > 0 && usage <= 125000, 'Measured native D1 usage must fit the conservative125k reservation.');
+      t.diagnostic(JSON.stringify({ maximumReportReads: usage, offerSourceRows: 20000, filterSourceRows: 5000, totalDays: 366, reservation: 125000 }));
     });
     const samples: number[] = [];
     let profiler: { stop(): Promise<any>; close(): void } | undefined;
@@ -325,4 +373,137 @@ test('production analytics Worker with local D1 and Firestore authorization', { 
       assert.ok(response.ok, `Isolated Auth fixture cleanup: HTTP ${response.status}`);
     }
   }
+});
+
+test('native D1 retries incomplete maintenance without deleting a second raw or rollup chunk', { timeout: 30_000 }, async () => {
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
+    script: 'export default {fetch(){return new Response("fixture")}}', d1Databases: ['RECOVERY_DB'] }));
+  try {
+    const db = await mf.getD1Database('RECOVERY_DB');
+    for (const file of ['0001_analytics.sql', '0005_analytics_report_budget.sql', '0008_analytics_event_budget.sql']) {
+      const migration = await readFile('migrations/' + file, 'utf8');
+      for (const sql of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER|DROP)\b)/i)) await db.prepare(sql).run();
+    }
+    await db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<6000)
+      INSERT INTO events(id,day,utc_day,type,has_search)
+      SELECT 'aaaaaaaa-aaaa-4aaa-8aaa-'||printf('%012d',n),date('2024-01-01','+'||((n-1)/2000)||' days'),
+        date('2024-01-01','+'||((n-1)/2000)||' days'),'search',0 FROM seq`).run();
+    await db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<6000)
+      INSERT INTO daily_metrics(company_id,day,offer_id,impression) SELECT 'fixture','2024-01-01','offer-'||n,1 FROM seq`).run();
+    let calls = 0;
+    const database: AnalyticsDatabase = { prepare: sql => db.prepare(sql), batch: async statements => {
+      // Fail at the end of the first rollup transaction, after its valid deletes execute.
+      if (++calls === 2) return db.batch([...statements, db.prepare("INSERT INTO maintenance(day,complete) VALUES('invalid-progress',2)")]);
+      return db.batch(statements);
+    } };
+    const worker = createAnalyticsWorker({ now: () => new Date('2026-10-10T04:00:00Z') });
+    const env = { FIREBASE_PROJECT_ID: 'demo-maintenance-recovery', ANALYTICS_DB: database };
+    const pending: Promise<unknown>[] = [], context = { waitUntil: (promise: Promise<unknown>) => pending.push(promise) };
+    const count = async (table: 'events' | 'daily_metrics') => (await db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first<{ count: number }>())!.count;
+    await worker.scheduled(undefined, env, context);
+    await assert.rejects(Promise.all(pending.splice(0)), /CHECK/);
+    assert.equal(await count('events'), 2000, 'The raw-delete transaction committed its one bounded chunk.');
+    assert.equal(await count('daily_metrics'), 6000, 'The failed rollup batch rolls back every deletion.');
+    assert.equal((await db.prepare("SELECT complete FROM maintenance WHERE day='2026-10-10'").first<{ complete: number }>())!.complete, 0);
+    // At-least-once Queue delivery can dispatch both retries at the same time.
+    await Promise.all([worker.scheduled(undefined, env, context), worker.scheduled(undefined, env, context)]);
+    await Promise.all(pending.splice(0));
+    assert.equal(await count('events'), 2000, 'Retries never repeat the committed raw deletion.');
+    assert.equal(await count('daily_metrics'), 2000, 'Concurrent retries commit only one rollup chunk.');
+    assert.equal((await db.prepare("SELECT complete FROM maintenance WHERE day='2026-10-10'").first<{ complete: number }>())!.complete, 1);
+  } finally { await mf.dispose(); }
+});
+
+test('native D1 analytics writes fit the reduced intake cap while draining the full historical cleanup chunk', { timeout: 30_000 }, async t => {
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
+    script: 'export default {fetch(){return new Response("fixture")}}', d1Databases: ['BUDGET_DB'] }));
+  try {
+    const db = await mf.getD1Database('BUDGET_DB');
+    const migrate = async (file: string) => {
+      const migration = await readFile('migrations/' + file, 'utf8');
+      for (const sql of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER|DROP)\b)/i)) await db.prepare(sql).run();
+    };
+    await migrate('0001_analytics.sql'); await migrate('0005_analytics_report_budget.sql');
+    const types = ['all', 'PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'PLA-CF', 'PETG-CF', 'PA-CF', 'PVA', 'HIPS', 'other'];
+    const material = types.map((type, index) => `WHEN ${index} THEN '${type}'`).join(' ');
+    const insert = (amount: number, prefix: string, day: string) => db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<?)
+      INSERT INTO events(id,day,utc_day,type,company_id,offer_id,material_type,packaging,stock,has_search)
+      SELECT ?||printf('%012d',n),?,?,'impression',?||n,?||n,CASE (n-1)%14 ${material} END,
+        CASE ((n-1)/14)%3 WHEN 0 THEN 'all' WHEN 1 THEN 'spool' ELSE 'refill' END,
+        CASE ((n-1)/42)%3 WHEN 0 THEN 'all' WHEN 1 THEN 'in_stock' ELSE 'out_of_stock' END,((n-1)/126)%2 FROM seq`)
+      .bind(amount, prefix === 'legacy-' ? 'aaaaaaaa-aaaa-4aaa-8aaa-' : 'bbbbbbbb-bbbb-4bbb-8bbb-', day, day, prefix, prefix).run();
+    // This represents 4000/day data written before the new trigger migration.
+    await insert(4000, 'legacy-', '2024-01-01');
+    await db.prepare("INSERT INTO maintenance(day) VALUES('2024-01-01')").run();
+    await db.prepare("INSERT INTO analytics_report_budget(day,checks,reserved_reads) VALUES('2024-01-01',1500,1000000)").run();
+    await migrate('0008_analytics_event_budget.sql');
+    let freshWrites = 0;
+    for (let offset = 0; offset < 2000; offset += 20) {
+      const results = await db.batch(Array.from({ length: 20 }, (_, batchIndex) => {
+        const index = offset + batchIndex;
+        return db.prepare('INSERT INTO events(id,day,utc_day,type,company_id,offer_id,material_type,packaging,stock,has_search) VALUES(?,?,?,?,?,?,?,?,?,?)')
+          .bind('bbbbbbbb-bbbb-4bbb-8bbb-' + String(index + 1).padStart(12, '0'), '2026-10-10', '2026-10-10', 'impression', 'fresh-' + index, 'fresh-' + index,
+            types[index % 14], ['all', 'spool', 'refill'][Math.floor(index / 14) % 3], ['all', 'in_stock', 'out_of_stock'][Math.floor(index / 42) % 3], Math.floor(index / 126) % 2);
+      }));
+      for (const result of results) freshWrites += result.meta.rows_written;
+    }
+    assert.equal((await db.prepare("SELECT accepted FROM day_budget WHERE day='2026-10-10'").first<{ accepted: number }>())!.accepted, 2000);
+    const rejected = await db.prepare("INSERT INTO events(id,day,utc_day,type,has_search) VALUES('cccccccc-cccc-4ccc-8ccc-000000000001','2026-10-10','2026-10-10','search',0)").run();
+    assert.equal(rejected.meta.changes, 0); assert.equal(rejected.meta.rows_written, 0, 'The SQL trigger rejects intake after2000 regardless of Worker prechecks.');
+    const reserve = () => db.prepare('INSERT INTO day_budget(day,accepted,ingest_checks) VALUES(?,0,1) ON CONFLICT(day) DO UPDATE SET ingest_checks=ingest_checks+1 WHERE ingest_checks<? RETURNING accepted').bind('2026-10-10', 4000);
+    let checkWrites = 0;
+    for (let offset = 0; offset < 3999; offset += 100) {
+      const results = await db.batch(Array.from({ length: Math.min(100, 3999 - offset) }, reserve));
+      for (const result of results) { assert.equal(result.results.length, 1); checkWrites += result.meta.rows_written; }
+    }
+    let cleanupWrites = 0;
+    const dedupReads: number[] = [], exhaustedCheckReads: number[] = [];
+    let phase: 'ingest' | 'cleanup' = 'ingest';
+    const native = new WeakMap<object, any>();
+    const wrap = (sql: string, statement: any): ReturnType<AnalyticsDatabase['prepare']> => {
+      const wrapped = { bind(...values: (string | number | null)[]) { return wrap(sql, statement.bind(...values)); }, first: <T>() => statement.first() as Promise<T | null>,
+        all: async () => {
+          const result = await statement.all();
+          if (phase === 'ingest') {
+            checkWrites += result.meta.rows_written;
+            if (sql.startsWith('SELECT id FROM events')) dedupReads.push(result.meta.rows_read);
+            else if (!result.results.length) exhaustedCheckReads.push(result.meta.rows_read);
+          }
+          return result;
+        } };
+      native.set(wrapped, statement); return wrapped;
+    };
+    const database: AnalyticsDatabase = { prepare: sql => wrap(sql, db.prepare(sql)), batch: async statements => {
+      const results = await db.batch(statements.map(statement => native.get(statement)));
+      for (const result of results) cleanupWrites += result.meta.rows_written;
+      return results;
+    } };
+    const worker = createAnalyticsWorker({ now: () => new Date('2026-10-10T04:00:00Z') });
+    const pending: Promise<unknown>[] = [];
+    const env = { FIREBASE_PROJECT_ID: 'demo-budget', ANALYTICS_DB: database, ANALYTICS_RATE_LIMIT: { limit: async () => ({ success: true }) } };
+    const context = { waitUntil: (promise: Promise<unknown>) => pending.push(promise) };
+    const post = () => worker.fetch(new Request(ORIGIN + '/api/analytics/events', { method: 'POST', headers: { Origin: ORIGIN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: Array.from({ length: 20 }, (_, index) => ({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-' + String(index + 1).padStart(12, '0'), type: 'search' })) }) }), env, context);
+    const races = await Promise.all([post(), post()]);
+    assert.deepEqual(races.map(response => response.status).sort(), [200, 429], 'Only one of the two concurrent final ingest checks may succeed.');
+    assert.equal(races.find(response => response.status === 429)!.headers.get('Retry-After'), '72000');
+    assert.deepEqual(dedupReads, [40], 'Only the winning request reads the20 existing event IDs.');
+    assert.deepEqual(exhaustedCheckReads, [1], 'The rejected request reads only its quota row, never dedup events.');
+    assert.equal((await post()).status, 429);
+    assert.deepEqual(dedupReads, [40], 'Further exhausted attempts never run a dedup query.');
+    assert.deepEqual(exhaustedCheckReads, [1, 1]);
+    assert.equal((await db.prepare("SELECT ingest_checks FROM day_budget WHERE day='2026-10-10'").first<{ ingest_checks: number }>())!.ingest_checks, 4000);
+    phase = 'cleanup';
+    await worker.scheduled(undefined, env, context);
+    await Promise.all(pending);
+    assert.ok(freshWrites <= 22_254);
+    assert.equal(cleanupWrites, 16_258);
+    assert.equal(checkWrites, 4000);
+    const maximumAnalyticsWrites = freshWrites + checkWrites + cleanupWrites;
+    assert.ok(maximumAnalyticsWrites <= 58_765);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS count FROM events WHERE utc_day='2024-01-01'").first<{ count: number }>())!.count, 0, 'All4000 legacy events are drained despite the lower intake quota.');
+    t.diagnostic(JSON.stringify({ dailyAcceptedEventLimit: 2000, dailyIngestAttemptLimit: 4000, ingestCheckWrites: checkWrites, dedupReads, exhaustedCheckReads, freshDistinctCompanyOfferWrites: freshWrites,
+      historicalCleanupSourceEvents: 4000, maximumCleanupWrites: cleanupWrites, maximumCombinedAnalyticsWrites: maximumAnalyticsWrites,
+      conservativeAnalyticsWriteBound: 58765, note: 'Native trigger/index writes for2000 distinct company/offer events and252 canonical filter groups,4000 attempt markers, plus legacy4000 raw/metrics,4001 totals,4252 filters, expired budget markers and completed maintenance. Other API/report/Queue budgets must fit the remaining41235 writes.' }));
+  } finally { await mf.dispose(); }
 });
