@@ -43,6 +43,53 @@ test('native Free capacity migration preserves prior usage and admits one concur
   assert.deepEqual(await db.prepare("SELECT items,jobs FROM import_daily WHERE day='2026-10-10'").first(), prior, 'UTC rollover preserves previous reservations.');
 });
 
+test('native history visibility indexes have bounded admission and queue write costs', { timeout: 30_000 }, async t => {
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
+    script: 'export default {fetch(){return new Response("fixture")}}', d1Databases: ['BEFORE_DB', 'AFTER_DB'] }));
+  t.after(() => mf.dispose());
+  const time = Date.parse('2026-10-10T12:00:00Z') / 1000;
+  const measurements: Record<string, Record<string, { rows_read: number; rows_written: number }>> = {};
+  for (const [name, hasVisibilityIndexes] of [['BEFORE_DB', false], ['AFTER_DB', true]] as const) {
+    const db = await mf.getD1Database(name);
+    const files = ['0001_analytics.sql', '0002_import_api.sql', '0003_import_access_limits.sql', '0004_import_result_counts.sql',
+      '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql',
+      '0009_import_cleanup_budget.sql', '0010_import_free_capacity.sql', ...(hasVisibilityIndexes ? ['0011_import_history_delete.sql'] : [])];
+    for (const file of files) {
+      const migration = await readFile('migrations/' + file, 'utf8');
+      for (const statement of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER|UPDATE|DROP)\b)/i)) await db.prepare(statement).run();
+    }
+    await db.prepare("INSERT INTO import_keys(uid,hash,prefix,role,fingerprint,valid_since,created_at,expires_at) VALUES('fixture','fixture','fixture','admin','fixture',0,?,?)")
+      .bind(time, time + 86400).run();
+    const admission = await db.prepare("INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,status,total,interval_seconds,created_at,updated_at,expires_at,payload) VALUES('job','fixture','fixture','fixture','job','raw:fixture','queued',100,300,?,?,?,'{}')")
+      .bind(time, time, time + 86400).run();
+    const claim = await db.prepare("UPDATE import_jobs SET status='processing',lease_token='fixture',lease_until=?,attempts=attempts+1,updated_at=? WHERE id='job' AND cursor=0 AND lease_until<=? AND status IN ('queued','processing') RETURNING id")
+      .bind(time + 600, time, time).all();
+    const retry = await db.prepare("UPDATE import_jobs SET lease_token=NULL,lease_until=0,dispatch_at=?,updated_at=? WHERE id='job' AND lease_token='fixture'")
+      .bind(time + 300, time).run();
+    const progress = await db.prepare("UPDATE import_jobs SET cursor=100,results=?,status='completed',payload=NULL,attempts=0,lease_token=NULL,lease_until=0,dispatch_at=0,updated_at=? WHERE id='job'")
+      .bind(JSON.stringify(Array.from({ length: 100 }, (_, index) => ({ index, kind: 'offer', success: true }))), time).run();
+    measurements[name] = Object.fromEntries(Object.entries({ admission, claim, retry, progress }).map(([operation, result]) => [operation,
+      { rows_read: result.meta.rows_read, rows_written: result.meta.rows_written }]));
+    if (hasVisibilityIndexes) {
+      const hide = await db.prepare("UPDATE import_jobs SET history_deleted=1 WHERE id='job' RETURNING id").all();
+      const repeat = await db.prepare("UPDATE import_jobs SET history_deleted=1 WHERE id='job' RETURNING id").all();
+      assert.ok(hide.meta.rows_written <= 3 && repeat.meta.rows_written <= 3,
+        'Each hiding update fits one row plus its two visibility-index entries.');
+      measurements[name].hide = { rows_read: hide.meta.rows_read, rows_written: hide.meta.rows_written };
+      measurements[name].repeatHide = { rows_read: repeat.meta.rows_read, rows_written: repeat.meta.rows_written };
+    }
+  }
+  const before = measurements.BEFORE_DB, after = measurements.AFTER_DB;
+  const admissionDelta = after.admission.rows_written - before.admission.rows_written;
+  assert.ok(admissionDelta >= 0 && admissionDelta <= 2); assert.ok(after.admission.rows_written <= 13);
+  for (const [operation, upperBound] of [['claim', 2], ['retry', 2], ['progress', 3]] as const) {
+    assert.equal(after[operation].rows_written, before[operation].rows_written,
+      'Visibility indexes must not add writes when queue updates leave owner, creation time and visibility unchanged.');
+    assert.ok(after[operation].rows_written <= upperBound);
+  }
+  t.diagnostic(JSON.stringify({ historyVisibilityIndexCosts: measurements, admissionWriteDelta: admissionDelta }));
+});
+
 test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and retry recovery', { timeout: 120_000 }, async t => {
   const project = 'demo-import-api-' + randomUUID().slice(0, 8);
   const firestoreOrigin = 'http://' + (process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080');
@@ -132,7 +179,7 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   t.after(async () => { await mf.dispose(); await fetch(firestoreOrigin + '/emulator/v1/projects/' + project + '/databases/(default)/documents', { method: 'DELETE' }); });
   const db = await mf.getD1Database('ANALYTICS_DB');
   for (const file of ['0001_analytics.sql', '0002_import_api.sql', '0003_import_access_limits.sql', '0004_import_result_counts.sql',
-    '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql', '0009_import_cleanup_budget.sql', '0010_import_free_capacity.sql']) {
+    '0005_analytics_report_budget.sql', '0006_firebase_token_broker.sql', '0007_maintenance_budget.sql', '0008_analytics_event_budget.sql', '0009_import_cleanup_budget.sql', '0010_import_free_capacity.sql', '0011_import_history_delete.sql']) {
     const migration = await readFile('migrations/' + file, 'utf8');
     for (const statement of migration.replace(/--[^\n]*/g, '').trim().split(/(?<=;)\s*(?=(?:CREATE|ALTER|UPDATE|DROP)\b)/i)) await db.prepare(statement).run();
   }
@@ -612,10 +659,16 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
   let historyRowsRead = 0;
   const historyQueries = new WeakSet<object>();
   const detailQueries = new WeakSet<object>();
+  const historyDeleteQueries = new WeakSet<object>();
+  let historyDeleteBatch: { rowsWritten: number; statementWrites: number[] } | undefined;
   const instrumented = new Proxy(db, { get(target, property) {
     if (property === 'batch') return async (statements: Parameters<typeof db.batch>[0]) => {
       batches.push(statements.length); await beforeBatch?.(batches.length);
       const results = await target.batch(statements);
+      if (statements.some((statement: object) => historyDeleteQueries.has(statement))) {
+        const statementWrites: number[] = results.map((result: { meta: { rows_written: number } }) => result.meta.rows_written);
+        historyDeleteBatch = { rowsWritten: statementWrites.reduce((total, count) => total + count, 0), statementWrites };
+      }
       const index = statements.findIndex((statement: object) => historyQueries.has(statement) || detailQueries.has(statement));
       if (index !== -1) {
         historyRowsRead = results[index].meta.rows_read;
@@ -628,19 +681,20 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
       const statement = target.prepare(sql);
       const history = sql.startsWith('SELECT id,status,total,cursor,created_at,updated_at,succeeded,failed FROM import_jobs ');
       const detail = sql.startsWith('SELECT id,status,total,cursor,created_at,updated_at,results,error FROM import_jobs ');
-      if (!history && !detail) return statement;
+      const deletion = sql.startsWith('UPDATE import_jobs SET history_deleted=1 ');
+      if (!history && !detail && !deletion) return statement;
       const watch = (prepared: typeof statement): typeof statement => {
         const wrapped = new Proxy(prepared, { get(current, method) {
         if (method === 'bind') return (...values: Parameters<typeof statement.bind>) => watch(current.bind(...values));
         if (method === 'all') return async () => {
-          const result = await current.all(); historyRowsRead = result.meta.rows_read;
+          const result = await current.all(); if (!deletion) historyRowsRead = result.meta.rows_read;
           assert.ok(result.results.every((row: Record<string, unknown>) => !Object.hasOwn(row, 'results') && !Object.hasOwn(row, 'payload')), 'D1 transfers summaries without private result arrays or payloads.');
           return result;
         };
         const value = Reflect.get(current, method, current);
         return typeof value === 'function' ? value.bind(current) : value;
         } });
-        (history ? historyQueries : detailQueries).add(wrapped); return wrapped;
+        (deletion ? historyDeleteQueries : history ? historyQueries : detailQueries).add(wrapped); return wrapped;
       };
       return watch(statement);
     };
@@ -901,5 +955,257 @@ test('real Worker/D1/Queues imports: keys, concurrent throttling, ownership and 
     assert.equal(oauthRequests, 1, 'All HTTP requests and maintenance consumers reuse the persisted service credential; permissions stay live.');
     assert.ok(remoteAuthRequests > 10, 'Native and manual browser-session requests exercise production remote verification.');
     assert.equal(jwksRequests, 0, 'No remote-enabled Worker request silently falls back to JWKS.');
+  });
+
+  async function resetHistoryBudget(attempts = 0) {
+    await db.prepare('UPDATE import_daily SET access_checks=0,admin_access_checks=0,admin_preflight_checks=0,manager_preflight_checks=0,unknown_preflight_checks=0,history_delete_attempts=? WHERE day=?')
+      .bind(attempts, day).run();
+    await db.prepare('DELETE FROM import_access_daily WHERE day=?').bind(day).run();
+  }
+  const historyColumns = 'id,owner_uid,idempotency,payload_hash,status,total,cursor,results,succeeded,failed';
+  await t.test('removing a completed history preserves catalog, receipt, cooldown and hidden idempotency after key rotation', async () => {
+    await resetHistoryBudget();
+    const before = await db.prepare('SELECT ' + historyColumns + ' FROM import_jobs WHERE id=?').bind(job.id).first();
+    const beforeCooldown = await db.prepare('SELECT next_allowed FROM import_limits WHERE uid=?').bind('manager').first();
+    const receipt = await read('importReceipts/' + job.id);
+    const offers = await Promise.all(completed.results.map((result: { offerId: string }) => read('companyOffers/' + result.offerId)));
+    const beforeWrites = firestoreWrites;
+    const jobCount = await db.prepare('SELECT COUNT(*) AS n FROM import_jobs').first();
+    const dispatches = await db.prepare('SELECT dispatches FROM import_daily WHERE day=?').bind(day).first();
+    const removed = await request('imports/' + job.id, managerJwt, 'DELETE');
+    assert.equal(removed.status, 200); assert.deepEqual(await removed.json(), { deletedIds: [job.id], unavailableIds: [] });
+    assert.equal((await db.prepare('SELECT history_deleted FROM import_jobs WHERE id=?').bind(job.id).first<any>()).history_deleted, 1);
+    assert.deepEqual(await db.prepare('SELECT ' + historyColumns + ' FROM import_jobs WHERE id=?').bind(job.id).first(), before);
+    assert.equal((await request('imports/' + job.id, managerJwt)).status, 404);
+    assert.equal((await request('imports/' + job.id, adminJwt)).status, 404, 'Hidden detail is unavailable even to an administrator.');
+    for (const token of [managerJwt, adminJwt]) {
+      const visible = await request('imports', token);
+      assert.equal(visible.status, 200);
+      assert.ok(!(await visible.json() as any).jobs.some((entry: { id: string }) => entry.id === job.id));
+    }
+    const repeated = await request('imports/' + job.id, managerJwt, 'DELETE');
+    assert.equal(repeated.status, 200); assert.deepEqual(await repeated.json(), { deletedIds: [job.id], unavailableIds: [] },
+      'Owned terminal removal is idempotent while each repeated attempt remains budgeted.');
+    assert.equal((await request('imports', managerKey, 'POST', managerPayload, idempotency)).status, 409,
+      'A hidden history cannot become a new import under its original idempotency key.');
+    const rotated = await request('api-key', managerJwt, 'POST');
+    assert.equal(rotated.status, 201); managerKey = (await rotated.json() as any).key;
+    assert.equal((await request('imports', managerKey, 'POST', managerPayload, idempotency)).status, 409,
+      'Rotating the API key does not discard the retained idempotency reservation.');
+    assert.deepEqual(await db.prepare('SELECT COUNT(*) AS n FROM import_jobs').first(), jobCount);
+    assert.deepEqual(await db.prepare('SELECT dispatches FROM import_daily WHERE day=?').bind(day).first(), dispatches);
+    assert.deepEqual(await db.prepare('SELECT next_allowed FROM import_limits WHERE uid=?').bind('manager').first(), beforeCooldown);
+    assert.deepEqual(await read('importReceipts/' + job.id), receipt, 'UI history removal does not delete the queue receipt.');
+    assert.deepEqual(await Promise.all(completed.results.map((result: { offerId: string }) => read('companyOffers/' + result.offerId))), offers);
+    assert.equal(firestoreWrites, beforeWrites, 'History removal and its retries never write catalog or receipt documents.');
+  });
+
+  const historyOwner = 'history-manager';
+  const historyJwt = jwt(historyOwner, false, { iat: clock, auth_time: clock });
+  let historyKey: string;
+  let queuedHistory: string;
+  await t.test('thirty selected histories disappear from both indexed lists without deleting durable rows', async () => {
+    await resetHistoryBudget();
+    await seed('accountAccess/' + historyOwner, { blocked: false, changeId: 'history-initial' });
+    await seed('memberships/' + historyOwner, { active: true, companyId: 'company-a', changeId: 'history-initial', version: 1 });
+    const key = await request('api-key', historyJwt, 'POST');
+    assert.equal(key.status, 201); historyKey = (await key.json() as any).key;
+    await db.prepare('UPDATE import_keys SET expires_at=? WHERE uid=?').bind(clock + 200 * 86400, historyOwner).run();
+    const ids: string[] = [];
+    for (let index = 0; index < 30; index++) ids.push(await seedJob(historyOwner, clock + (3100 + index) * 3600,
+      [{ index: 0, kind: 'offer', success: true, message: 'Completed fixture' }], 1));
+    for (const token of [historyJwt, adminJwt]) {
+      const response = await request('imports', token);
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json() as any).jobs.map((entry: { id: string }) => entry.id), [...ids].reverse());
+    }
+    historyDeleteBatch = undefined;
+    const removed = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + historyJwt, 'X-Firebase-AppCheck': appCheckToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }) }), observed);
+    assert.equal(removed.status, 200);
+    const value = await removed.json() as any;
+    assert.deepEqual(value.deletedIds.sort(), [...ids].sort()); assert.deepEqual(value.unavailableIds, []);
+    const measuredDelete = historyDeleteBatch as { rowsWritten: number; statementWrites: number[] } | undefined;
+    assert.ok(measuredDelete && measuredDelete.rowsWritten <= 1 + 3 * ids.length,
+      'The atomic deletion batch is bounded by one reservation plus one row and two visibility entries per ID.');
+    t.diagnostic(JSON.stringify({ historyDeleteItems: ids.length, historyDeleteBatch: measuredDelete }));
+    const remaining = await request('imports', historyJwt);
+    assert.equal(remaining.status, 200); assert.deepEqual(await remaining.json(), { jobs: [] });
+    const global = await request('imports', adminJwt);
+    assert.equal(global.status, 200);
+    assert.ok((await global.json() as any).jobs.every((entry: { id: string }) => !ids.includes(entry.id)));
+    assert.equal((await request('imports/' + ids[0], historyJwt)).status, 404);
+    assert.equal((await request('imports/' + ids[0], adminJwt)).status, 404);
+    for (const id of ids) {
+      const row = await db.prepare('SELECT history_deleted,results,succeeded,failed FROM import_jobs WHERE id=?').bind(id).first<any>();
+      assert.equal(row.history_deleted, 1); assert.equal(JSON.parse(row.results).length, 1);
+      assert.equal(row.succeeded, 1); assert.equal(row.failed, 0);
+    }
+    assert.equal((await db.prepare('SELECT history_delete_attempts FROM import_daily WHERE day=?').bind(day).first<any>()).history_delete_attempts, 30);
+  });
+
+  await t.test('mixed bulk removal keeps foreign, missing, active and leased histories indistinguishably unavailable', async () => {
+    await resetHistoryBudget();
+    const owned: string[] = [];
+    for (let index = 0; index < 7; index++) owned.push(await seedJob(historyOwner, clock + (3140 + index) * 3600,
+      [{ index: 0, kind: 'offer', success: true, message: 'Retained results' }], 1));
+    for (const [index, status] of ['completed', 'partial', 'failed', 'cancelled'].entries()) {
+      await db.prepare('UPDATE import_jobs SET status=? WHERE id=?').bind(status, owned[index]).run();
+    }
+    await db.prepare('UPDATE import_jobs SET lease_until=? WHERE id=?').bind(clock + 3600, owned[4]).run();
+    await db.prepare("UPDATE import_jobs SET status='queued',lease_until=0 WHERE id=?").bind(owned[5]).run();
+    await db.prepare("UPDATE import_jobs SET status='processing',lease_until=? WHERE id=?").bind(clock - 1, owned[6]).run();
+    queuedHistory = owned[5];
+    const foreign = await seedJob('other-manager', clock + 90 * 3600,
+      [{ index: 0, kind: 'offer', success: true, message: 'Foreign history' }], 1);
+    const missing = randomUUID(), ids = [...owned, foreign, missing];
+    const removed = await request('imports', historyJwt, 'DELETE', { ids });
+    assert.equal(removed.status, 200);
+    const value = await removed.json() as any;
+    assert.deepEqual(value.deletedIds.sort(), owned.slice(0, 4).sort());
+    assert.deepEqual(value.unavailableIds.sort(), [...owned.slice(4), foreign, missing].sort());
+    for (const id of [...owned.slice(4), foreign]) assert.equal((await db.prepare('SELECT history_deleted FROM import_jobs WHERE id=?').bind(id).first<any>()).history_deleted, 0);
+    assert.equal((await db.prepare('SELECT history_delete_attempts FROM import_daily WHERE day=?').bind(day).first<any>()).history_delete_attempts, ids.length,
+      'The shared attempt reserve charges each requested ID, including unavailable ones.');
+    const admin = await request('imports', adminJwt, 'DELETE', { ids: [foreign, owned[4], owned[5], owned[6], missing] });
+    assert.equal(admin.status, 200); assert.deepEqual(await admin.json(), { deletedIds: [foreign], unavailableIds: [owned[4], owned[5], owned[6], missing] });
+    await db.prepare('UPDATE import_jobs SET lease_until=? WHERE id=?').bind(clock - 1, owned[4]).run();
+    const expiredLease = await request('imports/' + owned[4], adminJwt, 'DELETE');
+    assert.equal(expiredLease.status, 200); assert.deepEqual(await expiredLease.json(), { deletedIds: [owned[4]], unavailableIds: [] });
+    assert.equal((await db.prepare('SELECT history_deleted FROM import_jobs WHERE id=?').bind(owned[6]).first<any>()).history_deleted, 0,
+      'An expired lease alone never makes a still-processing job removable.');
+  });
+
+  await t.test('malformed removal batches are bounded and never reserve attempts or hide histories', async () => {
+    await resetHistoryBudget();
+    const attempts = () => db.prepare('SELECT history_delete_attempts FROM import_daily WHERE day=?').bind(day).first();
+    const before = await attempts();
+    const invalid = [{ ids: [] }, { ids: [queuedHistory, queuedHistory] }, { ids: Array.from({ length: 31 }, () => randomUUID()) },
+      { ids: ['not-a-uuid'] }, { ids: ['-'.repeat(36)] }, { ids: [null] }, { ids: queuedHistory }, { ids: [queuedHistory], extra: true }, {}, [], null];
+    for (const payload of invalid) assert.equal((await request('imports', historyJwt, 'DELETE', payload)).status, 422, JSON.stringify(payload));
+    assert.equal((await request('imports', historyJwt, 'DELETE', { ids: [queuedHistory] }, randomUUID(), { 'Content-Type': 'text/plain' })).status, 415);
+    const malformed = await mf.dispatchFetch('https://import-runtime.invalid/api/v1/imports', { method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + historyJwt, 'X-Firebase-AppCheck': appCheckToken, 'Content-Type': 'application/json' }, body: '{"ids":[' });
+    assert.equal(malformed.status, 422);
+    const body = JSON.stringify({ ids: [queuedHistory] }) + ' '.repeat(4096);
+    const oversized = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + historyJwt, 'X-Firebase-AppCheck': appCheckToken, 'Content-Type': 'application/json' },
+      body }), environment);
+    assert.equal(oversized.status, 413, 'The actual streamed body is bounded even without a Content-Length header.');
+    const falseLength = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + historyJwt, 'X-Firebase-AppCheck': appCheckToken, 'Content-Type': 'application/json', 'Content-Length': '1' },
+      body }), environment);
+    assert.equal(falseLength.status, 413, 'A false smaller Content-Length cannot bypass the 4 KiB stream bound.');
+    const invalidUtf8 = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + historyJwt, 'X-Firebase-AppCheck': appCheckToken, 'Content-Type': 'application/json' },
+      body: new Uint8Array([0xff, 0xfe]) }), environment);
+    assert.equal(invalidUtf8.status, 422);
+    assert.deepEqual(await attempts(), before);
+    assert.equal((await db.prepare('SELECT history_deleted FROM import_jobs WHERE id=?').bind(queuedHistory).first<any>()).history_deleted, 0);
+    const missing = randomUUID(), compact = JSON.stringify({ ids: [missing] });
+    const boundary = await manual.fetch(new Request('https://import-runtime.invalid/api/v1/imports', { method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + historyJwt, 'X-Firebase-AppCheck': appCheckToken, 'Content-Type': 'application/json' },
+      body: compact + ' '.repeat(4096 - new TextEncoder().encode(compact).length) }), environment);
+    assert.equal(boundary.status, 200); assert.deepEqual(await boundary.json(), { deletedIds: [], unavailableIds: [missing] });
+  });
+
+  await t.test('history removal rechecks App Check, token revocation, account, membership and active company access', async () => {
+    await resetHistoryBudget();
+    await db.prepare("UPDATE import_jobs SET status='completed',lease_until=0 WHERE id=?").bind(queuedHistory).run();
+    const before = await db.prepare('SELECT history_delete_attempts FROM import_daily WHERE day=?').bind(day).first();
+    assert.equal((await request('imports/' + queuedHistory, historyJwt, 'DELETE', undefined, randomUUID(), { 'X-Firebase-AppCheck': '' })).status, 403);
+    const account = users.get(historyOwner)!;
+    try {
+      account.validSince = String(Math.floor(Date.now() / 1000) + 1);
+      assert.equal((await request('imports/' + queuedHistory, historyJwt, 'DELETE')).status, 401);
+    } finally { account.validSince = '0'; }
+    try {
+      await seed('accountAccess/' + historyOwner, { blocked: true, changeId: 'history-blocked' });
+      assert.equal((await request('imports/' + queuedHistory, historyJwt, 'DELETE')).status, 403);
+      assert.equal((await request('imports/' + queuedHistory, historyKey, 'DELETE')).status, 403);
+    } finally { await seed('accountAccess/' + historyOwner, { blocked: false, changeId: 'history-restored' }); }
+    try {
+      await seed('memberships/' + historyOwner, { active: false, companyId: 'company-a', changeId: 'history-revoked', version: 2 });
+      assert.equal((await request('imports/' + queuedHistory, historyJwt, 'DELETE')).status, 403);
+    } finally { await seed('memberships/' + historyOwner, { active: true, companyId: 'company-a', changeId: 'history-restored', version: 3 }); }
+    const company = await read('companies/company-a');
+    try {
+      await seed('companies/company-a', { ...company, status: 'inactive' });
+      assert.equal((await request('imports/' + queuedHistory, historyJwt, 'DELETE')).status, 403);
+    } finally { await seed('companies/company-a', company); }
+    assert.deepEqual(await db.prepare('SELECT history_delete_attempts FROM import_daily WHERE day=?').bind(day).first(), before);
+    assert.equal((await db.prepare('SELECT history_deleted FROM import_jobs WHERE id=?').bind(queuedHistory).first<any>()).history_deleted, 0);
+    const allowed = await request('imports/' + queuedHistory, historyJwt, 'DELETE');
+    assert.equal(allowed.status, 200); assert.deepEqual(await allowed.json(), { deletedIds: [queuedHistory], unavailableIds: [] });
+  });
+
+  await t.test('bulk history removal reserves its whole shared budget atomically at the concurrent final slot', async () => {
+    await resetHistoryBudget(199);
+    const ids: string[] = [];
+    for (let index = 0; index < 2; index++) ids.push(await seedJob('admin', clock + (100 + index) * 3600,
+      [{ index: 0, kind: 'offer', success: true, message: 'Quota fixture' }], 1));
+    const exceeds = await request('imports', adminJwt, 'DELETE', { ids });
+    assert.equal(exceeds.status, 429); assert.ok(Number(exceeds.headers.get('Retry-After')) > 0);
+    assert.equal((await db.prepare('SELECT history_delete_attempts FROM import_daily WHERE day=?').bind(day).first<any>()).history_delete_attempts, 199,
+      'An oversized remaining reservation cannot consume only part of a batch.');
+    for (const id of ids) assert.equal((await db.prepare('SELECT history_deleted FROM import_jobs WHERE id=?').bind(id).first<any>()).history_deleted, 0);
+    const responses = await Promise.all(ids.map(id => request('imports/' + id, adminJwt, 'DELETE')));
+    assert.equal(responses.filter(response => response.status === 200).length, 1);
+    assert.equal(responses.filter(response => response.status === 429).length, 1);
+    const admitted = await responses.find(response => response.status === 200)!.json() as any;
+    assert.equal(admitted.deletedIds.length, 1); assert.deepEqual(admitted.unavailableIds, []);
+    assert.equal((await db.prepare('SELECT history_delete_attempts FROM import_daily WHERE day=?').bind(day).first<any>()).history_delete_attempts, 200);
+    const rows = await Promise.all(ids.map(id => db.prepare('SELECT history_deleted FROM import_jobs WHERE id=?').bind(id).first<any>()));
+    assert.deepEqual(rows.map((row: { history_deleted: number }) => row.history_deleted).sort(), [0, 1], 'The denied concurrent request changes no history.');
+    const retry = await request('imports', adminJwt, 'DELETE', { ids });
+    assert.equal(retry.status, 429); assert.deepEqual(await Promise.all(ids.map(id => db.prepare('SELECT history_deleted FROM import_jobs WHERE id=?').bind(id).first())), rows);
+    const beforeFirebase = firebaseRequests;
+    await scheduler.scheduled(environment);
+    assert.equal(firebaseRequests, beforeFirebase, 'Retention cleanup shares the same exhausted 200-attempt reserve.');
+  });
+
+  await t.test('three thousand hidden histories leave bounded indexed lists and zero job reads on quota denial', async () => {
+    await resetHistoryBudget();
+    const uid = 'history-scan-budget', token = jwt(uid, false, { iat: clock, auth_time: clock });
+    await seed('accountAccess/' + uid, { blocked: false, changeId: 'visible-history-fixture' });
+    await seed('memberships/' + uid, { active: true, companyId: 'company-a', changeId: 'visible-history-fixture', version: 1 });
+    const key = await request('api-key', token, 'POST');
+    assert.equal(key.status, 201);
+    await db.prepare('UPDATE import_keys SET expires_at=? WHERE uid=?').bind(clock + 200 * 86400, uid).run();
+    // Place the hidden rows ahead of every visible row; a non-partial owner or
+    // global ordering index would have to visit the entire hidden backlog first.
+    await db.prepare('UPDATE import_jobs SET history_deleted=1,created_at=created_at+? WHERE owner_uid=?').bind(4000 * 3600, uid).run();
+    assert.ok((await db.prepare('SELECT COUNT(*) AS n FROM import_jobs WHERE owner_uid=? AND history_deleted=1').bind(uid).first<{ n: number }>())!.n >= 3000);
+    const visible: string[] = [];
+    for (let index = 0; index < 30; index++) visible.push(await seedJob(uid, clock + (3200 + index) * 3600,
+      [{ index: 0, kind: 'offer', success: true, message: 'Visible after backlog' }], 1));
+    for (const [caller, column, index, owner, readBound] of [
+      [token, 'access_checks', 'import_jobs_visible_owner', uid, 30],
+      [adminJwt, 'admin_access_checks', 'import_jobs_visible_created', null, 90],
+    ] as const) {
+      await resetHistoryBudget();
+      const sql = 'SELECT id,status,total,cursor,created_at,updated_at,succeeded,failed FROM import_jobs INDEXED BY ' + index +
+        ' WHERE history_deleted=0 ' + (owner ? 'AND owner_uid=? ' : '') + 'ORDER BY created_at DESC LIMIT 30';
+      const plan = await (owner ? db.prepare('EXPLAIN QUERY PLAN ' + sql).bind(owner) : db.prepare('EXPLAIN QUERY PLAN ' + sql)).all<{ detail: string }>();
+      assert.ok(plan.results.some((row: { detail: string }) => row.detail.includes(index)));
+      assert.ok(plan.results.every((row: { detail: string }) => !row.detail.includes('USE TEMP B-TREE')));
+      historyRowsRead = -1;
+      const response = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/imports',
+        { headers: { Authorization: 'Bearer ' + caller, 'X-Firebase-AppCheck': appCheckToken } }), observed);
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json() as any).jobs.map((entry: { id: string }) => entry.id), [...visible].reverse());
+      assert.ok(historyRowsRead > 0 && historyRowsRead <= readBound, index + ' must skip the hidden backlog.');
+      t.diagnostic(JSON.stringify({ hiddenHistoryRows: 3000, role: owner ? 'manager' : 'admin', historyRowsRead, plan: plan.results }));
+      batches.length = 0; historyRowsRead = -1;
+      beforeBatch = async batch => {
+        if (batch === 2) await db.prepare('UPDATE import_daily SET ' + column + '=500 WHERE day=?').bind(day).run();
+      };
+      try {
+        const denied = await scheduler.fetch(new Request('https://import-runtime.invalid/api/v1/imports',
+          { headers: { Authorization: 'Bearer ' + caller, 'X-Firebase-AppCheck': appCheckToken } }), observed);
+        assert.equal(denied.status, 429); assert.equal(historyRowsRead, 0, 'The raced exhausted live quota opens no visible or hidden job scan.');
+      } finally { beforeBatch = undefined; }
+    }
   });
 });

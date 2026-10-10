@@ -36,3 +36,29 @@ test('browser API forwards App Check and refuses to send without successful atte
   await assert.rejects(denied.rotate(), /Attestation refused/);
   assert.equal(calls, 1, 'Attestation failure never falls back to a request without App Check.');
 });
+
+test('history removal sends selected IDs with the current browser session and App Check', async () => {
+  const ids = ['bd51a75f-a432-46a8-95ec-120c204609d2', 'bb9b8567-cf96-428e-afd2-b3a743751c41'];
+  const result = { deletedIds: [ids[0]], unavailableIds: [ids[1]] };
+  let calls = 0, sessionChecks = 0;
+  const api = createApiImportClient(async () => 'session-token', () => { sessionChecks++; }, async (url, init) => {
+    calls++;
+    assert.equal(url, '/api/v1/imports'); assert.equal(init?.method, 'DELETE');
+    assert.equal(init?.credentials, 'same-origin'); assert.equal(init?.redirect, 'error');
+    assert.deepEqual(JSON.parse(String(init?.body)), { ids });
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get('Authorization'), 'Bearer session-token');
+    assert.equal(headers.get('X-Firebase-AppCheck'), 'fixture.appcheck.signature');
+    assert.equal(headers.get('Content-Type'), 'application/json');
+    return Response.json(result);
+  }, async signal => { assert.ok(signal); return { 'X-Firebase-AppCheck': 'fixture.appcheck.signature' }; });
+  assert.deepEqual(await api.deleteJobs(ids), result);
+  assert.ok(sessionChecks >= 4, 'Session ownership is checked before credentials, before sending and before returning data.');
+
+  let identity = 'original';
+  const stale = createApiImportClient(async () => 'original-token', () => { assert.equal(identity, 'original'); }, async () => {
+    calls++; return Response.json(result);
+  }, async () => { identity = 'another-account'; return { 'X-Firebase-AppCheck': 'fixture.appcheck.signature' }; });
+  await assert.rejects(stale.deleteJobs(ids));
+  assert.equal(calls, 1, 'Changing accounts during attestation cannot send a deletion under the previous session.');
+});

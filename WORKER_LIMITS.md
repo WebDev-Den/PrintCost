@@ -2,6 +2,16 @@
 
 Оновлено 10 жовтня 2026, Europe/Kyiv. Тариф Cloudflare Free / Firebase Spark не змінюємо.
 
+## Додатковий бюджет видалення історії — 10 жовтня 2026
+
+`0011` додає прапорець прихованої історії та два часткових індекси. Native before/after fixture: admission **11 → 13 writes**; claim/retry/progress залишилися **2/2/3**; hide і повторний hide — **1 write** кожний. Масове видалення 30 записів — **31 writes** (резервування 1 + приховування 30). Навіть із 3000 прихованих записів owner/admin списки читають **30 рядків**, при відмові добової квоти — **0**.
+
+Консервативно додаємо до попередніх 85464 writes: **200** для 100 admissions × 2 нові індекси; **200** для максимуму 200 ID-спроб приховування; **200** для успішних резервувань (найгірше по одному ID на запит). Попередній cleanup allowance повністю залишаємо, не віднімаючи заміну retention ручними діями. Нова модель — **86064 writes/добу**, reads <3.5m і Queue 9600 operations за попередніми припущеннями. Одноразовий migration/index backfill до добової моделі не включено.
+
+DELETE JSON обмежений 4 KiB/30 унікальними ID; кожний переданий ID, включно з повторним, чужим або недоступним, витрачає спільний із cleanup бюджет 200/UTC-добу. Немає Queue sends чи записів Firebase з DELETE. Збереження службового tombstone не звільняє idempotency, cooldown, receipt або квоти імпорту. Після 30 днів запис стає доступним для фізичного очищення; вичерпаний спільний бюджет може відкласти його. Storage stop guard 450 MiB залишається.
+
+175 application + 27 цільових native integration checks, lint/build/validator/dry-run — PASS. CPU нового DELETE не вимірювався в production; наведені нижче CPU числа належать попередньому Worker. Нову HTTP-функцію не оголошуємо прийнятою в strict 10 ms лише на підставі D1 row counters.
+
 ## Фінальне автоматичне приймання main — 10 жовтня 2026, 10:32 UTC
 
 `main` без конфліктів оновлена до `727f3fff8f57c384598dfa737133fde38fa4970b`. [Main CI](https://github.com/WebDev-Den/PrintCost/actions/runs/38044776321) — SUCCESS. Cloudflare Build `6d5d8e95-a5cd-411e-b666-e1da67edeb8c` — Ready; автоматично опублікований Worker `c90eb652-ebcc-463f-a13c-b5cece2f5d7a` має **100% traffic** від **10:25:26 UTC**. Це новий ID після наведеного нижче ручного приймання. Secrets, Queue/D1/limiters, Logs/traces/redaction збережені; pending migrations немає. Тариф не змінено.

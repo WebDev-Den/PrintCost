@@ -8,7 +8,7 @@ export const IMPORT_LIMITS = {
   dailyItems: 2000, dailyJobs: 100, dailyAccessChecks: 1000, dailyQueueMessages: 500, dailyMaintenanceMessages: 300, activeJobs: 100,
   dailyManagerAccessChecks: 500, dailyAdminAccessChecks: 500,
   dailyUnrecognizedUidChecks: 10, dailyManagerUidChecks: 200, dailyAdminUidChecks: 500,
-  batchItems: 5, retries: 3, lifetime: 86400, retentionDays: 30,
+  batchItems: 5, retries: 3, lifetime: 86400, retentionDays: 30, historyDeleteItems: 30, historyDeleteBytes: 4 * 1024,
 } as const;
 export type ImportStatus = 'queued' | 'processing' | 'completed' | 'partial' | 'failed' | 'cancelled';
 export interface ImportOffer { externalId: string; companyId?: string; familyExplicit: boolean; optionalFields: string[]; offer: CompanyOfferInput }
@@ -20,6 +20,7 @@ export interface ImportJobSummary {
   id: string; status: ImportStatus; total: number; processed: number; succeeded: number; failed: number;
   createdAt: string; updatedAt: string; results?: ImportItemResult[];
 }
+export interface ImportHistoryDeleteResult { deletedIds: string[]; unavailableIds: string[] }
 export interface ApiKeyMetadata { prefix: string; createdAt: string; expiresAt: string; role: 'admin' | 'manager'; companyId: string | null; requiresRotation: boolean }
 
 function record(value: unknown): asserts value is Record<string, unknown> {

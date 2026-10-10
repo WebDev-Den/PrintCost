@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Copy, KeyRound, RefreshCw, Upload } from 'lucide-react';
+import { Copy, KeyRound, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage, authService, reauthenticateAccount } from '../../services/authService.ts';
 import { firebaseAuth, getAppCheckHeaders } from '../../services/firebaseClient.ts';
@@ -23,6 +23,8 @@ export function ApiPage() {
   const [metadata, setMetadata] = useState<ApiKeyResponse | null>(null);
   const [secret, setSecret] = useState('');
   const [jobs, setJobs] = useState<ImportJobSummary[]>([]);
+  const [selectedIds, setSelectedIds] = useState(new Set<string>());
+  const [deleteTargets, setDeleteTargets] = useState<ImportJobSummary[] | null>(null);
   const [detail, setDetail] = useState<(ImportJobSummary & { error?: string }) | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -47,7 +49,7 @@ export function ApiPage() {
     let active = true;
     identity.current = uid;
     setBusy(true); setError(''); setNotice('');
-    setSecret(''); setMetadata(null); setJobs([]); setDetail(null); setPassword(''); setAction(null); setConfirmationMethod(null);
+    setSecret(''); setMetadata(null); setJobs([]); setSelectedIds(new Set()); setDeleteTargets(null); setDetail(null); setPassword(''); setAction(null); setConfirmationMethod(null);
     // Serialize these reads to avoid duplicate cold OAuth exchanges on Workers Free.
     void (async () => {
       const data = await api.metadata();
@@ -70,6 +72,21 @@ export function ApiPage() {
     const data = await api.metadata();
     const history = await api.jobs();
     setMetadata(data); setJobs(history.jobs);
+    setSelectedIds(new Set());
+  }
+  const removableJobs = jobs.filter(job => job.status !== 'queued' && job.status !== 'processing');
+  const selectedJobs = removableJobs.filter(job => selectedIds.has(job.id));
+  async function deleteHistory() {
+    if (!deleteTargets?.length) return;
+    const result = await api.deleteJobs(deleteTargets.map(job => job.id));
+    const removed = new Set(result.deletedIds);
+    setJobs(previous => previous.filter(job => !removed.has(job.id)));
+    setSelectedIds(previous => new Set([...previous].filter(id => !removed.has(id))));
+    setDetail(previous => previous && removed.has(previous.id) ? null : previous);
+    setDeleteTargets(null);
+    setNotice(`Видалено з історії: ${removed.size}.` + (result.unavailableIds.length ? ` Недоступні для видалення: ${result.unavailableIds.length}. Оновіть стан і перевірте, чи завершилися ці імпорти.` : ''));
+    try { const history = await api.jobs(); setJobs(history.jobs); }
+    catch (error) { if (identity.current === uid) setError('Список не оновився. Підтверджене видалення збережено. ' + authErrorMessage(error)); }
   }
   const base = window.location.origin + '/api/v1';
   return <div className="w-full space-y-6 text-neutral-900 dark:text-neutral-100">
@@ -120,11 +137,26 @@ export function ApiPage() {
       })}>Додати до черги</Button>
     </section>
     <section className={panel}>
-      <h2 className="font-semibold">Останні імпорти</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold">Останні імпорти</h2>
+        {!!selectedJobs.length && <div className="flex flex-wrap items-center gap-3"><span className="text-sm text-neutral-500">Обрано: {selectedJobs.length}</span>
+          <Button variant="danger" size="sm" disabled={busy} leftIcon={<Trash2 size={14} aria-hidden="true" />} onClick={() => setDeleteTargets(selectedJobs)}>Видалити обрані</Button>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelectedIds(new Set())}>Скасувати вибір</Button></div>}
+      </div>
       {!jobs.length ? <p className="text-sm text-neutral-500">Імпортів ще немає.</p> : <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b border-neutral-200 dark:border-neutral-800">
+        <th className="w-10 p-2"><input type="checkbox" aria-label="Обрати всі завершені імпорти" disabled={busy || !removableJobs.length}
+          checked={!!removableJobs.length && selectedJobs.length === removableJobs.length}
+          ref={element => { if (element) element.indeterminate = selectedJobs.length > 0 && selectedJobs.length < removableJobs.length; }}
+          onChange={event => setSelectedIds(event.target.checked ? new Set(removableJobs.map(job => job.id)) : new Set())} /></th>
         <th className="p-2">Дата та ID</th><th className="p-2">Стан</th><th className="p-2">Оброблено</th><th className="p-2">Успіх / помилки</th><th className="p-2">Дія</th></tr></thead><tbody>
-        {jobs.map(job => <tr key={job.id} className="border-b border-neutral-200 dark:border-neutral-800"><td className="p-2">{date(job.createdAt)}<code className="mt-1 block text-xs">{job.id}</code></td><td className="p-2">{statusNames[job.status]}</td>
-          <td className="p-2">{job.processed} / {job.total}</td><td className="p-2">{job.succeeded} / {job.failed}</td><td className="p-2"><Button variant="outline" size="sm" disabled={busy} onClick={() => void run(async () => setDetail(await api.job(job.id)))}>Результат</Button></td></tr>)}
+        {jobs.map(job => <tr key={job.id} className="border-b border-neutral-200 dark:border-neutral-800">
+          <td className="p-2"><input type="checkbox" aria-label={'Обрати імпорт ' + job.id} disabled={busy || job.status === 'queued' || job.status === 'processing'} checked={selectedIds.has(job.id)}
+            onChange={event => { const checked = event.target.checked; setSelectedIds(previous => { const next = new Set(previous); if (checked) next.add(job.id); else next.delete(job.id); return next; }); }} /></td>
+          <td className="p-2">{date(job.createdAt)}<code className="mt-1 block text-xs">{job.id}</code></td><td className="p-2">{statusNames[job.status]}</td>
+          <td className="p-2">{job.processed} / {job.total}</td><td className="p-2">{job.succeeded} / {job.failed}</td><td className="p-2"><div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(async () => setDetail(await api.job(job.id)))}>Результат</Button>
+            <Button variant="ghost" size="sm" className="text-red-600 dark:text-red-400" aria-label={'Видалити імпорт ' + job.id} title="Видалити з історії"
+              disabled={busy || job.status === 'queued' || job.status === 'processing'} onClick={() => setDeleteTargets([job])}><Trash2 size={15} aria-hidden="true" /></Button>
+          </div></td></tr>)}
       </tbody></table></div>}
       {detail && <div className="space-y-2"><h3 className="text-sm font-medium">{statusNames[detail.status]} · {detail.id}</h3>{detail.error && <p role="alert" className="text-sm text-red-600">{detail.error}</p>}
         <pre className={code}>{JSON.stringify(detail.results, null, 2)}</pre><Button variant="ghost" onClick={() => setDetail(null)}>Закрити результат</Button></div>}
@@ -136,6 +168,8 @@ export function ApiPage() {
         <tr><th className="p-2 font-mono">POST /imports</th><td className="p-2">Прийняти JSON у чергу, відповідь 202 з ID. Обов’язковий Idempotency-Key. Перевірку записів і результат дивіться у стані імпорту.</td></tr>
         <tr><th className="p-2 font-mono">GET /imports</th><td className="p-2">Останні 30 імпортів. Адміністратор бачить усі, менеджер — власні.</td></tr>
         <tr><th className="p-2 font-mono">GET /imports/ID</th><td className="p-2">Стан і результат кожного запису.</td></tr>
+        <tr><th className="p-2 font-mono">DELETE /imports/ID</th><td className="p-2">Видалити завершений імпорт з історії, зберігши товари каталогу.</td></tr>
+        <tr><th className="p-2 font-mono">DELETE /imports</th><td className="p-2">Масово видалити історію: JSON <code>{'{"ids":["ID"]}'}</code>, до {IMPORT_LIMITS.historyDeleteItems} ID.</td></tr>
       </tbody></table></div>
       <pre className={code}>{`curl -X POST "${base}/imports" \\\n  -H "Authorization: Bearer $KILOG_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "Idempotency-Key: batch-2026-10-09-001" \\\n  --data-binary @offers.json`}</pre>
       <p className="text-sm">У JSON передавайте <code>offers</code>. Обов’язкові поля позиції: externalId, name, brand, type, colorName, colorHex, spoolWeightGrams, priceUah, productUrl, inStock. <code>externalId</code> має залишатися сталим у вашій системі: повторний імпорт оновить позицію цієї компанії. Пропущені позиції не видаляються.</p>
@@ -150,6 +184,12 @@ export function ApiPage() {
       <p className="text-sm">Стани: queued, processing, completed, partial, failed, cancelled. 401 — ключ недійсний; 403 — бракує прав; 409 — конфлікт Idempotency-Key; 413 — завеликий JSON; 422 — некоректна структура запиту; 429 — ліміт; 503 — сервіс тимчасово недоступний. Помилка полів після прийняття до черги відображається у результаті як HTTP_422 і не повторюється автоматично. Прийняті імпорти, зокрема з помилкою, витрачають інтервал та денну квоту. У разі часткового імпорту перегляньте результати перед повторним надсиланням.</p>
       <p className="text-xs text-neutral-500">Спільні ліміти API за добу UTC: {IMPORT_LIMITS.dailyItems.toLocaleString('uk-UA')} записів, {IMPORT_LIMITS.dailyJobs} імпортів і {IMPORT_LIMITS.dailyQueueMessages} відправлень у чергу. Для перевірок доступу виділено окремо 500 запитів менеджерам і 500 адміністраторам; на один акаунт — до 200 для менеджера й 500 для адміністратора з ключем. При вичерпанні ліміту черги завдання зберігається до наступної доби. Черга обробляє по 5 записів послідовно, повторює тимчасові помилки до 3 разів і зупиняє незавершений імпорт через 24 години. Історія зберігається 30 днів.</p>
     </section>
+    <Modal isOpen={!!deleteTargets} onClose={() => { if (!busy) setDeleteTargets(null); }} title="Видалити історію імпортів"
+      description={`Буде видалено з історії ${deleteTargets?.length || 0} записів. Товари та компанії в каталозі збережуться.`}
+      footer={<><Button variant="outline" disabled={busy} onClick={() => setDeleteTargets(null)}>Скасувати</Button>
+        <Button variant="danger" isLoading={busy} onClick={() => void run(deleteHistory)}>Видалити з історії</Button></>}>
+      <p>Активні імпорти не видаляються. Цю дію не можна скасувати в кабінеті.</p>
+    </Modal>
     <Modal isOpen={!!action} onClose={() => { if (!busy) { setAction(null); setPassword(''); setConfirmationMethod(null); } }} title={action === 'revoke' ? 'Відкликати API-ключ' : metadata?.key ? 'Оновити API-ключ' : 'Створити API-ключ'}
       description="Підтвердьте вхід. Попередній ключ і незавершені імпорти будуть скасовані.">
       <form className="space-y-4" onSubmit={event => { event.preventDefault(); void run(async () => {

@@ -1,4 +1,4 @@
-import { IMPORT_LIMITS, type ApiKeyMetadata, type ImportJobSummary } from '../domain/apiImports.ts';
+import { IMPORT_LIMITS, type ApiKeyMetadata, type ImportJobSummary, type ImportHistoryDeleteResult } from '../domain/apiImports.ts';
 
 export interface ApiKeyResponse { key: ApiKeyMetadata | null; role: 'admin' | 'manager'; companyId: string | null; nextImportAt: string | null; limits: typeof IMPORT_LIMITS }
 export function createApiImportClient(token: () => Promise<string>, assertSession: () => void, fetcher: typeof fetch = fetch,
@@ -28,6 +28,7 @@ export function createApiImportClient(token: () => Promise<string>, assertSessio
     revoke: () => request<{ revoked: boolean }>('api-key', 'DELETE'),
     jobs: () => request<{ jobs: ImportJobSummary[] }>('imports'),
     job: (id: string) => request<ImportJobSummary & { error?: string }>('imports/' + encodeURIComponent(id)),
+    deleteJobs: (ids: string[]) => request<ImportHistoryDeleteResult>('imports', 'DELETE', { ids }),
     submit: (payload: unknown, idempotency: string) => request<ImportJobSummary & { statusUrl: string }>('imports', 'POST', payload, idempotency),
   };
 }

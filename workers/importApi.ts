@@ -12,7 +12,7 @@ interface KeyRow { uid: string; hash: string; prefix: string; role: 'admin' | 'm
 interface JobRow { id: string; owner_uid: string; key_hash: string; fingerprint: string; payload: string | null; payload_hash: string; status: ImportJobSummary['status']; total: number; cursor: number; results: string; created_at: number; updated_at: number; expires_at: number; lease_until: number; attempts: number; error: string | null }
 type JobSummaryRow = Pick<JobRow, 'id' | 'status' | 'total' | 'cursor' | 'created_at' | 'updated_at'> & { succeeded: number; failed: number };
 type JobDetailRow = Pick<JobRow, 'id' | 'status' | 'total' | 'cursor' | 'created_at' | 'updated_at' | 'results' | 'error'>;
-type JobReplayRow = JobSummaryRow & Pick<JobRow, 'payload_hash'>;
+type JobReplayRow = JobSummaryRow & Pick<JobRow, 'payload_hash'> & { history_deleted: number };
 export interface ImportMessage { body: unknown; ack(): void; retry(options?: { delaySeconds: number }): void }
 const active = "status IN ('queued','processing')";
 const summaryColumns = 'id,status,total,cursor,created_at,updated_at';
@@ -145,8 +145,9 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         const keyPath = url.pathname === '/api/v1/api-key';
         const jobId = /^\/api\/v1\/imports\/([0-9a-f-]{36})$/.exec(url.pathname)?.[1];
         if (!keyPath && !jobId && url.pathname !== '/api/v1/imports') throw new ApiError(404, 'Endpoint не знайдено.');
-        if (keyPath ? !['GET','POST','DELETE'].includes(request.method) : jobId ? request.method !== 'GET' : !['GET','POST'].includes(request.method)) throw new ApiError(405, 'Метод не підтримується.');
+        if (keyPath ? !['GET','POST','DELETE'].includes(request.method) : jobId ? !['GET','DELETE'].includes(request.method) : !['GET','POST','DELETE'].includes(request.method)) throw new ApiError(405, 'Метод не підтримується.');
         if (request.method === 'POST' && url.pathname === '/api/v1/imports' && Number(request.headers.get('Content-Length')) > IMPORT_LIMITS.bytes) throw new ApiError(413, 'Завеликий запит.');
+        if (request.method === 'DELETE' && !keyPath && !jobId && Number(request.headers.get('Content-Length')) > IMPORT_LIMITS.historyDeleteBytes) throw new ApiError(413, 'Завеликий запит.');
         const { db, scope, key, authTime, databaseSize, nextAllowed } = await authorize(request, env, keyPath);
         if (keyPath) {
           if (request.method === 'GET') {
@@ -168,18 +169,43 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         if (request.method === 'GET') {
           if (jobId) {
             const [reserved, result] = await db.batch<JobDetailRow | { day: string }>([budget(db, scope.role),
-              db.prepare('SELECT ' + summaryColumns + ',results,error FROM import_jobs WHERE id=? AND (?=\'admin\' OR owner_uid=?) LIMIT CASE WHEN changes()=1 THEN 1 ELSE 0 END').bind(jobId, scope.role, scope.uid)]);
+              db.prepare('SELECT ' + summaryColumns + ',results,error FROM import_jobs WHERE id=? AND history_deleted=0 AND (?=\'admin\' OR owner_uid=?) LIMIT CASE WHEN changes()=1 THEN 1 ELSE 0 END').bind(jobId, scope.role, scope.uid)]);
             if (!reserved.results.length) exhaustedBudget();
             const job = result.results[0] as JobDetailRow | undefined;
             if (!job) throw new ApiError(404, 'Імпорт не знайдено.');
             return json(summary(job, true));
           }
           // LIMIT 0 stops before opening the job scan; a WHERE gate still scans on denial.
-          const query = db.prepare('SELECT ' + summaryColumns + ',succeeded,failed FROM import_jobs ' +
-            (scope.role === 'admin' ? '' : 'WHERE owner_uid=? ') + 'ORDER BY created_at DESC LIMIT CASE WHEN changes()=1 THEN 30 ELSE 0 END');
+          const query = db.prepare('SELECT ' + summaryColumns + ',succeeded,failed FROM import_jobs INDEXED BY ' +
+            (scope.role === 'admin' ? 'import_jobs_visible_created' : 'import_jobs_visible_owner') + ' WHERE history_deleted=0 ' +
+            (scope.role === 'admin' ? '' : 'AND owner_uid=? ') + 'ORDER BY created_at DESC LIMIT CASE WHEN changes()=1 THEN 30 ELSE 0 END');
           const [reserved, jobs] = await db.batch<JobSummaryRow | { day: string }>([budget(db, scope.role), scope.role === 'admin' ? query : query.bind(scope.uid)]);
           if (!reserved.results.length) exhaustedBudget();
           return json({ jobs: (jobs.results as JobSummaryRow[]).map(job => summary(job)) });
+        }
+        if (request.method === 'DELETE') {
+          let ids: string[];
+          if (jobId) ids = [jobId];
+          else {
+            if (!/^application\/json(?:\s*;.*)?$/i.test(request.headers.get('Content-Type') || '')) throw new ApiError(415, 'Потрібен Content-Type: application/json.');
+            let value: { ids?: unknown };
+            try { value = JSON.parse(await boundedText(new Response(request.body, { headers: request.headers }), IMPORT_LIMITS.historyDeleteBytes)); }
+            catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(422, 'Некоректний JSON.'); }
+            if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 || !Array.isArray(value.ids) || !value.ids.length ||
+              value.ids.length > IMPORT_LIMITS.historyDeleteItems || value.ids.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) ||
+              new Set(value.ids).size !== value.ids.length) throw new ApiError(422, 'Передайте від 1 до 30 унікальних ID імпортів у полі ids.');
+            ids = value.ids;
+          }
+          // Keep idempotency and receipts until normal retention; deleting history never reimports products.
+          const [reserved, removed] = await db.batch<{ id: string } | { day: string }>([
+            db.prepare('INSERT INTO import_daily(day,history_delete_attempts) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET history_delete_attempts=history_delete_attempts+excluded.history_delete_attempts WHERE history_delete_attempts+excluded.history_delete_attempts<=200 RETURNING day')
+              .bind(now().toISOString().slice(0, 10), ids.length),
+            db.prepare("UPDATE import_jobs SET history_deleted=1 WHERE changes()=1 AND id IN (" + ids.map(() => '?').join(',') + ") AND (?='admin' OR owner_uid=?) AND status NOT IN ('queued','processing') AND lease_until<=? RETURNING id")
+              .bind(...ids, scope.role, scope.uid, seconds()),
+          ]);
+          if (!reserved.results.length) throw new ApiError(429, 'Денний ліміт видалення історії вичерпано. Спробуйте завтра (UTC).', 86400 - seconds() % 86400);
+          const deletedIds = (removed.results as { id: string }[]).map(row => row.id);
+          return json({ deletedIds, unavailableIds: ids.filter(id => !deletedIds.includes(id)) });
         }
         if (!key || key.expires_at <= seconds() || key.fingerprint !== scope.fingerprint) throw new ApiError(403, 'Спочатку створіть актуальний API-ключ у кабінеті.');
         if (!/^application\/json(?:\s*;.*)?$/i.test(request.headers.get('Content-Type') || '')) throw new ApiError(415, 'Потрібен Content-Type: application/json.');
@@ -202,18 +228,19 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
           catch (error) { throw new ApiError(422, error instanceof Error ? error.message : 'Некоректний JSON.'); }
           return job.payload_hash === legacyHash;
         }
-        const replay = () => db.prepare('SELECT ' + summaryColumns + ',payload_hash,succeeded,failed FROM import_jobs WHERE owner_uid=? AND idempotency=?')
+        const replay = () => db.prepare('SELECT ' + summaryColumns + ',payload_hash,succeeded,failed,history_deleted FROM import_jobs WHERE owner_uid=? AND idempotency=?')
           .bind(scope.uid, idempotency).first<JobReplayRow>();
         const existing = await replay();
         if (existing) {
           if (!await matches(existing)) throw new ApiError(409, 'Idempotency-Key вже використано для іншого JSON.');
+          if (existing.history_deleted) throw new ApiError(409, 'Цей імпорт видалено з історії. Для нового імпорту використайте новий Idempotency-Key.');
           return json({ ...summary(existing), statusUrl: '/api/v1/imports/' + existing.id }, 202);
         }
         if (databaseSize >= 450 * 1024 * 1024) throw new ApiError(429, 'База імпорту очікує очищення. Спробуйте через годину.', 3600);
         const id = crypto.randomUUID(), time = seconds();
         let accepted: JobReplayRow | undefined;
         try {
-          const inserted = await db.prepare('INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,payload,total,interval_seconds,created_at,updated_at,expires_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM import_jobs WHERE owner_uid=? AND idempotency=?) RETURNING ' + summaryColumns + ',payload_hash,0 AS succeeded,0 AS failed')
+          const inserted = await db.prepare('INSERT INTO import_jobs(id,owner_uid,key_hash,fingerprint,idempotency,payload_hash,payload,total,interval_seconds,created_at,updated_at,expires_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM import_jobs WHERE owner_uid=? AND idempotency=?) RETURNING ' + summaryColumns + ',payload_hash,history_deleted,0 AS succeeded,0 AS failed')
             .bind(id, scope.uid, key.hash, scope.fingerprint, idempotency, hash, serialized, envelope.companies.length + envelope.offers.length,
               scope.role === 'admin' ? IMPORT_LIMITS.adminInterval : IMPORT_LIMITS.managerInterval, time, time, time + IMPORT_LIMITS.lifetime, scope.uid, idempotency).all<JobReplayRow>();
           accepted = inserted.results[0];
@@ -229,6 +256,7 @@ export function createImportApi(fetcher: typeof fetch = fetch, now: () => Date =
         }
         accepted ??= await replay() ?? undefined;
         if (!accepted || !await matches(accepted)) throw new ApiError(409, 'Idempotency-Key вже використано.');
+        if (accepted.history_deleted) throw new ApiError(409, 'Цей імпорт видалено з історії. Для нового імпорту використайте новий Idempotency-Key.');
         if (accepted.id === id) await dispatch(env, id, 0);
         return json({ ...summary(accepted), statusUrl: '/api/v1/imports/' + accepted.id }, 202);
       } catch (error) {
