@@ -1,5 +1,9 @@
 # KILO·G — стан проєкту та задач
 
+## JSON-зразок для заповнення — 10 жовтня 2026
+
+Додано кнопку **Завантажити зразок JSON** у заголовку блоку імпорту. Файл `kilog-import-example.json` формується з канонічного `IMPORT_EXAMPLE` у UTF-8 з відступами; це зовнішній offers-only формат, спільний для адміністратора й менеджера. Посилання магазину та дані товару потрібно замінити перед імпортом. Завантаження не змінює редагований JSON, не додає завдань до черги та не викликає API. Додаткових витрат Worker/D1/Queues немає. Lint/build/deployment validator і 7 цільових domain checks — PASS; нових backend endpoint, міграцій, залежностей і тестів для простого завантаження не додано.
+
 ## Видалення історії імпортів — 10 жовтня 2026
 
 **Опубліковано:** runtime `main` `0bd64738f5a2c3fe6ab0a771da8a44767913a27e`; [main CI](https://github.com/WebDev-Den/PrintCost/actions/runs/38047934364) — SUCCESS, **317/317 тестів** (175 app + 142 emulator), усі 14 кроків. Cloudflare Build `6bc340e1-1f40-4a3e-a99f-877f19c5bafe` саме цього коміту завершив публікацію; Worker `e587a61d-5c63-4bda-8ace-3437592a0a3c` має **100% traffic** від **11:19:11 UTC**. Secrets, Queue/D1/limiters і Observability збережені. **8/8 живих API перевірок PASS**, зокрема DELETE single/bulk для відсутнього тестового ID, 401/404/422 guards; до/після всі **12** наявних jobs незмінні. У живому Google/App Check кабінеті перевірено одиничне підтвердження, вибір 1/12, indeterminate checkbox, масове підтвердження, скасування і скидання вибору. Видалення реальних записів не запускалося. Докази: ігноровані `output/history-live-proof.json`, `output/history-delete-ui.png`, `output/history-delete-confirmation.png`, `output/history-release-readback.log`. Цей фінальний звіт збережений у `codex/import-history-delete`; runtime у `main` збігається, додаткову збірку лише заради deployment ID не запускаємо.

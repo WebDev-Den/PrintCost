@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Copy, KeyRound, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { Copy, Download, KeyRound, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { authErrorMessage, authService, reauthenticateAccount } from '../../services/authService.ts';
 import { firebaseAuth, getAppCheckHeaders } from '../../services/firebaseClient.ts';
@@ -74,6 +74,13 @@ export function ApiPage() {
     setMetadata(data); setJobs(history.jobs);
     setSelectedIds(new Set());
   }
+  function downloadExample() {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(IMPORT_EXAMPLE, null, 2) + '\n'], { type: 'application/json;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url; link.download = 'kilog-import-example.json';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
   const removableJobs = jobs.filter(job => job.status !== 'queued' && job.status !== 'processing');
   const selectedJobs = removableJobs.filter(job => selectedIds.has(job.id));
   async function deleteHistory() {
@@ -114,7 +121,10 @@ export function ApiPage() {
       <p className="text-xs text-neutral-500">Оновлення або відкликання ключа скасовує незавершені імпорти. Уже розпочата порція до 5 записів може завершитися. Зміна ролі, компанії чи блокування потребує нового ключа.</p>
     </section>
     <section className={panel}>
-      <h2 className="font-semibold">Імпорт JSON</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold">Імпорт JSON</h2>
+        <Button variant="outline" size="sm" leftIcon={<Download size={15} aria-hidden="true" />} onClick={downloadExample}>Завантажити зразок JSON</Button>
+      </div>
+      <p className="text-sm text-neutral-500">Заповніть зразок своїми даними. У <code>productUrl</code> вкажіть посилання на товар вашого магазину; для менеджера домен має бути дозволений компанією.</p>
       <p className="text-sm">Імпортовані товари та оновлення зберігаються як чернетки. Перевірте їх і опублікуйте обрані у <NavLink to="/app/admin/catalog" className="text-emerald-600 underline">адмінці каталогу</NavLink>.</p>
       <p className="text-sm text-neutral-500">Після додавання черга перевірить усі записи. Якщо поля некоректні, імпорт завершиться помилкою без запису товарів; причину дивіться у результаті.</p>
       <p className="text-sm text-neutral-500">До {IMPORT_LIMITS.items} записів та {IMPORT_LIMITS.bytes / 1024} КіБ за запит. Більші файли розділіть на менші порції. Менеджер — раз на годину, адміністратор — раз на 5 хвилин. Один активний імпорт на акаунт.</p>
