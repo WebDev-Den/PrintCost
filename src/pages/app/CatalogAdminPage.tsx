@@ -58,9 +58,9 @@ export const CatalogAdminPage: React.FC = () => {
   const showGlobal = isAdmin && params.get('source') === 'global';
   if (isDemoSession || !user?.emailVerified || user.isBlocked || (!isAdmin && user.role !== 'manager')) return <Navigate to="/app/dashboard" replace />;
   return <div className="w-full space-y-5">
-    {isAdmin && <div className="flex flex-wrap gap-2" aria-label="Розділи адмінки каталогу">
-      <Button variant={showGlobal ? 'outline' : 'primary'} size="sm" aria-pressed={!showGlobal} onClick={() => { const next = new URLSearchParams(params); next.delete('source'); setParams(next); }}>Пропозиції компаній</Button>
-      <Button variant={showGlobal ? 'primary' : 'outline'} size="sm" aria-pressed={showGlobal} onClick={() => { const next = new URLSearchParams(params); next.set('source', 'global'); setParams(next); }}>Загальний каталог та довідники</Button>
+    {isAdmin && <div className="inline-flex max-w-full flex-wrap gap-1 rounded-xl bg-neutral-100 dark:bg-neutral-900 p-1" role="group" aria-label="Розділи адмінки каталогу">
+      <Button variant={showGlobal ? 'ghost' : 'secondary'} size="sm" aria-pressed={!showGlobal} onClick={() => { const next = new URLSearchParams(params); next.delete('source'); setParams(next); }}>Пропозиції компаній</Button>
+      <Button variant={showGlobal ? 'secondary' : 'ghost'} size="sm" aria-pressed={showGlobal} onClick={() => { const next = new URLSearchParams(params); next.set('source', 'global'); setParams(next); }}>Загальний каталог</Button>
     </div>}
     {showGlobal ? <GlobalCatalogAdmin key={user.id} /> : <CompanyOffersPanel key={`${user.id}:${user.role}:${user.companyId || ''}`} />}
   </div>;

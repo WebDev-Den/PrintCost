@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Navigate, NavLink, useSearchParams } from 'react-router-dom';
 import type { QueryDocumentSnapshot } from 'firebase/firestore';
+import { ChevronDown, Layers, Plus, RefreshCw, Search, Settings2, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { Button } from '../common/Button.tsx';
 import { Input } from '../common/Input.tsx';
@@ -40,6 +41,13 @@ export const CompanyOffersPanel: React.FC = () => {
   const [draft, setDraft] = useState<CompanyOfferInput>(initialOffer);
   const companyRequest = useRef(0);
   const offerRequest = useRef(0);
+  const offersHeading = useRef<HTMLHeadingElement>(null);
+  const previousSelectionSize = useRef(0);
+
+  useEffect(() => {
+    if (previousSelectionSize.current > 0 && selectedIds.size === 0 && document.activeElement === document.body) offersHeading.current?.focus();
+    previousSelectionSize.current = selectedIds.size;
+  }, [selectedIds.size]);
 
   useEffect(() => {
     const version = ++companyRequest.current;
@@ -156,10 +164,16 @@ export const CompanyOffersPanel: React.FC = () => {
   const offerLocked = !canEditCompany || (!isAdmin && editing?.status === 'blocked');
 
   return <div className="w-full space-y-5 text-neutral-900 dark:text-white">
-    <div className="flex flex-wrap justify-between items-start gap-3"><div className="min-w-0"><h2 className="text-xl font-bold">Пропозиції каталогу</h2><p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">Перевіряйте чернетки та публікуйте обрані товари. Опубліковані пропозиції доступні у каталозі.</p></div><NavLink to="/filaments" className="inline-flex items-center justify-center px-3 h-8 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Відкрити каталог</NavLink></div>
+    <div className="flex flex-wrap justify-between items-center gap-3">
+      <div className="min-w-0"><h2 ref={offersHeading} tabIndex={-1} className="text-xl font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded">Пропозиції каталогу</h2><p className="text-sm text-neutral-500 dark:text-neutral-400 mt-1">Керуйте пластиками та їх публікацією.</p></div>
+      {company && <div className="flex items-center gap-2">
+        <Button variant="outline" size="sm" aria-label="Оновити пропозиції" title="Оновити пропозиції" disabled={loading || busy} onClick={() => { void loadOffers(); }}><RefreshCw size={16} aria-hidden="true" /></Button>
+        <Button size="sm" leftIcon={<Plus size={16} aria-hidden="true" />} onClick={() => openEditor(null)} disabled={loading || busy || !canEditCompany}>Додати пластик</Button>
+      </div>}
+    </div>
     {isAdmin && companies.length > 0 && <label className="block max-w-xl text-xs space-y-1.5"><span>Компанія</span><select aria-label="Компанія для керування пропозиціями" className={selectClass} value={companyId} onChange={event => setCompanyId(event.target.value)} disabled={busy || loading}><option value="">Оберіть компанію</option>{companies.map(item => <option key={item.id} value={item.id}>{item.name}{item.status === 'disabled' ? ' · призупинено' : ''}</option>)}</select></label>}
     {error && <p role="alert" className="p-3 text-sm rounded-lg text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30">{error}</p>}
-    {success && <p role="status" className="p-3 text-sm rounded-lg text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30">{success}</p>}
+    {success && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">{success}</p>}
     {loading && <p role="status" className="text-sm text-neutral-500 dark:text-neutral-400">Завантаження…</p>}
     {!loading && !company && <section className="p-6 sm:p-10 rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-center space-y-3" aria-label="Компанію не обрано">
       <h3 className="font-semibold">{isAdmin ? (companies.length ? 'Оберіть компанію для керування пропозиціями' : 'Додайте компанію, щоб керувати пропозиціями') : 'Компанію ще не призначено'}</h3>
@@ -167,30 +181,47 @@ export const CompanyOffersPanel: React.FC = () => {
       {isAdmin && <NavLink to="/app/admin/access" className="inline-flex items-center justify-center min-h-9 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2">Користувачі та компанії</NavLink>}
     </section>}
     {company && <>
-      <div className="flex flex-wrap justify-between items-center gap-3"><div className="min-w-0 break-words"><h3 className="font-semibold">{company.name}</h3><p className="text-xs text-neutral-500 dark:text-neutral-400">Дозволені магазини: {company.allowedDomains.join(', ')}</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" disabled={loading || busy} onClick={() => { void loadOffers(); }}>Оновити пропозиції</Button><Button size="sm" onClick={() => openEditor(null)} disabled={loading || busy || !canEditCompany}>Додати пластик</Button></div></div>
+      {!isAdmin && <h3 className="font-medium break-words">{company.name}</h3>}
       {company.status === 'disabled' && <p role="status" className="text-sm text-amber-700 dark:text-amber-400">Компанію призупинено. Її пропозиції не показуються у публічному каталозі. Адміністратор може редагувати дані.</p>}
-      <CompanyLogoEditor key={`${company.id}:${user.id}`} company={company} />
-      <div className="grid sm:grid-cols-[1fr_240px] gap-3 items-start">
-        <Input id="company-offer-search" label="Пошук пропозицій компанії" value={search} onChange={event => setSearch(event.target.value)} helperText={`Серед ${offers.length} завантажених записів${cursor ? '; наступні доступні нижче' : ''}.`} />
-        <label className="block text-xs space-y-1.5"><span>Стан пропозицій</span><select className={selectClass} aria-label="Стан пропозицій" value={statusFilter} onChange={event => setStatusFilter(event.target.value as typeof statusFilter)}><option value="all">Усі пропозиції</option>{Object.entries(statusLabels).map(([status, label]) => <option key={status} value={status}>{label}</option>)}</select></label>
-      </div>
-      <section aria-label="Масові дії з пропозиціями" className="flex flex-wrap items-center gap-3 p-3 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
-        <label className="inline-flex gap-2 items-center text-sm"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAll} disabled={loading || busy || !selectable.length} />Обрати до {MAX_COMPANY_OFFER_BULK_ITEMS} видимих</label>
-        <span className="text-xs text-neutral-500">Обрано: {selectedIds.size}</span>
-        <Button size="sm" disabled={loading || busy || !selectedIds.size || !canEditCompany || company.status !== 'active'} onClick={() => { void runBulk('publish', selectedOffers); }}>Опублікувати обрані</Button>
-        <Button variant="outline" size="sm" disabled={loading || busy || !selectedIds.size || !canEditCompany} onClick={() => { void runBulk('hide', selectedOffers); }}>У чернетки</Button>
-        <Button variant="danger" size="sm" disabled={loading || busy || !selectedIds.size || !canEditCompany} onClick={() => setDeleteTargets(selectedOffers)}>Видалити обрані</Button>
-        {selectedIds.size > 0 && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelectedIds(new Set())}>Зняти вибір</Button>}
-      </section>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">{visible.map(offer => <article key={offer.id} className="min-w-0 p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
+      <details key={`${company.id}:${user.id}`} className="group rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
+        <summary className="flex cursor-pointer list-none items-center gap-2 rounded-xl px-4 py-3 text-sm text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 [&::-webkit-details-marker]:hidden">
+          <Settings2 size={16} aria-hidden="true" /><span className="flex-1">Логотип і дані компанії</span><ChevronDown size={16} aria-hidden="true" className="group-open:rotate-180" />
+        </summary>
+        <div className="space-y-3 border-t border-neutral-200 dark:border-neutral-800 p-4">
+          <div className="min-w-0 break-words"><h3 className="font-medium">{company.name}</h3><p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">Дозволені магазини: {company.allowedDomains.join(', ')}</p></div>
+          <CompanyLogoEditor key={`${company.id}:${user.id}`} company={company} />
+        </div>
+      </details>
+      {offers.length > 0 && <>
+        <div className="grid sm:grid-cols-[1fr_240px] gap-3 items-end">
+          <Input id="company-offer-search" label="Пошук" placeholder="Назва, бренд або тип пластику…" leftAddon={<Search size={16} aria-hidden="true" />} value={search} onChange={event => setSearch(event.target.value)} />
+          <label className="block text-xs space-y-1.5"><span>Стан пропозицій</span><select className={selectClass} aria-label="Стан пропозицій" value={statusFilter} onChange={event => setStatusFilter(event.target.value as typeof statusFilter)}><option value="all">Усі пропозиції</option>{Object.entries(statusLabels).map(([status, label]) => <option key={status} value={status}>{label}</option>)}</select></label>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-neutral-500 dark:text-neutral-400">
+          <p>Показано {visible.length} із {offers.length}{cursor ? ' завантажених · нижче є ще' : ''}</p>
+          {selectable.length > 0 && <label className="inline-flex gap-2 items-center cursor-pointer"><input type="checkbox" className="accent-emerald-600" checked={allVisibleSelected} ref={element => { if (element) element.indeterminate = !allVisibleSelected && selectable.some(offer => selectedIds.has(offer.id)); }} onChange={toggleAll} disabled={loading || busy} />Обрати {selectable.length} видимих</label>}
+        </div>
+      </>}
+      {selectedIds.size > 0 && <section aria-label="Масові дії з пропозиціями" className="flex flex-wrap items-center gap-2 p-3 rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30">
+        <span className="mr-2 text-sm font-medium">Обрано: {selectedIds.size}</span>
+        <Button size="sm" disabled={loading || busy || !canEditCompany || company.status !== 'active'} onClick={() => { void runBulk('publish', selectedOffers); }}>Опублікувати</Button>
+        <Button variant="outline" size="sm" disabled={loading || busy || !canEditCompany} onClick={() => { void runBulk('hide', selectedOffers); }}>У чернетки</Button>
+        <Button variant="outline" size="sm" leftIcon={<Trash2 size={14} aria-hidden="true" />} disabled={loading || busy || !canEditCompany} onClick={() => setDeleteTargets(selectedOffers)}>Видалити обрані</Button>
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelectedIds(new Set())}>Зняти вибір</Button>
+      </section>}
+      {visible.length > 0 && <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">{visible.map(offer => <article key={offer.id} className="min-w-0 p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
         <div className="flex flex-col justify-between gap-4 h-full"><div className="min-w-0 break-words"><label className="flex gap-2 items-start"><input type="checkbox" className="mt-1 shrink-0" aria-label={`Обрати пропозицію: ${offer.name}`} checked={selectedIds.has(offer.id)} disabled={loading || busy || !canEditCompany || (!isAdmin && offer.status === 'blocked') || (!selectedIds.has(offer.id) && selectedIds.size >= MAX_COMPANY_OFFER_BULK_ITEMS)} onChange={event => { const checked = event.target.checked; setSelectedIds(previous => { const next = new Set(previous); if (checked && next.size < MAX_COMPANY_OFFER_BULK_ITEMS) next.add(offer.id); else next.delete(offer.id); return next; }); }} /><span className="font-semibold">{offer.name}</span></label><p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">{offer.brand} · {offer.type} · {offer.colorName} · {offer.spoolWeightGrams} г · {offer.packagingType === 'refill' ? 'Рефіл' : 'З котушкою'}</p><p className="text-sm mt-2 tabular-nums">{formatUah(offer.priceUah)} за упаковку · {formatUah(offer.priceUah / offer.spoolWeightGrams * 1000)} / кг</p><p className="text-xs mt-1">{statusLabels[offer.status]} · {offer.inStock ? 'В наявності' : 'Немає в наявності'}</p><a href={offer.productUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-emerald-600 underline">Сторінка товару</a></div>
           <div className="flex flex-wrap items-start gap-2"><Button variant="outline" size="sm" onClick={() => openEditor(offer)} disabled={loading || busy || !canEditCompany || (!isAdmin && offer.status === 'blocked')}>Редагувати</Button>
             {offer.status !== 'blocked' && <Button variant="outline" size="sm" disabled={loading || busy || !canEditCompany || (offer.status !== 'published' && company.status !== 'active')} onClick={() => { void changeStatus(offer, offer.status === 'published' ? 'hidden' : 'published'); }}>{offer.status === 'published' ? 'Приховати' : 'Опублікувати'}</Button>}
-            {isAdmin && <Button variant={offer.status === 'blocked' ? 'outline' : 'danger'} size="sm" disabled={loading || busy} onClick={() => { void changeStatus(offer, offer.status === 'blocked' ? 'hidden' : 'blocked'); }}>{offer.status === 'blocked' ? 'Розблокувати й приховати' : 'Заблокувати'}</Button>}
-            <Button variant="danger" size="sm" disabled={loading || busy || !canEditCompany || (!isAdmin && offer.status === 'blocked')} onClick={() => setDeleteTargets([offer])}>Видалити</Button>
+            {isAdmin && <Button variant="ghost" size="sm" disabled={loading || busy} onClick={() => { void changeStatus(offer, offer.status === 'blocked' ? 'hidden' : 'blocked'); }}>{offer.status === 'blocked' ? 'Розблокувати й приховати' : 'Заблокувати'}</Button>}
+            <Button variant="ghost" size="sm" className="ml-auto text-red-600 dark:text-red-400" aria-label={`Видалити пропозицію: ${offer.name}`} title="Видалити пропозицію" disabled={loading || busy || !canEditCompany || (!isAdmin && offer.status === 'blocked')} onClick={() => setDeleteTargets([offer])}><Trash2 size={16} aria-hidden="true" /></Button>
           </div></div>
-      </article>)}</div>
-      {!visible.length && !loading && <p className="text-sm text-neutral-500 dark:text-neutral-400">Пропозицій не знайдено серед завантажених записів.</p>}
+      </article>)}</div>}
+      {!visible.length && !loading && <section aria-label="Порожній список пропозицій" className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-neutral-300 dark:border-neutral-800 px-6 py-12 text-center">
+        <Layers size={28} className="text-neutral-400 dark:text-neutral-600" aria-hidden="true" />
+        <div><h3 className="font-medium">{offers.length ? 'Немає збігів' : 'Поки що немає пластиків'}</h3><p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">{offers.length ? 'Спробуйте іншу назву або змініть фільтр.' : 'Додайте першу пропозицію або імпортуйте товари через API.'}</p></div>
+        {offers.length > 0 ? <Button variant="outline" size="sm" onClick={() => { setSearch(''); setStatusFilter('all'); }}>Очистити фільтри</Button> : <NavLink to="/app/api" className="text-sm text-emerald-700 dark:text-emerald-400 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Перейти до імпорту</NavLink>}
+      </section>}
       {cursor && <Button variant="outline" size="sm" onClick={() => { void loadOffers(true); }} disabled={loading || busy}>Завантажити ще пропозиції</Button>}
     </>}
     <Modal isOpen={!!deleteTargets} onClose={() => { if (!busy) setDeleteTargets(null); }} title="Видалити пропозиції" description={`Буде видалено ${deleteTargets?.length || 0} пропозицій компанії «${company?.name || ''}». Цю дію неможливо скасувати.`}
